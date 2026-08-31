@@ -1,0 +1,10 @@
+data/browser_profile/
+data/preferences.json
+cookies*.json
+cookies*.txt
+**/__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.log
+.venv/
+venv/
