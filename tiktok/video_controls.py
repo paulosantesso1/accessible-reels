@@ -659,12 +659,84 @@ def _server_accepted_mutation(response: Any) -> bool:
     return True
 
 
+class _ActionNetworkProbe:
+    """Observa metadados seguros da rede durante uma ação de conta."""
+
+    def __init__(
+        self, page: Any, mutation_url_patterns: tuple[str, ...]
+    ) -> None:
+        self._page = page
+        self._patterns = mutation_url_patterns
+        self._events: list[tuple[str, str, int, bool, bool]] = []
+        self._attached = False
+
+    def start(self) -> None:
+        try:
+            self._page.on("response", self._on_response)
+            self._attached = True
+        except Exception:
+            self._attached = False
+
+    def stop(self) -> None:
+        if not self._attached:
+            return
+        try:
+            self._page.remove_listener("response", self._on_response)
+        except Exception:
+            try:
+                self._page.off("response", self._on_response)
+            except Exception:
+                pass
+        self._attached = False
+
+    @property
+    def confirmed(self) -> bool:
+        return any(exact and accepted for _, _, _, exact, accepted in self._events)
+
+    @property
+    def rejected(self) -> bool:
+        """Indica rejeição explícita, sem confundir ausência de evento com falha."""
+        return any(exact and not accepted for _, _, _, exact, accepted in self._events)
+
+    def summary(self) -> str:
+        if not self._events:
+            return "rede: nenhuma resposta de escrita do TikTok observada"
+        unique: list[str] = []
+        for method, path, status, exact, accepted in self._events:
+            result = "aceita" if exact and accepted else "não confirmada"
+            item = f"{method} {path} HTTP {status} ({result})"
+            if item not in unique:
+                unique.append(item)
+            if len(unique) == 6:
+                break
+        return "rede: " + "; ".join(unique)
+
+    def _on_response(self, response: Any) -> None:
+        try:
+            parsed = urlsplit(str(response.url))
+            hostname = (parsed.hostname or "").lower()
+            if hostname != "tiktok.com" and not hostname.endswith(".tiktok.com"):
+                return
+            request = response.request
+            method = str(request.method or "GET").upper()
+            path = parsed.path or "/"
+            exact = _is_action_mutation_response(response, self._patterns)
+            if not exact and method not in {"POST", "PUT", "PATCH", "DELETE"}:
+                return
+            status = int(response.status)
+            accepted = exact and _server_accepted_mutation(response)
+            self._events.append((method, path, status, exact, accepted))
+        except Exception:
+            return
+
+
 class TikTokVideoController:
     """Opera sobre o único vídeo com maior visibilidade na página Playwright."""
 
     def __init__(self, page: Any, preferred_volume: float = 1.0) -> None:
         self._page = page
         self._preferred_volume = clamp_volume(preferred_volume)
+        self._last_action_network_summary = "rede: diagnóstico ainda não executado"
 
     def next_video(self) -> VideoInfo:
         self.close_comments()
@@ -861,7 +933,8 @@ class TikTokVideoController:
         if state is None:
             raise VideoControlError(
                 "O TikTok não manteve a curtida. Confira se a conta está conectada "
-                "no navegador do aplicativo e reimporte cookies de uma sessão ativa."
+                "no navegador do aplicativo e reimporte cookies de uma sessão ativa. "
+                + self._last_action_network_summary
             )
         return state
 
@@ -880,7 +953,7 @@ class TikTokVideoController:
             raise VideoControlError(
                 "O TikTok não confirmou o favorito na conta. Confira se a conta "
                 "está conectada no navegador do aplicativo e reimporte cookies "
-                "de uma sessão ativa."
+                "de uma sessão ativa. " + self._last_action_network_summary
             )
         return state
 
@@ -1114,6 +1187,7 @@ class TikTokVideoController:
         }"""
 
         raw_handle = None
+        network_probe: _ActionNetworkProbe | None = None
         try:
             raw_handle = self._page.evaluate_handle(target_script, options)
             button = raw_handle.as_element()
@@ -1122,29 +1196,21 @@ class TikTokVideoController:
             before = button.evaluate(state_script, options)
 
             # A interface muda de forma otimista antes que a conta seja alterada.
-            # Em uma página real, exija também a resposta da mutação enviada pelo
-            # próprio TikTok; páginas sintéticas continuam verificadas pelo DOM.
+            # Observe a resposta da mutação para detectar rejeições explícitas.
+            # A ausência do evento é inconclusiva: algumas versões do site fazem
+            # a escrita por uma camada que o listener da página não expõe.
             hostname = (
                 urlsplit(str(getattr(self._page, "url", ""))).hostname or ""
             ).lower()
             require_server_confirmation = hostname == "tiktok.com" or hostname.endswith(
                 ".tiktok.com"
             )
-            server_confirmed: bool | None = None
             if require_server_confirmation and mutation_url_patterns:
-                try:
-                    with self._page.expect_response(
-                        lambda response: _is_action_mutation_response(
-                            response, mutation_url_patterns
-                        ),
-                        timeout=5_000,
-                    ) as response_info:
-                        button.click(timeout=3_000)
-                    server_confirmed = _server_accepted_mutation(response_info.value)
-                except Exception:
-                    server_confirmed = False
-            else:
-                button.click(timeout=3_000)
+                network_probe = _ActionNetworkProbe(
+                    self._page, mutation_url_patterns
+                )
+                network_probe.start()
+            button.click(timeout=3_000)
 
             expected = not before if isinstance(before, bool) else None
             confirmation_options = {**options, "expected": expected}
@@ -1229,12 +1295,18 @@ class TikTokVideoController:
                 stable_handle.dispose()
             if not isinstance(confirmed, bool) or stable is not confirmed:
                 return True, None
-            if require_server_confirmation and server_confirmed is not True:
+            if network_probe is not None:
+                network_probe.stop()
+                self._last_action_network_summary = network_probe.summary()
+            if network_probe is not None and network_probe.rejected:
                 return True, None
             return True, confirmed
         except Exception as exc:
             raise VideoControlError("Não foi possível acionar o controle do vídeo.") from exc
         finally:
+            if network_probe is not None:
+                network_probe.stop()
+                self._last_action_network_summary = network_probe.summary()
             if raw_handle is not None:
                 try:
                     raw_handle.dispose()

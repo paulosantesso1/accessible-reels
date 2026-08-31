@@ -6,6 +6,7 @@ from typing import Callable
 import wx
 
 from tiktok.client import BrowserWorker, WorkerEvent
+from tiktok.browser_extension import LocalBrowserWorker
 from ui.comments_dialog import CommentsDialog
 from ui.nvda_announcer import (
     raise_uia_notification,
@@ -57,7 +58,7 @@ class MainFrame(wx.Frame):
 
     def __init__(self) -> None:
         super().__init__(None, title="Accessible Reels", size=(620, 800))
-        self._worker: BrowserWorker | None = None
+        self._worker: BrowserWorker | LocalBrowserWorker | None = None
         self._closing = False
         self._comments_dialog: CommentsDialog | None = None
 
@@ -77,8 +78,37 @@ class MainFrame(wx.Frame):
         main_sizer.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
         self.open_button = self._button(panel, "Abrir &TikTok", "Abrir TikTok")
+        self.browser_mode = wx.RadioBox(
+            panel,
+            label="Modo do navegador",
+            choices=(
+                "Chromium integrado",
+                "Chrome ou Brave com extensão",
+            ),
+            majorDimension=1,
+            style=wx.RA_SPECIFY_COLS,
+        )
+        self.browser_mode.SetName("Modo do navegador")
+        self.browser_mode.SetSelection(0)
+        self.local_minimized_checkbox = wx.CheckBox(
+            panel, label="Abrir TikTok em &janela minimizada exclusiva"
+        )
+        self.local_minimized_checkbox.SetName(
+            "Abrir TikTok em janela minimizada exclusiva"
+        )
+        self.local_minimized_checkbox.SetValue(True)
+        self.local_minimized_checkbox.Enable(False)
         self.import_button = self._button(
             panel, "&Importar cookies", "Importar cookies de um arquivo JSON ou TXT"
+        )
+        main_sizer.Add(
+            self.browser_mode, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12
+        )
+        main_sizer.Add(
+            self.local_minimized_checkbox,
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            12,
         )
         main_sizer.Add(self.open_button, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
         main_sizer.Add(self.import_button, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
@@ -192,6 +222,7 @@ class MainFrame(wx.Frame):
         panel.SetSizer(main_sizer)
 
         self.open_button.Bind(wx.EVT_BUTTON, self._on_open)
+        self.browser_mode.Bind(wx.EVT_RADIOBOX, self._on_browser_mode_changed)
         self.import_button.Bind(wx.EVT_BUTTON, self._on_import)
         self.next_button.Bind(
             wx.EVT_BUTTON,
@@ -355,6 +386,8 @@ class MainFrame(wx.Frame):
             self._restore_wx_focus()
         if event.kind == "stopped":
             self._worker = None
+            self.browser_mode.Enable(True)
+            self._on_browser_mode_changed(None)
             self.show_browser_checkbox.SetValue(True)
             if self._closing:
                 self.Destroy()
@@ -424,11 +457,19 @@ class MainFrame(wx.Frame):
             else "Não foi possível copiar o link para a área de transferência."
         )
 
-    def _get_worker(self) -> BrowserWorker:
+    def _get_worker(self) -> BrowserWorker | LocalBrowserWorker:
         if self._worker is None or not self._worker.is_alive():
-            profile = Path(__file__).resolve().parents[1] / "data" / "browser_profile"
-            self._worker = BrowserWorker(profile, self._receive_worker_event)
+            if self.browser_mode.GetSelection() == 1:
+                self._worker = LocalBrowserWorker(
+                    self._receive_worker_event,
+                    open_minimized=self.local_minimized_checkbox.GetValue(),
+                )
+            else:
+                profile = Path(__file__).resolve().parents[1] / "data" / "browser_profile"
+                self._worker = BrowserWorker(profile, self._receive_worker_event)
             self._worker.start()
+            self.browser_mode.Enable(False)
+            self.local_minimized_checkbox.Enable(False)
         return self._worker
 
     def _run_video_command(self, method_name: str, pending_message: str) -> None:
@@ -437,8 +478,29 @@ class MainFrame(wx.Frame):
         method()
 
     def _on_open(self, _event: wx.CommandEvent) -> None:
-        self._set_status("abrindo o Chromium e o TikTok...")
+        self._set_status(
+            "conectando à aba autenticada do TikTok..."
+            if self.browser_mode.GetSelection() == 1
+            else "abrindo o Chromium e o TikTok..."
+        )
         self._get_worker().open_tiktok()
+
+    def _on_browser_mode_changed(self, _event: wx.CommandEvent | None) -> None:
+        local = self.browser_mode.GetSelection() == 1
+        self.import_button.Enable(not local)
+        self.local_minimized_checkbox.Enable(local and self._worker is None)
+        self.open_button.SetLabel(
+            "&Conectar à aba do TikTok" if local else "Abrir &TikTok"
+        )
+        self.open_button.SetName(
+            "Conectar à aba autenticada do TikTok" if local else "Abrir TikTok"
+        )
+        self.close_browser_button.SetLabel(
+            "&Desconectar navegador local" if local else "&Fechar navegador"
+        )
+        self.close_browser_button.SetName(
+            "Desconectar navegador local" if local else "Fechar navegador"
+        )
 
     def _on_import(self, _event: wx.CommandEvent) -> None:
         dialog = wx.FileDialog(

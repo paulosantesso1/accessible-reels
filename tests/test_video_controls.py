@@ -11,6 +11,7 @@ from tiktok.video_controls import (
     TikTokSelectors,
     VideoCandidate,
     VideoControlError,
+    _ActionNetworkProbe,
     _is_action_mutation_response,
     _server_accepted_mutation,
     choose_video_candidate,
@@ -23,10 +24,20 @@ from tiktok.video_controls import (
 
 
 class FakeMutationResponse:
-    def __init__(self, url: str, *, ok: bool = True, payload=None) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        ok: bool = True,
+        payload=None,
+        method: str = "POST",
+        status: int = 200,
+    ) -> None:
         self.url = url
         self.ok = ok
         self._payload = payload
+        self.request = type("Request", (), {"method": method})()
+        self.status = status
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -62,6 +73,79 @@ def test_account_mutation_accepts_successful_empty_response_only():
 
     assert _server_accepted_mutation(empty)
     assert not _server_accepted_mutation(failed_http)
+
+
+class FakeNetworkPage:
+    def __init__(self) -> None:
+        self.handler = None
+
+    def on(self, event, handler):
+        assert event == "response"
+        self.handler = handler
+
+    def remove_listener(self, event, handler):
+        assert event == "response"
+        assert handler == self.handler
+        self.handler = None
+
+
+def test_action_network_probe_reports_safe_route_without_query_or_tokens():
+    page = FakeNetworkPage()
+    probe = _ActionNetworkProbe(page, ("/digg/",))
+    probe.start()
+    page.handler(
+        FakeMutationResponse(
+            "https://www.tiktok.com/api/commit/item/digg/?token=SECRET&aweme_id=123",
+            payload={"status_code": 0},
+        )
+    )
+    probe.stop()
+
+    assert probe.confirmed
+    assert not probe.rejected
+    assert probe.summary() == (
+        "rede: POST /api/commit/item/digg/ HTTP 200 (aceita)"
+    )
+    assert "SECRET" not in probe.summary()
+
+
+def test_action_network_probe_distinguishes_unmatched_write_request():
+    page = FakeNetworkPage()
+    probe = _ActionNetworkProbe(page, ("/collect/",))
+    probe.start()
+    page.handler(
+        FakeMutationResponse(
+            "https://www.tiktok.com/api/new-favorite-route/", payload={}
+        )
+    )
+    probe.stop()
+
+    assert not probe.confirmed
+    assert not probe.rejected
+    assert "POST /api/new-favorite-route/ HTTP 200 (não confirmada)" in probe.summary()
+
+
+def test_action_network_probe_distinguishes_absence_from_explicit_rejection():
+    page = FakeNetworkPage()
+    probe = _ActionNetworkProbe(page, ("/collect/",))
+    probe.start()
+
+    assert not probe.confirmed
+    assert not probe.rejected
+    assert probe.summary() == (
+        "rede: nenhuma resposta de escrita do TikTok observada"
+    )
+
+    page.handler(
+        FakeMutationResponse(
+            "https://www.tiktok.com/api/collect/item/",
+            payload={"status_code": 8},
+        )
+    )
+    probe.stop()
+
+    assert not probe.confirmed
+    assert probe.rejected
 
 
 FAKE_FEED_HTML = """

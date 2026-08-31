@@ -4,6 +4,11 @@ Aplicativo desktop para Windows com interface nativa wxPython acessível ao NVDA
 
 O aplicativo abre o TikTok, importa cookies JSON, navega pelos vídeos, controla a reprodução, apresenta autor, descrição e comentários, permite curtir e favoritar e copia o link atual. A publicação de comentários exige confirmação explícita no botão Publicar.
 
+Também existe um modo opcional para usar uma sessão já autenticada no Chrome ou
+Brave. Nesse modo, uma extensão local executa as ações na aba do TikTok e devolve
+os resultados para esta mesma interface acessível; cookies e senhas não são
+copiados para o aplicativo.
+
 ## Requisitos
 
 - Windows 10 ou 11;
@@ -38,6 +43,45 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```powershell
 python main.py
 ```
+
+## Usar a sessão do Chrome ou Brave
+
+1. Abra `chrome://extensions` no Chrome ou `brave://extensions` no Brave.
+2. Ative o **Modo do desenvolvedor**.
+3. Escolha **Carregar sem compactação** e selecione a pasta
+   `browser_extension` deste projeto.
+4. Recarregue qualquer aba do TikTok que já estava aberta.
+5. No Accessible Reels, em **Modo do navegador**, escolha
+   **Chrome ou Brave com extensão** e pressione **Conectar à aba do TikTok**.
+6. Continue usando os botões e atalhos da interface normalmente.
+
+Com a opção de janela minimizada desmarcada, o modo local não abre outro navegador
+nem outra aba: ele mantém e controla a aba já autenticada. Depois de atualizar os
+arquivos da extensão, pressione
+**Recarregar** no cartão da extensão e recarregue também a aba do TikTok.
+Quando a comunicação estiver ativa, o ícone da extensão exibirá o indicador
+verde **ON** e o nome acessível informará “interface conectada”.
+
+Se **Abrir TikTok em janela minimizada exclusiva** estiver marcado, a extensão
+cria e reutiliza uma janela separada do Chrome ou Brave, já minimizada e usando a
+mesma sessão autenticada. Desmarque a opção antes de conectar para controlar uma
+aba que você já abriu. A janela minimizada continua aparecendo na barra de tarefas,
+pois extensões não podem criar janelas de navegador completamente invisíveis.
+
+O Chrome ou Brave pode permanecer aberto ao desconectar ou fechar o Accessible
+Reels. A ponte aceita conexões somente no endereço local `127.0.0.1`; a extensão
+tem permissão somente para páginas do TikTok e para essa ponte local. Se Chrome e
+Brave estiverem abertos ao mesmo tempo com a extensão instalada, use somente um
+deles durante a sessão para evitar que os dois tentem receber o mesmo comando.
+
+A extensão também solicita a permissão **Depurador**. Ela é usada apenas durante
+o instante de cada clique para o navegador produzir uma interação real, aceita
+pelo TikTok; a conexão é removida logo após o clique. O aplicativo não abre o
+DevTools, não lê cookies e não envia dados para servidores próprios.
+
+Para voltar ao comportamento original, desconecte o navegador local e selecione
+**Chromium integrado**. A importação de cookies permanece disponível apenas nesse
+modo.
 
 O perfil do navegador é criado automaticamente em `data/browser_profile`. Para importar uma sessão, use um `.json` contendo uma lista de cookies ou um `.txt` no formato Netscape; arquivos `.txt` contendo JSON também continuam aceitos. O arquivo escolhido não é alterado, movido ou removido.
 
