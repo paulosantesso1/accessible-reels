@@ -530,7 +530,10 @@ class MainFrame(wx.Frame):
             self._set_status("o navegador já está fechado.")
             return
         self._set_status("fechando o navegador...")
-        self._worker.shutdown()
+        if isinstance(self._worker, LocalBrowserWorker):
+            self._worker.disconnect()
+        else:
+            self._worker.shutdown()
 
     def _on_close_window(self, event: wx.CloseEvent) -> None:
         if self._closing:

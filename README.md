@@ -53,7 +53,8 @@ python main.py
 4. Recarregue qualquer aba do TikTok que já estava aberta.
 5. No Accessible Reels, em **Modo do navegador**, escolha
    **Chrome ou Brave com extensão** e pressione **Conectar à aba do TikTok**.
-6. Continue usando os botões e atalhos da interface normalmente.
+6. Continue usando os botões e atalhos normalmente. Os atalhos de vídeo também
+   funcionam quando o foco está na página do TikTok no Chrome ou Brave.
 
 Com a opção de janela minimizada desmarcada, o modo local não abre outro navegador
 nem outra aba: ele mantém e controla a aba já autenticada. Depois de atualizar os
@@ -62,14 +63,21 @@ arquivos da extensão, pressione
 Quando a comunicação estiver ativa, o ícone da extensão exibirá o indicador
 verde **ON** e o nome acessível informará “interface conectada”.
 
+Se a interface disser que a extensão não respondeu, pressione uma vez o ícone
+**Accessible Reels** na barra do navegador. Ele abre ou ativa uma aba do TikTok,
+o que também desperta a extensão; depois pressione **Conectar à aba do TikTok**
+novamente.
+
 Se **Abrir TikTok em janela minimizada exclusiva** estiver marcado, a extensão
 cria e reutiliza uma janela separada do Chrome ou Brave, já minimizada e usando a
 mesma sessão autenticada. Desmarque a opção antes de conectar para controlar uma
 aba que você já abriu. A janela minimizada continua aparecendo na barra de tarefas,
 pois extensões não podem criar janelas de navegador completamente invisíveis.
 
-O Chrome ou Brave pode permanecer aberto ao desconectar ou fechar o Accessible
-Reels. A ponte aceita conexões somente no endereço local `127.0.0.1`; a extensão
+Ao usar **Desconectar navegador local**, a aba do TikTok permanece aberta. Ao
+fechar o Accessible Reels pelo botão Sair, pelo atalho ou pelo X, a extensão fecha
+somente a aba do TikTok que estava sendo controlada; as demais abas e o Chrome ou
+Brave permanecem abertos. A ponte aceita conexões somente no endereço local `127.0.0.1`; a extensão
 tem permissão somente para páginas do TikTok e para essa ponte local. Se Chrome e
 Brave estiverem abertos ao mesmo tempo com a extensão instalada, use somente um
 deles durante a sessão para evitar que os dois tentem receber o mesmo comando.

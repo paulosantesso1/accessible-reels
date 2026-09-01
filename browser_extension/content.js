@@ -15,45 +15,92 @@
   let preferredMuted = null;
   const applyingAudio = new WeakSet();
   const watchedVideos = new WeakSet();
+  const audioScheduleGeneration = new WeakMap();
 
   function applyAudioPreference(video) {
     if (!video || preferredVolume === null || applyingAudio.has(video)) return;
     applyingAudio.add(video);
     try {
-      video.volume = Math.max(0, Math.min(1, preferredVolume));
+      const targetVolume = Math.max(0, Math.min(1, preferredVolume));
+      if (Math.abs(video.volume - targetVolume) > 0.005) video.volume = targetVolume;
       if (preferredMuted === false) {
         video.defaultMuted = false;
         video.removeAttribute("muted");
-        video.muted = false;
+        if (video.muted) video.muted = false;
       } else if (preferredMuted === true) {
-        video.muted = true;
+        if (!video.muted) video.muted = true;
       }
     } finally {
-      setTimeout(() => applyingAudio.delete(video), 0);
+      // volumechange is queued by the browser. Releasing the guard now lets a
+      // later TikTok reset be corrected instead of being mistaken for our own.
+      applyingAudio.delete(video);
     }
+  }
+
+  function scheduleAudioPreference(video) {
+    if (!video || preferredVolume === null) return;
+    const generation = (audioScheduleGeneration.get(video) || 0) + 1;
+    audioScheduleGeneration.set(video, generation);
+    for (const delay of [0, 40, 120, 350, 900, 1800, 3200]) {
+      setTimeout(() => {
+        if (audioScheduleGeneration.get(video) !== generation) return;
+        applyAudioPreference(video);
+      }, delay);
+    }
+  }
+
+  function stabilizeAudio() {
+    if (preferredVolume === null) return;
+    document.querySelectorAll("video").forEach(video => {
+      applyAudioPreference(video);
+      scheduleAudioPreference(video);
+    });
   }
 
   function watchVideo(video) {
     if (!video || watchedVideos.has(video)) return;
     watchedVideos.add(video);
     video.addEventListener("volumechange", () => {
-      if (preferredVolume === null || applyingAudio.has(video)) return;
+      if (preferredVolume === null) return;
       const wrongVolume = Math.abs(video.volume - preferredVolume) > 0.005;
       const wrongMute = preferredMuted !== null && video.muted !== preferredMuted;
-      if (wrongVolume || wrongMute) queueMicrotask(() => applyAudioPreference(video));
+      if (wrongVolume || wrongMute) applyAudioPreference(video);
     });
-    applyAudioPreference(video);
+    for (const eventName of ["play", "playing", "loadedmetadata", "canplay", "emptied"]) {
+      video.addEventListener(eventName, () => scheduleAudioPreference(video));
+    }
+    scheduleAudioPreference(video);
   }
 
   function watchAllVideos() {
     document.querySelectorAll("video").forEach(watchVideo);
   }
 
-  new MutationObserver(watchAllVideos).observe(document.documentElement, {
+  new MutationObserver(records => {
+    for (const record of records) {
+      if (record.type === "attributes" && record.target.tagName === "VIDEO") {
+        watchVideo(record.target);
+        scheduleAudioPreference(record.target);
+      }
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element)) continue;
+        if (node.tagName === "VIDEO") watchVideo(node);
+        node.querySelectorAll("video").forEach(watchVideo);
+      }
+    }
+  }).observe(document.documentElement, {
     childList: true,
-    subtree: true
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["muted", "src"]
   });
   watchAllVideos();
+  // Events normally catch TikTok resets in the same task. This inexpensive
+  // fallback repairs silent resets that the site performs without an event.
+  setInterval(() => {
+    if (preferredVolume === null) return;
+    document.querySelectorAll("video").forEach(applyAudioPreference);
+  }, 250);
   const visible = element => {
     if (!element) return false;
     const style = getComputedStyle(element);
@@ -124,6 +171,59 @@
 
   function normalizedText(value) {
     return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  }
+
+  function shortcutAction(event) {
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altGraphKey) return null;
+    const key = event.key.toLowerCase();
+    if (event.altKey && event.shiftKey) {
+      if (event.key === "ArrowUp") return "volume_up";
+      if (event.key === "ArrowDown") return "volume_down";
+      if (key === "m") return "toggle_mute";
+      return null;
+    }
+    if (event.altKey) {
+      if (event.key === "ArrowDown") return "next";
+      if (event.key === "ArrowUp") return "previous";
+      return ({
+        p: "toggle",
+        a: "author",
+        d: "description",
+        c: "copy_link",
+        f12: "diagnostics"
+      })[key] || null;
+    }
+    if (event.shiftKey) return null;
+    if (event.key === "F5") return "refresh_info";
+    return ({c: "comments", l: "toggle_like", f: "toggle_favorite"})[key] || null;
+  }
+
+  function editableTarget(target) {
+    return target instanceof Element && Boolean(target.closest(
+      "input, textarea, select, [contenteditable=true], [role=textbox]"
+    ));
+  }
+
+  function announceShortcut(message) {
+    let status = document.getElementById("accessible-reels-shortcut-status");
+    if (!status) {
+      status = document.createElement("div");
+      status.id = "accessible-reels-shortcut-status";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "assertive");
+      status.setAttribute("aria-atomic", "true");
+      Object.assign(status.style, {
+        position: "fixed",
+        width: "1px",
+        height: "1px",
+        overflow: "hidden",
+        clipPath: "inset(50%)",
+        whiteSpace: "nowrap"
+      });
+      (document.body || document.documentElement).appendChild(status);
+    }
+    status.textContent = "";
+    setTimeout(() => { status.textContent = message; }, 0);
   }
 
   function snapshot() {
@@ -241,17 +341,24 @@
       return snapshot();
     }
     if (action === "next" || action === "previous") {
+      stabilizeAudio();
       const selectors = action === "next" ?
         ["button[data-e2e=feed-navigation-next]", "button[data-e2e=arrow-down]"] :
         ["button[data-e2e=feed-navigation-prev]", "button[data-e2e=arrow-up]"];
       const button = [...document.querySelectorAll(selectors.join(","))].find(visible);
       if (button) await trustedClick(button);
       else window.scrollBy({top: (action === "next" ? 1 : -1) * innerHeight * 0.9, behavior: "smooth"});
+      stabilizeAudio();
       await sleep(1400);
+      stabilizeAudio();
       return snapshot();
     }
     if (action === "toggle") {
-      if (video.paused) await video.play(); else video.pause();
+      if (video.paused) {
+        applyAudioPreference(video);
+        await video.play();
+        scheduleAudioPreference(video);
+      } else video.pause();
       return {paused: video.paused};
     }
     if (action === "volume_up" || action === "volume_down") {
@@ -260,17 +367,18 @@
         preferredVolume + (action === "volume_up" ? 0.1 : -0.1)));
       preferredMuted = false;
       watchVideo(video);
-      applyAudioPreference(video);
+      stabilizeAudio();
       await sleep(100);
       return {volume: preferredVolume};
     }
     if (action === "toggle_mute") {
       if (preferredVolume === null) preferredVolume = video.volume;
-      const effectivelyMuted = video.muted || video.volume === 0;
+      const effectivelyMuted = preferredMuted === null ?
+        (video.muted || video.volume === 0) : preferredMuted;
       preferredMuted = !effectivelyMuted;
       if (effectivelyMuted && preferredVolume === 0) preferredVolume = 0.1;
       watchVideo(video);
-      applyAudioPreference(video);
+      stabilizeAudio();
       await sleep(100);
       return {muted: preferredMuted};
     }
@@ -328,6 +436,29 @@
     }
     throw new Error("Comando desconhecido recebido pela extensão.");
   }
+
+  document.addEventListener("keydown", event => {
+    const action = shortcutAction(event);
+    if (!action) return;
+    if (editableTarget(event.target) && !event.altKey) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    execute(action)
+      .then(async result => {
+        if (action === "author") announceShortcut(`Autor: ${result.author}.`);
+        else if (action === "description") announceShortcut(`Descrição: ${result.description}`);
+        else if (action === "copy_link") {
+          if (!result.link) throw new Error("Não foi possível identificar o link do vídeo atual.");
+          await navigator.clipboard.writeText(result.link);
+          announceShortcut("Link copiado.");
+        }
+        else if (action === "diagnostics") announceShortcut(result.message);
+        else announceShortcut("Comando executado.");
+      })
+      .catch(error => announceShortcut(
+        `Erro: ${error && error.message ? error.message : String(error)}`
+      ));
+  }, true);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type !== "accessible-reels-command") return false;

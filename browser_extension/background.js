@@ -47,6 +47,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function bridgeFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Accessible-Reels-Bridge", BRIDGE_TOKEN);
+  // Chromium 152 omits Origin on extension service-worker requests. Send the
+  // extension identity explicitly so the local bridge can authenticate it.
+  headers.set("X-Accessible-Reels-Extension", chrome.runtime.id);
   return fetch(`${BRIDGE_URL}${path}`, {...options, headers, cache: "no-store"});
 }
 
@@ -66,7 +69,17 @@ async function findTikTokTab() {
   if (!tabs.length) throw new Error("Abra uma aba do TikTok no Chrome ou Brave.");
   tabs.sort((a, b) => Number(b.active) - Number(a.active) ||
     (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  await chrome.storage.local.set({accessibleReelsTabId: tabs[0].id});
   return tabs[0];
+}
+
+async function closeTikTokTab() {
+  const tab = await findTikTokTab();
+  await chrome.tabs.remove(tab.id);
+  await chrome.storage.local.remove([
+    "accessibleReelsTabId", "accessibleReelsWindowId"
+  ]);
+  return {ok: true};
 }
 
 async function openMinimizedTikTok() {
@@ -98,8 +111,33 @@ async function openMinimizedTikTok() {
   return {ok: true, tabId: tab.id};
 }
 
+chrome.action.onClicked.addListener(async tab => {
+  try {
+    if (tab && tab.id && tab.url && /^https:\/\/([^/]+\.)?tiktok\.com\//i.test(tab.url)) {
+      await chrome.storage.local.set({accessibleReelsTabId: tab.id});
+    } else {
+      const existing = await chrome.tabs.query({url: ["https://*.tiktok.com/*"]});
+      if (existing.length) {
+        await chrome.tabs.update(existing[0].id, {active: true});
+        await chrome.windows.update(existing[0].windowId, {focused: true});
+      } else {
+        await chrome.tabs.create({url: "https://www.tiktok.com/", active: true});
+      }
+    }
+    await chrome.action.setTitle({
+      title: "Accessible Reels: TikTok ativado; conecte pela interface"
+    });
+    pollOnce();
+  } catch (error) {
+    await chrome.action.setTitle({
+      title: "Accessible Reels: não foi possível abrir o TikTok"
+    }).catch(() => {});
+  }
+});
+
 async function runCommand(command) {
   if (command.action === "open_minimized") return openMinimizedTikTok();
+  if (command.action === "close_tiktok") return closeTikTokTab();
   const tab = await findTikTokTab();
   try {
     const result = await chrome.tabs.sendMessage(tab.id, {

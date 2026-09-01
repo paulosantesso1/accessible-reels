@@ -16,6 +16,7 @@ from tiktok.video_controls import VideoControlError, clamp_volume, volume_messag
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 43119
 BRIDGE_HEADER = "X-Accessible-Reels-Bridge"
+EXTENSION_HEADER = "X-Accessible-Reels-Extension"
 BRIDGE_TOKEN = "ar-local-tiktok-bridge-v1-8f24c6d1"
 @dataclass
 class _PendingCommand:
@@ -53,10 +54,22 @@ class BrowserExtensionBridge:
                     return origin
                 return None
 
+            def _extension_id(self) -> str | None:
+                extension_id = self.headers.get(EXTENSION_HEADER, "")
+                if re.fullmatch(r"[a-p]{32}", extension_id):
+                    return extension_id
+                return None
+
             def _authorized(self) -> bool:
+                extension_id = self._extension_id()
+                origin = self.headers.get("Origin", "")
                 return (
-                    self._extension_origin() is not None
+                    extension_id is not None
                     and self.headers.get(BRIDGE_HEADER) == BRIDGE_TOKEN
+                    and (
+                        not origin
+                        or origin == f"chrome-extension://{extension_id}"
+                    )
                 )
 
             def _cors_headers(self) -> None:
@@ -67,7 +80,7 @@ class BrowserExtensionBridge:
                 self.send_header("Vary", "Origin")
                 self.send_header(
                     "Access-Control-Allow-Headers",
-                    f"Content-Type, {BRIDGE_HEADER}",
+                    f"Content-Type, {BRIDGE_HEADER}, {EXTENSION_HEADER}",
                 )
 
             def _json(self, status: int, payload: dict[str, Any]) -> None:
@@ -282,8 +295,13 @@ class LocalBrowserWorker(threading.Thread):
     def show_browser(self, _visible: bool) -> None:
         return
 
+    def disconnect(self) -> None:
+        """Encerra a ponte sem fechar a aba controlada."""
+        self._enqueue("shutdown", False)
+
     def shutdown(self) -> None:
-        self._enqueue("shutdown")
+        """Encerra a ponte e fecha a aba controlada ao sair do aplicativo."""
+        self._enqueue("shutdown", True)
 
     def _enqueue(self, action: str, argument: Any = None) -> None:
         self._commands.put(BrowserCommand(action, argument))
@@ -293,6 +311,13 @@ class LocalBrowserWorker(threading.Thread):
             while True:
                 command = self._commands.get()
                 if command.action == "shutdown":
+                    if command.argument:
+                        try:
+                            self._bridge.execute("close_tiktok", timeout=4)
+                        except VideoControlError:
+                            # O aplicativo deve conseguir encerrar mesmo se o navegador
+                            # ou a extensão já tiverem sido fechados pelo usuário.
+                            pass
                     break
                 try:
                     self._execute(command)
