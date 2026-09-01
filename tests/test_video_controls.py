@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import inspect
 
 import pytest
 
@@ -502,6 +503,11 @@ def test_current_tiktok_navigation_selectors_are_preferred():
     assert TikTokSelectors.PREVIOUS_BUTTONS[0] == (
         'button[data-e2e="feed-navigation-prev"]'
     )
+
+
+def test_navigation_scopes_button_click_to_active_video_before_global_fallback():
+    source = inspect.getsource(TikTokVideoController._navigate)
+    assert "_click_active_action(selectors)" in source
 
 
 def test_navigation_confirmation_observes_dom_identity_and_media_reload():

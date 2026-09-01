@@ -6,14 +6,19 @@ import threading
 import urllib.error
 import urllib.request
 
+import pytest
+
 from tiktok.browser_extension import (
     BRIDGE_HEADER,
     BRIDGE_TOKEN,
     EXTENSION_HEADER,
+    MINIMUM_EXTENSION_VERSION,
     BrowserExtensionBridge,
     LocalBrowserWorker,
+    _extension_version,
 )
 from tiktok.client import BrowserCommand
+from tiktok.video_controls import VideoControlError
 
 
 EXTENSION_ORIGIN = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -179,6 +184,12 @@ def test_browser_content_script_registers_accessible_page_shortcuts():
     assert 'setAttribute("aria-live", "assertive")' in script
 
 
+def test_browser_navigation_scopes_controls_to_the_active_video_first():
+    script = (EXTENSION_DIR / "content.js").read_text(encoding="utf-8")
+    navigation = script.split('if (action === "next" || action === "previous")', 1)[1]
+    assert "findNearVideo(selectors)" in navigation.split('if (action === "toggle")', 1)[0]
+
+
 def test_browser_content_script_stabilizes_audio_during_video_transitions():
     script = (EXTENSION_DIR / "content.js").read_text(encoding="utf-8")
     assert "scheduleAudioPreference" in script
@@ -237,6 +248,51 @@ def test_extension_search_navigates_collects_and_validates_results():
     assert 'command.action === "open_search_result"' in background
     assert "function collectSearchResults()" in content
     assert 'action === "collect_search_results"' in content
+
+
+def test_extension_reports_its_version_before_dispatching_tab_commands():
+    background = (EXTENSION_DIR / "background.js").read_text(encoding="utf-8")
+    assert 'command.action === "extension_info"' in background
+    assert "chrome.runtime.getManifest().version" in background
+
+
+def test_extension_version_parser_accepts_only_complete_numeric_versions():
+    assert _extension_version("1.2.0") == (1, 2, 0)
+    assert _extension_version("1.2") is None
+    assert _extension_version("versão 1.2.0") is None
+
+
+def test_packaged_extension_meets_the_version_required_by_the_application():
+    manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8"))
+    assert _extension_version(manifest["version"]) >= MINIMUM_EXTENSION_VERSION
+
+
+def test_local_worker_rejects_extension_without_search_support():
+    worker = LocalBrowserWorker(lambda _event: None, open_minimized=False)
+
+    class OldExtensionBridge:
+        def execute(self, action, argument=None, timeout=12):
+            assert (action, argument, timeout) == ("extension_info", None, 12)
+            return {"ok": True, "version": "1.1.4"}
+
+    worker._bridge = OldExtensionBridge()
+    with pytest.raises(VideoControlError, match="desatualizada.*Recarregar"):
+        worker._verify_extension_version()
+
+
+def test_local_worker_translates_old_unknown_command_response():
+    worker = LocalBrowserWorker(lambda _event: None, open_minimized=False)
+
+    class OldExtensionBridge:
+        def execute(self, _action, _argument=None, timeout=12):
+            raise VideoControlError(
+                "Recarregue a aba do TikTok para ativar a extensão. "
+                "Comando desconhecido recebido pela extensão."
+            )
+
+    worker._bridge = OldExtensionBridge()
+    with pytest.raises(VideoControlError, match="extensão carregada está desatualizada"):
+        worker._verify_extension_version()
 
 
 def test_local_worker_returns_safe_search_results_and_uses_extended_timeout():

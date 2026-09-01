@@ -19,6 +19,19 @@ BRIDGE_PORT = 43119
 BRIDGE_HEADER = "X-Accessible-Reels-Bridge"
 EXTENSION_HEADER = "X-Accessible-Reels-Extension"
 BRIDGE_TOKEN = "ar-local-tiktok-bridge-v1-8f24c6d1"
+
+MINIMUM_EXTENSION_VERSION = (1, 2, 1)
+
+
+def _extension_version(value: Any) -> tuple[int, int, int] | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value.strip())
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
 @dataclass
 class _PendingCommand:
     identifier: str
@@ -350,6 +363,7 @@ class LocalBrowserWorker(threading.Thread):
             self._bridge.start()
             if self._open_minimized:
                 self._bridge.execute("open_minimized", timeout=15)
+            self._verify_extension_version()
             self._notify(
                 WorkerEvent(
                     "status",
@@ -452,6 +466,35 @@ class LocalBrowserWorker(threading.Thread):
                     "announcement",
                     str(result.get("message") or "Extensão conectada ao TikTok."),
                 )
+            )
+
+    def _verify_extension_version(self) -> None:
+        try:
+            result = self._bridge.execute("extension_info", timeout=12)
+        except VideoControlError as exc:
+            detail = str(exc).lower()
+            if not any(
+                marker in detail
+                for marker in (
+                    "comando desconhecido",
+                    "recarregue a aba do tiktok para ativar a extensão",
+                )
+            ):
+                raise
+            raise VideoControlError(
+                "A extensão carregada está desatualizada. Abra a página de extensões "
+                "do Chrome ou Brave, pressione Recarregar no Accessible Reels e "
+                "recarregue também a aba do TikTok."
+            ) from exc
+        version = _extension_version(result.get("version"))
+        if version is None or version < MINIMUM_EXTENSION_VERSION:
+            found = str(result.get("version") or "desconhecida")
+            required = ".".join(str(part) for part in MINIMUM_EXTENSION_VERSION)
+            raise VideoControlError(
+                f"A extensão carregada está desatualizada (versão {found}; mínima "
+                f"{required}). Abra a página de extensões do Chrome ou Brave, "
+                "pressione Recarregar no Accessible Reels e recarregue também a aba "
+                "do TikTok."
             )
 
     def _notify(self, event: WorkerEvent) -> None:

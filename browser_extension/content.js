@@ -403,7 +403,11 @@
       const selectors = action === "next" ?
         ["button[data-e2e=feed-navigation-next]", "button[data-e2e=arrow-down]"] :
         ["button[data-e2e=feed-navigation-prev]", "button[data-e2e=arrow-up]"];
-      const button = [...document.querySelectorAll(selectors.join(","))].find(visible);
+      // O TikTok mantém controles de vários itens no DOM. Escolher o primeiro
+      // botão visível globalmente pode acionar o item errado (e fazer “anterior”
+      // parecer outro “próximo”). Primeiro restringimos ao vídeo ativo.
+      const button = findNearVideo(selectors) ||
+        [...document.querySelectorAll(selectors.join(","))].find(visible);
       if (button) await trustedClick(button);
       else window.scrollBy({top: (action === "next" ? 1 : -1) * innerHeight * 0.9, behavior: "smooth"});
       stabilizeAudio();

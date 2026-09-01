@@ -168,6 +168,9 @@ chrome.action.onClicked.addListener(async tab => {
 });
 
 async function runCommand(command) {
+  if (command.action === "extension_info") {
+    return {ok: true, version: chrome.runtime.getManifest().version};
+  }
   if (command.action === "open_minimized") return openMinimizedTikTok();
   if (command.action === "close_tiktok") return closeTikTokTab();
   const tab = await findTikTokTab();

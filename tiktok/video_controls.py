@@ -984,10 +984,15 @@ class TikTokVideoController:
         before = self._signature()
         selectors = list(button_selectors)
         try:
-            button = self._first_visible(selectors)
-            if button is not None:
+            # Há controles de navegação de vários itens montados ao mesmo
+            # tempo no feed. Priorize o controle no ancestral do vídeo ativo;
+            # procurar globalmente primeiro pode fazer “anterior” clicar no
+            # botão “próximo” de outro item.
+            clicked_active = self._click_active_action(selectors)
+            button = None if clicked_active else self._first_visible(selectors)
+            if not clicked_active and button is not None:
                 button.click()
-            else:
+            elif not clicked_active:
                 viewport_height = self._page.evaluate(
                     "() => Math.max(document.documentElement.clientHeight, innerHeight || 0, 600)"
                 )
