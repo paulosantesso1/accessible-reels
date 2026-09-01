@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Accessible Reels — ponte local",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "description": "Permite que a interface Accessible Reels controle a aba autenticada do TikTok.",
   "permissions": ["tabs", "debugger", "storage"],
   "host_permissions": [
@@ -14,8 +14,14 @@
   "content_scripts": [
     {
       "matches": ["https://*.tiktok.com/*"],
+      "js": ["audio_guard.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://*.tiktok.com/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "action": {

@@ -8,6 +8,7 @@ import wx
 from tiktok.client import BrowserWorker, WorkerEvent
 from tiktok.browser_extension import LocalBrowserWorker
 from ui.comments_dialog import CommentsDialog
+from ui.search_dialog import SearchDialog
 from ui.nvda_announcer import (
     raise_uia_notification,
     speak_with_accessible_output,
@@ -23,6 +24,7 @@ ACCELERATOR_SPECS = (
     ("read_description", wx.ACCEL_ALT, ord("D")),
     ("copy_link", wx.ACCEL_ALT, ord("C")),
     ("refresh_info", wx.ACCEL_NORMAL, wx.WXK_F5),
+    ("search", wx.ACCEL_ALT, ord("E")),
     ("exit", wx.ACCEL_ALT, ord("S")),
     ("volume_up", wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_UP),
     ("volume_down", wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_DOWN),
@@ -42,6 +44,7 @@ SHORTCUT_MESSAGES = {
     "read_description": "Comando recebido: ler descrição.",
     "copy_link": "Comando recebido: copiar link.",
     "refresh_info": "Comando recebido: atualizar informações.",
+    "search": "Abrindo pesquisa de vídeos.",
     "exit": "Comando recebido: sair.",
     "volume_up": "Comando recebido: aumentar volume.",
     "volume_down": "Comando recebido: diminuir volume.",
@@ -61,6 +64,7 @@ class MainFrame(wx.Frame):
         self._worker: BrowserWorker | LocalBrowserWorker | None = None
         self._closing = False
         self._comments_dialog: CommentsDialog | None = None
+        self._search_dialog: SearchDialog | None = None
 
         panel = wx.Panel(self)
         main_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -150,6 +154,9 @@ class MainFrame(wx.Frame):
         )
 
         self.next_button = self._button(panel, "Próximo vídeo", "Próximo vídeo")
+        self.search_button = self._button(
+            panel, "P&esquisar vídeos", "Pesquisar vídeos, atalho Alt mais E"
+        )
         self.previous_button = self._button(panel, "Vídeo anterior", "Vídeo anterior")
         self.toggle_button = self._button(
             panel, "Reproduzir ou &pausar", "Reproduzir ou pausar o vídeo atual"
@@ -187,6 +194,7 @@ class MainFrame(wx.Frame):
         video_sizer.AddGrowableCol(0, 1)
         video_sizer.AddGrowableCol(1, 1)
         for button in (
+            self.search_button,
             self.next_button,
             self.previous_button,
             self.toggle_button,
@@ -228,6 +236,7 @@ class MainFrame(wx.Frame):
             wx.EVT_BUTTON,
             lambda _event: self._run_video_command("next_video", "carregando próximo vídeo..."),
         )
+        self.search_button.Bind(wx.EVT_BUTTON, lambda _event: self._show_search())
         self.previous_button.Bind(
             wx.EVT_BUTTON,
             lambda _event: self._run_video_command(
@@ -339,6 +348,10 @@ class MainFrame(wx.Frame):
             self._set_status(message)
             self._get_worker().diagnostics()
             return
+        if action == "search":
+            self._set_status(message)
+            self._show_search()
+            return
         self._run_video_command(action, message)
 
     def _set_status(self, message: str) -> None:
@@ -378,7 +391,14 @@ class MainFrame(wx.Frame):
         elif event.kind == "comments":
             self._show_comments(event.comments or ())
             self._set_status(event.message)
+        elif event.kind == "search_results":
+            if self._search_dialog is not None:
+                self._search_dialog.search_finished()
+                self._search_dialog.update_results(event.search_results or ())
+            self._announce_accessible(event.message)
         elif event.kind in {"announcement", "error"}:
+            if self._search_dialog is not None:
+                self._search_dialog.search_finished()
             self._announce_accessible(event.message)
         else:
             self._set_status(event.message)
@@ -394,14 +414,12 @@ class MainFrame(wx.Frame):
 
     def _restore_wx_focus(self) -> None:
         focused = wx.Window.FindFocus()
-        if (
-            focused is not None
-            and self._comments_dialog is not None
-            and wx.GetTopLevelParent(focused) is self._comments_dialog
-        ):
-            self._comments_dialog.Raise()
-            wx.CallAfter(focused.SetFocus)
-            return
+        if focused is not None:
+            for dialog in (self._comments_dialog, self._search_dialog):
+                if dialog is not None and wx.GetTopLevelParent(focused) is dialog:
+                    dialog.Raise()
+                    wx.CallAfter(focused.SetFocus)
+                    return
         self.Raise()
         if focused is not None and wx.GetTopLevelParent(focused) is self:
             wx.CallAfter(focused.SetFocus)
@@ -430,6 +448,30 @@ class MainFrame(wx.Frame):
         self._comments_dialog = None
         if self._worker is not None and self._worker.is_alive():
             self._worker.close_comments()
+
+    def _show_search(self) -> None:
+        if self._search_dialog is not None:
+            wx.CallAfter(self._search_dialog.focus_query)
+            return
+        self._search_dialog = SearchDialog(
+            self,
+            self._search_videos,
+            self._open_search_result,
+            self._search_closed,
+        )
+        self._search_dialog.Show()
+        wx.CallAfter(self._search_dialog.focus_query)
+
+    def _search_videos(self, query: str) -> None:
+        self._set_status(f"pesquisando por {query}...")
+        self._get_worker().search(query)
+
+    def _open_search_result(self, url: str) -> None:
+        self._set_status("abrindo vídeo selecionado...")
+        self._get_worker().open_search_result(url)
+
+    def _search_closed(self) -> None:
+        self._search_dialog = None
 
     def _copy_to_clipboard(self, link: str | None) -> None:
         if not link or "/video/" not in link:

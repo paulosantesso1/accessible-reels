@@ -17,6 +17,13 @@ from tiktok.cookie_importer import (
     normalized_cookie_domain,
 )
 from tiktok.preferences import VolumePreferences
+from tiktok.search import (
+    SEARCH_RESULTS_SCRIPT,
+    SearchResult,
+    normalize_search_results,
+    search_url,
+    validate_search_result_url,
+)
 from tiktok.video_controls import (
     TikTokVideoController,
     VideoControlError,
@@ -45,6 +52,7 @@ class WorkerEvent:
     link: str | None = None
     browser_visible: bool | None = None
     comments: tuple[str, ...] | None = None
+    search_results: tuple[SearchResult, ...] | None = None
 
 
 WorkerCallback = Callable[[WorkerEvent], None]
@@ -60,6 +68,8 @@ COMMAND_NAMES = {
     "description": "ler descrição",
     "copy_link": "copiar link",
     "refresh_info": "atualizar informações",
+    "search": "pesquisar vídeos",
+    "open_search_result": "abrir resultado da pesquisa",
     "volume_up": "aumentar volume",
     "volume_down": "diminuir volume",
     "toggle_mute": "alternar mudo",
@@ -83,6 +93,8 @@ COMMAND_STAGES = {
     "description": "leitura do vídeo ativo",
     "copy_link": "identificação do link",
     "refresh_info": "leitura do vídeo ativo",
+    "search": "carregamento dos resultados",
+    "open_search_result": "abertura do vídeo selecionado",
     "volume_up": "controle de volume JavaScript",
     "volume_down": "controle de volume JavaScript",
     "toggle_mute": "controle de volume JavaScript",
@@ -148,6 +160,12 @@ class BrowserWorker(threading.Thread):
 
     def refresh_info(self) -> None:
         self._enqueue("refresh_info")
+
+    def search(self, query: str) -> None:
+        self._enqueue("search", query)
+
+    def open_search_result(self, url: str) -> None:
+        self._enqueue("open_search_result", url)
 
     def volume_up(self) -> None:
         self._enqueue("volume_up")
@@ -219,6 +237,12 @@ class BrowserWorker(threading.Thread):
             return
         if command.action == "diagnostics":
             self._publish_diagnostics()
+            return
+        if command.action == "search":
+            self._search_videos(str(command.argument or ""))
+            return
+        if command.action == "open_search_result":
+            self._open_search_result(command.argument)
             return
 
         controller = self._video_controller()
@@ -311,6 +335,36 @@ class BrowserWorker(threading.Thread):
         self._volume = controller.set_volume(clamp_volume(target))
         self._preferences.save(self._volume)
         self._notify(WorkerEvent("status", volume_message(self._volume)))
+
+    def _search_videos(self, query: str) -> None:
+        page = self._active_page()
+        page.goto(search_url(query), wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector('a[href*="/video/"]', timeout=10_000)
+        except Exception:
+            # Uma pesquisa válida também pode terminar sem nenhum resultado.
+            pass
+        results = normalize_search_results(page.evaluate(SEARCH_RESULTS_SCRIPT))
+        count = len(results)
+        self._notify(
+            WorkerEvent(
+                "search_results",
+                f"Pesquisa concluída: {count} resultado{'s' if count != 1 else ''}.",
+                search_results=results,
+            )
+        )
+
+    def _open_search_result(self, value: Any) -> None:
+        page = self._active_page()
+        page.goto(validate_search_result_url(value), wait_until="domcontentloaded")
+        page.bring_to_front()
+        try:
+            page.wait_for_selector("video", timeout=10_000)
+        except Exception:
+            pass
+        controller = self._video_controller()
+        controller.install_volume_preference()
+        self._publish_info(controller.get_info(), "Vídeo da pesquisa aberto.")
 
     def _report_failure(
         self, command: BrowserCommand, exc: Exception, *, trusted_message: bool

@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from tiktok.client import BrowserCommand, WorkerEvent
+from tiktok.search import normalize_search_results, validate_search_result_url
 from tiktok.video_controls import VideoControlError, clamp_volume, volume_message
 
 
@@ -265,6 +266,12 @@ class LocalBrowserWorker(threading.Thread):
     def refresh_info(self) -> None:
         self._enqueue("refresh_info")
 
+    def search(self, query: str) -> None:
+        self._enqueue("search", query)
+
+    def open_search_result(self, url: str) -> None:
+        self._enqueue("open_search_result", validate_search_result_url(url))
+
     def volume_up(self) -> None:
         self._enqueue("volume_up")
 
@@ -353,13 +360,26 @@ class LocalBrowserWorker(threading.Thread):
                 )
             )
             return
-        result = self._bridge.execute(command.action, command.argument)
+        timeout = 25 if command.action in {"search", "open_search_result"} else 12
+        result = self._bridge.execute(command.action, command.argument, timeout=timeout)
         action = command.action
-        if action in {"next", "previous", "refresh_info"}:
+        if action == "search":
+            results = normalize_search_results(result.get("results"))
+            count = len(results)
+            self._notify(
+                WorkerEvent(
+                    "search_results",
+                    f"Pesquisa concluída: {count} resultado{'s' if count != 1 else ''}.",
+                    search_results=results,
+                )
+            )
+        elif action in {"next", "previous", "refresh_info", "open_search_result"}:
             self._notify(
                 WorkerEvent(
                     "video_info",
-                    "Informações do vídeo atualizadas.",
+                    "Vídeo da pesquisa aberto."
+                    if action == "open_search_result"
+                    else "Informações do vídeo atualizadas.",
                     author=str(result.get("author") or "Autor não encontrado"),
                     description=str(result.get("description") or "Descrição não encontrada"),
                 )

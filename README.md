@@ -69,10 +69,11 @@ o que também desperta a extensão; depois pressione **Conectar à aba do TikTok
 novamente.
 
 Se **Abrir TikTok em janela minimizada exclusiva** estiver marcado, a extensão
-cria e reutiliza uma janela separada do Chrome ou Brave, já minimizada e usando a
-mesma sessão autenticada. Desmarque a opção antes de conectar para controlar uma
-aba que você já abriu. A janela minimizada continua aparecendo na barra de tarefas,
-pois extensões não podem criar janelas de navegador completamente invisíveis.
+primeiro procura uma aba do TikTok que já esteja aberta e reutiliza a aba ativa ou
+acessada mais recentemente, minimizando sua janela. Uma nova janela só é criada
+quando não existe nenhuma aba do TikTok. A janela minimizada continua aparecendo
+na barra de tarefas, pois extensões não podem criar janelas de navegador
+completamente invisíveis.
 
 Ao usar **Desconectar navegador local**, a aba do TikTok permanece aberta. Ao
 fechar o Accessible Reels pelo botão Sair, pelo atalho ou pelo X, a extensão fecha
@@ -123,6 +124,7 @@ Se nenhum cookie TikTok for encontrado, nenhum cookie aparecer no contexto ou os
 - `F5`: atualizar autor e descrição;
 - `Alt+Shift+Seta para cima`: aumentar o volume em 10%;
 - `Alt+Shift+Seta para baixo`: diminuir o volume em 10%;
+- `Alt+E`: abrir a pesquisa de vídeos;
 - `Alt+Shift+M`: ativar ou desativar o mudo;
 - `Alt+F12`: anunciar diagnóstico seguro da página e do último comando;
 - `Alt+F`: Fechar navegador;
@@ -133,7 +135,14 @@ Na janela de comentários, o foco começa na lista somente para leitura. Use as 
 
 O foco inicial fica em “Abrir TikTok”. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.
 
-O volume escolhido é mantido na página: novos elementos `video` e redefinições feitas durante o carregamento recebem novamente a preferência armazenada. O estado de mudo continua independente do nível de volume.
+O volume escolhido é mantido e salvo pela extensão: novos elementos `video`,
+recargas da aba e redefinições feitas durante o carregamento recebem a preferência
+antes da reprodução. O estado de mudo continua independente do nível de volume.
+
+Na pesquisa, digite um termo e pressione Enter ou o botão **Pesquisar**. A lista
+mostra até 50 vídeos; pressione Enter no botão **Abrir vídeo** ou dê duplo clique
+em um resultado. Depois de abrir o vídeo escolhido, use `Alt+Seta para baixo` e
+`Alt+Seta para cima` para percorrer os vídeos seguintes e anteriores.
 
 A opção “Mostrar janela do navegador” permanece marcada e desabilitada nesta versão. O ocultamento está temporariamente desativado para preservar reprodução, autenticação e o funcionamento básico enquanto a regressão é validada manualmente. O Chromium continua em modo headed e nenhuma chamada a `ShowWindow(..., SW_HIDE)` é feita pelo fluxo do aplicativo.
 

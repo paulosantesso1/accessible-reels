@@ -83,18 +83,18 @@ async function closeTikTokTab() {
 }
 
 async function openMinimizedTikTok() {
-  const stored = await chrome.storage.local.get(["accessibleReelsTabId", "accessibleReelsWindowId"]);
-  if (Number.isInteger(stored.accessibleReelsTabId)) {
-    try {
-      const tab = await chrome.tabs.get(stored.accessibleReelsTabId);
-      if (!tab.url || !/^https:\/\/([^/]+\.)?tiktok\.com\//i.test(tab.url)) {
-        await chrome.tabs.update(tab.id, {url: "https://www.tiktok.com/"});
-      }
-      await chrome.windows.update(tab.windowId, {state: "minimized"});
-      return {ok: true, tabId: tab.id};
-    } catch (_error) {
-      await chrome.storage.local.remove(["accessibleReelsTabId", "accessibleReelsWindowId"]);
-    }
+  // Reuse a TikTok tab even when the user opened it before activating the
+  // extension. findTikTokTab also prefers the active/most recently used tab.
+  try {
+    const tab = await findTikTokTab();
+    await chrome.storage.local.set({
+      accessibleReelsTabId: tab.id,
+      accessibleReelsWindowId: tab.windowId
+    });
+    await chrome.windows.update(tab.windowId, {state: "minimized"});
+    return {ok: true, tabId: tab.id, reused: true};
+  } catch (_error) {
+    await chrome.storage.local.remove(["accessibleReelsTabId", "accessibleReelsWindowId"]);
   }
   const created = await chrome.windows.create({
     url: "https://www.tiktok.com/",
@@ -109,6 +109,38 @@ async function openMinimizedTikTok() {
     accessibleReelsWindowId: created.id
   });
   return {ok: true, tabId: tab.id};
+}
+
+async function navigateTab(tabId, url) {
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => finish(new Error("O TikTok demorou para carregar.")), 15000);
+    const listener = (updatedId, changeInfo) => {
+      if (updatedId === tabId && changeInfo.status === "complete") finish();
+    };
+    const finish = error => {
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (error) reject(error); else resolve();
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.update(tabId, {url}).catch(finish);
+  });
+}
+
+async function sendTabCommand(tabId, action, argument) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const result = await chrome.tabs.sendMessage(tabId, {
+        type: "accessible-reels-command", action, argument
+      });
+      if (result && typeof result === "object") return result;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw lastError || new Error("A aba do TikTok não devolveu uma resposta válida.");
 }
 
 chrome.action.onClicked.addListener(async tab => {
@@ -140,11 +172,27 @@ async function runCommand(command) {
   if (command.action === "close_tiktok") return closeTikTokTab();
   const tab = await findTikTokTab();
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "accessible-reels-command",
-      action: command.action,
-      argument: command.argument
-    });
+    if (command.action === "search") {
+      const query = String(command.argument || "").replace(/\s+/g, " ").trim();
+      if (!query) throw new Error("Digite algo para pesquisar.");
+      const target = new URL("https://www.tiktok.com/search/video");
+      target.searchParams.set("q", query);
+      await navigateTab(tab.id, target.href);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      return await sendTabCommand(tab.id, "collect_search_results");
+    }
+    if (command.action === "open_search_result") {
+      const target = new URL(String(command.argument || ""));
+      if (!/^https:$/.test(target.protocol) ||
+          !/^(?:[^.]+\.)?tiktok\.com$/i.test(target.hostname) ||
+          !/^\/@[^/?#]+\/video\/\d+\/?$/.test(target.pathname)) {
+        throw new Error("O resultado selecionado não é um vídeo válido do TikTok.");
+      }
+      await navigateTab(tab.id, `https://www.tiktok.com${target.pathname}`);
+      await new Promise(resolve => setTimeout(resolve, 700));
+      return await sendTabCommand(tab.id, "refresh_info");
+    }
+    const result = await sendTabCommand(tab.id, command.action, command.argument);
     if (!result || typeof result !== "object") {
       throw new Error("A aba do TikTok não devolveu uma resposta válida.");
     }

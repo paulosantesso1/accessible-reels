@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from playwright.sync_api import sync_playwright
 
@@ -358,6 +360,44 @@ def test_real_dom_volume_preference_survives_new_video_and_site_reset(page):
     page.eval_on_selector("#new-video", "video => video.volume = 1")
     page.wait_for_function(
         "() => Math.abs(document.querySelector('#new-video').volume - 0.4) < 0.001"
+    )
+
+
+def test_extension_audio_guard_blocks_volume_spike_before_playback(page):
+    page.set_content("<main><video id='first'></video></main>")
+    page.evaluate(
+        """() => {
+            window.nativeVolumeSet = Object.getOwnPropertyDescriptor(
+                HTMLMediaElement.prototype, 'volume'
+            ).set;
+        }"""
+    )
+    guard = (
+        Path(__file__).resolve().parents[1] / "browser_extension" / "audio_guard.js"
+    ).read_text(encoding="utf-8")
+    page.add_script_tag(content=guard)
+    page.evaluate(
+        """() => document.dispatchEvent(new CustomEvent(
+            'accessible-reels-volume-preference',
+            {detail: JSON.stringify({volume: 0.3, muted: false})}
+        ))"""
+    )
+    # Simula uma redefinição interna do TikTok que contorna o setter protegido.
+    page.evaluate(
+        """() => {
+            const video = document.querySelector('#first');
+            window.nativeVolumeSet.call(video, 1);
+            video.play().catch(() => {});
+        }"""
+    )
+    assert page.eval_on_selector("#first", "video => video.volume") == 0.3
+
+    page.eval_on_selector(
+        "main",
+        "main => main.appendChild(Object.assign(document.createElement('video'), {id: 'new'}))",
+    )
+    page.wait_for_function(
+        "() => Math.abs(document.querySelector('#new').volume - 0.3) < 0.001"
     )
 
 

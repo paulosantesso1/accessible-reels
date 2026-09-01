@@ -13,6 +13,7 @@ from tiktok.browser_extension import (
     BrowserExtensionBridge,
     LocalBrowserWorker,
 )
+from tiktok.client import BrowserCommand
 
 
 EXTENSION_ORIGIN = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -186,6 +187,33 @@ def test_browser_content_script_stabilizes_audio_during_video_transitions():
     assert 'video.addEventListener("volumechange"' in script
     assert "document.querySelectorAll(\"video\").forEach(applyAudioPreference)" in script
     assert "applyingAudio.delete(video)" in script
+    assert "}).observe(document, {" in script
+    assert "observe(document.documentElement" not in script
+    assert 'chrome.storage.local.get([' in script
+    assert 'chrome.storage.local.set({' in script
+    assert 'publishAudioPreference();' in script
+
+
+def test_main_world_audio_guard_applies_preference_before_playback():
+    manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8"))
+    guard_entry = next(
+        item for item in manifest["content_scripts"] if "audio_guard.js" in item["js"]
+    )
+    assert guard_entry["run_at"] == "document_start"
+    assert guard_entry["world"] == "MAIN"
+    script = (EXTENSION_DIR / "audio_guard.js").read_text(encoding="utf-8")
+    assert "mediaPrototype.play = function" in script
+    assert "apply(this);" in script
+    assert 'Object.defineProperty(mediaPrototype, "volume"' in script
+
+
+def test_minimized_connection_reuses_an_existing_tiktok_tab():
+    script = (EXTENSION_DIR / "background.js").read_text(encoding="utf-8")
+    open_minimized = script.split("async function openMinimizedTikTok()", 1)[1]
+    open_minimized = open_minimized.split("chrome.action.onClicked", 1)[0]
+    assert "const tab = await findTikTokTab();" in open_minimized
+    assert "reused: true" in open_minimized
+    assert open_minimized.index("findTikTokTab()") < open_minimized.index("chrome.windows.create")
 
 
 def test_extension_icon_can_wake_or_open_tiktok():
@@ -199,6 +227,43 @@ def test_extension_can_close_only_the_controlled_tiktok_tab():
     assert "async function closeTikTokTab()" in script
     assert "await chrome.tabs.remove(tab.id)" in script
     assert 'command.action === "close_tiktok"' in script
+
+
+def test_extension_search_navigates_collects_and_validates_results():
+    background = (EXTENSION_DIR / "background.js").read_text(encoding="utf-8")
+    content = (EXTENSION_DIR / "content.js").read_text(encoding="utf-8")
+    assert 'command.action === "search"' in background
+    assert 'sendTabCommand(tab.id, "collect_search_results")' in background
+    assert 'command.action === "open_search_result"' in background
+    assert "function collectSearchResults()" in content
+    assert 'action === "collect_search_results"' in content
+
+
+def test_local_worker_returns_safe_search_results_and_uses_extended_timeout():
+    events = []
+    worker = LocalBrowserWorker(events.append)
+
+    class SearchBridge:
+        def __init__(self):
+            self.call = None
+
+        def execute(self, action, argument=None, timeout=12):
+            self.call = (action, argument, timeout)
+            return {
+                "ok": True,
+                "results": [{
+                    "url": "https://www.tiktok.com/@ana/video/123?x=1",
+                    "author": "@ana",
+                    "description": "resultado",
+                }],
+            }
+
+    bridge = SearchBridge()
+    worker._bridge = bridge
+    worker._execute(BrowserCommand("search", "gatos"))
+    assert bridge.call == ("search", "gatos", 25)
+    assert events[-1].kind == "search_results"
+    assert events[-1].search_results[0].url == "https://www.tiktok.com/@ana/video/123"
 
 
 class _ShutdownBridge:

@@ -17,6 +17,32 @@
   const watchedVideos = new WeakSet();
   const audioScheduleGeneration = new WeakMap();
 
+  function publishAudioPreference() {
+    document.dispatchEvent(new CustomEvent("accessible-reels-volume-preference", {
+      detail: JSON.stringify({volume: preferredVolume, muted: preferredMuted})
+    }));
+  }
+
+  async function restoreAudioPreference() {
+    try {
+      const stored = await chrome.storage.local.get([
+        "accessibleReelsVolume", "accessibleReelsMuted"
+      ]);
+      if (Number.isFinite(stored.accessibleReelsVolume)) {
+        preferredVolume = Math.max(0, Math.min(1, stored.accessibleReelsVolume));
+      }
+      if (typeof stored.accessibleReelsMuted === "boolean") {
+        preferredMuted = stored.accessibleReelsMuted;
+      }
+    } catch (_error) {
+      // Mesmo sem acesso ao armazenamento, libera a proteção no mundo da página
+      // com o estado neutro para não interferir na reprodução.
+    } finally {
+      publishAudioPreference();
+      stabilizeAudio();
+    }
+  }
+
   function applyAudioPreference(video) {
     if (!video || preferredVolume === null || applyingAudio.has(video)) return;
     applyingAudio.add(video);
@@ -88,13 +114,16 @@
         node.querySelectorAll("video").forEach(watchVideo);
       }
     }
-  }).observe(document.documentElement, {
+  // Em document_start, documentElement ainda pode não existir. O próprio
+  // Document já recebe todas as inserções posteriores, inclusive a raiz HTML.
+  }).observe(document, {
     childList: true,
     subtree: true,
     attributes: true,
     attributeFilter: ["muted", "src"]
   });
   watchAllVideos();
+  restoreAudioPreference();
   // Events normally catch TikTok resets in the same task. This inexpensive
   // fallback repairs silent resets that the site performs without an event.
   setInterval(() => {
@@ -272,6 +301,34 @@
     };
   }
 
+  function collectSearchResults() {
+    const results = [];
+    const seen = new Set();
+    for (const anchor of document.querySelectorAll("a[href*='/video/']")) {
+      let url;
+      try { url = new URL(anchor.href, location.href); } catch (_error) { continue; }
+      const match = url.pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
+      if (!match || seen.has(match[0])) continue;
+      seen.add(match[0]);
+      const container = anchor.closest(
+        "[data-e2e=search-card-video-container], [data-e2e=user-post-item], li"
+      ) || anchor.parentElement;
+      const image = anchor.querySelector("img") || (container && container.querySelector("img"));
+      const description = normalizedText(
+        (image && (image.alt || image.getAttribute("aria-label"))) ||
+        anchor.getAttribute("aria-label") || anchor.title ||
+        (container && container.innerText) || ""
+      );
+      results.push({
+        url: `https://www.tiktok.com/${match[1]}/video/${match[2]}`,
+        author: decodeURIComponent(match[1]),
+        description
+      });
+      if (results.length >= 50) break;
+    }
+    return {results};
+  }
+
   function readState(button, undoPattern, inactivePattern) {
     if (!button || !button.isConnected) return null;
     const elements = [button, ...button.querySelectorAll(
@@ -334,9 +391,10 @@
 
   async function execute(action, argument) {
     const video = activeVideo();
-    if (!["diagnostics"].includes(action) && !video) {
+    if (!["diagnostics", "collect_search_results"].includes(action) && !video) {
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
+    if (action === "collect_search_results") return collectSearchResults();
     if (["author", "description", "copy_link", "refresh_info"].includes(action)) {
       return snapshot();
     }
@@ -366,8 +424,13 @@
       preferredVolume = Math.max(0, Math.min(1,
         preferredVolume + (action === "volume_up" ? 0.1 : -0.1)));
       preferredMuted = false;
+      publishAudioPreference();
       watchVideo(video);
       stabilizeAudio();
+      await chrome.storage.local.set({
+        accessibleReelsVolume: preferredVolume,
+        accessibleReelsMuted: preferredMuted
+      });
       await sleep(100);
       return {volume: preferredVolume};
     }
@@ -377,8 +440,13 @@
         (video.muted || video.volume === 0) : preferredMuted;
       preferredMuted = !effectivelyMuted;
       if (effectivelyMuted && preferredVolume === 0) preferredVolume = 0.1;
+      publishAudioPreference();
       watchVideo(video);
       stabilizeAudio();
+      await chrome.storage.local.set({
+        accessibleReelsVolume: preferredVolume,
+        accessibleReelsMuted: preferredMuted
+      });
       await sleep(100);
       return {muted: preferredMuted};
     }

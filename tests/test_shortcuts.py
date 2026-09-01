@@ -19,6 +19,7 @@ class AcceleratorHarness:
         self.closed = False
         self.handlers = {}
         self.worker = BrowserWorker(Path("perfil-ficticio"), lambda _event: None)
+        self.search_opened = 0
         self._configure_accelerators()
 
     def SetAcceleratorTable(self, table):
@@ -35,6 +36,9 @@ class AcceleratorHarness:
 
     def Close(self):
         self.closed = True
+
+    def _show_search(self):
+        self.search_opened += 1
 
     def trigger(self, action):
         self.handlers[self._accelerator_ids[action]](object())
@@ -96,6 +100,15 @@ def test_all_required_accelerators_are_explicitly_registered():
     assert mapping["open_comments"] == (wx.ACCEL_NORMAL, ord("C"))
     assert mapping["toggle_like"] == (wx.ACCEL_NORMAL, ord("L"))
     assert mapping["toggle_favorite"] == (wx.ACCEL_NORMAL, ord("F"))
+    assert mapping["search"] == (wx.ACCEL_ALT, ord("E"))
+
+
+def test_alt_e_opens_search_without_sending_a_video_command():
+    harness = AcceleratorHarness()
+    harness.trigger("search")
+    assert harness.search_opened == 1
+    assert harness.statuses == ["Abrindo pesquisa de vídeos."]
+    assert harness.worker._commands.empty()
 
 
 def test_social_shortcuts_enqueue_distinct_commands():

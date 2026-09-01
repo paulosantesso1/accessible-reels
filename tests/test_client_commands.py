@@ -35,6 +35,23 @@ class FakePage:
     def bring_to_front(self):
         self.brought_to_front += 1
 
+    def goto(self, url, **_kwargs):
+        self.url = url
+
+    def wait_for_selector(self, _selector, **_kwargs):
+        return None
+
+    def evaluate(self, script):
+        if "querySelectorAll('a[href*=\"/video/\"]')" in script:
+            return [
+                {
+                    "url": "https://www.tiktok.com/@busca/video/987",
+                    "author": "@busca",
+                    "description": "resultado encontrado",
+                }
+            ]
+        return None
+
 
 class FakeVideoController:
     last_instance = None
@@ -83,6 +100,9 @@ class FakeVideoController:
     def toggle_favorite(self) -> bool:
         return False
 
+    def install_volume_preference(self) -> None:
+        self.volume_installed = True
+
     def diagnostics(self):
         return {
             "count": 2,
@@ -127,6 +147,31 @@ def test_public_command_is_sent_to_queue():
     )
     worker.next_video()
     assert worker._commands.get_nowait() == BrowserCommand("next")
+
+
+def test_search_commands_are_sent_to_queue():
+    worker = BrowserWorker(Path("profile-ficticio"), lambda _event: None)
+    worker.search("gatos")
+    worker.open_search_result("https://www.tiktok.com/@ana/video/123")
+    assert worker._commands.get_nowait() == BrowserCommand("search", "gatos")
+    assert worker._commands.get_nowait() == BrowserCommand(
+        "open_search_result", "https://www.tiktok.com/@ana/video/123"
+    )
+
+
+def test_search_returns_structured_results_and_opens_selection():
+    events: list[WorkerEvent] = []
+    worker = make_worker(events)
+    worker._execute_command(BrowserCommand("search", "gatos felizes"))
+    assert worker._page.url.endswith("search/video?q=gatos+felizes")
+    assert events[-1].kind == "search_results"
+    assert events[-1].search_results[0].author == "@busca"
+
+    worker._execute_command(
+        BrowserCommand("open_search_result", "https://www.tiktok.com/@busca/video/987")
+    )
+    assert worker._page.url == "https://www.tiktok.com/@busca/video/987"
+    assert events[-1].message == "Vídeo da pesquisa aberto."
 
 
 @pytest.mark.parametrize(
