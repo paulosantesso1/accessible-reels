@@ -1,5 +1,7 @@
 data/browser_profile/
 data/preferences.json
+data/instagram_profile/
+data/instagram_preferences.json
 cookies*.json
 cookies*.txt
 **/__pycache__/

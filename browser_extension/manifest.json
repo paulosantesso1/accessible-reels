@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Accessible Reels — ponte local",
-  "version": "1.2.1",
-  "description": "Permite que a interface Accessible Reels controle a aba autenticada do TikTok.",
+  "version": "1.3.1",
+  "description": "Permite que o Accessible Reels controle TikTok e Instagram nas sessões do navegador.",
   "permissions": ["tabs", "debugger", "storage"],
   "host_permissions": [
     "https://*.tiktok.com/*",
-    "http://127.0.0.1:43119/*"
+    "https://*.instagram.com/*",
+    "http://127.0.0.1:43119/*",
+    "http://127.0.0.1:43120/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,6 +23,17 @@
     {
       "matches": ["https://*.tiktok.com/*"],
       "js": ["content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://www.instagram.com/*", "https://instagram.com/*"],
+      "js": ["audio_guard.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.instagram.com/*", "https://instagram.com/*"],
+      "js": ["instagram.js"],
       "run_at": "document_start"
     }
   ],

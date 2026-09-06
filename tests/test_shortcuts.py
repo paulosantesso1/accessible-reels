@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import wx
+import pytest
 
 from tiktok.client import BrowserCommand, BrowserWorker, WorkerEvent
-from ui.main_frame import ACCELERATOR_SPECS, MainFrame
+from ui.main_frame import ACCELERATOR_SPECS, SHORTCUT_MESSAGES, MainFrame
 
 
 class AcceleratorHarness:
@@ -20,6 +21,9 @@ class AcceleratorHarness:
         self.handlers = {}
         self.worker = BrowserWorker(Path("perfil-ficticio"), lambda _event: None)
         self.search_opened = 0
+        self.platform_tabs = Mock()
+        self.platform_tabs.GetSelection.return_value = 0
+        self.instagram_panel = Mock()
         self._configure_accelerators()
 
     def SetAcceleratorTable(self, table):
@@ -29,6 +33,9 @@ class AcceleratorHarness:
         self.handlers[id] = handler
 
     def _set_status(self, message):
+        self.statuses.append(message)
+
+    def _announce_accessible(self, message):
         self.statuses.append(message)
 
     def _get_worker(self):
@@ -123,6 +130,27 @@ def test_social_shortcuts_enqueue_distinct_commands():
 
 def test_alt_s_accelerator_closes_frame():
     harness = AcceleratorHarness()
+    harness.trigger("exit")
+    assert harness.closed is True
+
+
+@pytest.mark.parametrize(
+    "action", [action for action, _, _ in ACCELERATOR_SPECS if action != "exit"]
+)
+def test_instagram_shortcuts_route_only_to_instagram(action):
+    harness = AcceleratorHarness()
+    harness.platform_tabs.GetSelection.return_value = 1
+    with patch.object(harness, "_get_worker") as get_worker:
+        harness.trigger(action)
+    get_worker.assert_not_called()
+    assert harness.worker._commands.empty()
+    assert harness.search_opened == 0
+    harness.instagram_panel.dispatch_shortcut.assert_called_once_with(action, SHORTCUT_MESSAGES[action])
+
+
+def test_exit_shortcut_also_closes_from_instagram():
+    harness = AcceleratorHarness()
+    harness.platform_tabs.GetSelection.return_value = 1
     harness.trigger("exit")
     assert harness.closed is True
 

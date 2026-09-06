@@ -70,7 +70,7 @@ _NETSCAPE_HEADER_MARKERS = (
 )
 
 
-def load_cookie_file(path: str | Path) -> CookieImportResult:
+def load_cookie_file(path: str | Path, *, domain: str = "tiktok.com") -> CookieImportResult:
     """Carrega JSON ou Netscape diretamente, sem registrar conteúdo sensível."""
     text, encoding = _read_cookie_text(Path(path))
     stripped = text.lstrip()
@@ -87,9 +87,10 @@ def load_cookie_file(path: str | Path) -> CookieImportResult:
             "Nenhum cookie válido foi encontrado no arquivo. "
             f"Linhas ignoradas: {result.diagnostics.ignored_lines} ({reasons})."
         )
-    if not any(is_tiktok_cookie(cookie) for cookie in result.cookies):
+    if not any(normalized_cookie_domain(cookie) == domain or
+               normalized_cookie_domain(cookie).endswith("." + domain) for cookie in result.cookies):
         raise CookieImportError(
-            "Nenhum cookie aplicável a tiktok.com foi encontrado no arquivo."
+            f"Nenhum cookie aplicável a {domain} foi encontrado no arquivo."
         )
     return result
 

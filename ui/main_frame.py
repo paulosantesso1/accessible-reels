@@ -9,30 +9,12 @@ from tiktok.client import BrowserWorker, WorkerEvent
 from tiktok.browser_extension import LocalBrowserWorker
 from ui.comments_dialog import CommentsDialog
 from ui.search_dialog import SearchDialog
+from ui.instagram_panel import InstagramPanel
+from ui.shortcuts import ACCELERATOR_SPECS, set_shortcut
 from ui.nvda_announcer import (
     raise_uia_notification,
     speak_with_accessible_output,
     speak_with_nvda,
-)
-
-
-ACCELERATOR_SPECS = (
-    ("next_video", wx.ACCEL_ALT, wx.WXK_DOWN),
-    ("previous_video", wx.ACCEL_ALT, wx.WXK_UP),
-    ("toggle_playback", wx.ACCEL_ALT, ord("P")),
-    ("read_author", wx.ACCEL_ALT, ord("A")),
-    ("read_description", wx.ACCEL_ALT, ord("D")),
-    ("copy_link", wx.ACCEL_ALT, ord("C")),
-    ("refresh_info", wx.ACCEL_NORMAL, wx.WXK_F5),
-    ("search", wx.ACCEL_ALT, ord("E")),
-    ("exit", wx.ACCEL_ALT, ord("S")),
-    ("volume_up", wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_UP),
-    ("volume_down", wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_DOWN),
-    ("toggle_mute", wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("M")),
-    ("diagnostics", wx.ACCEL_ALT, wx.WXK_F12),
-    ("open_comments", wx.ACCEL_NORMAL, ord("C")),
-    ("toggle_like", wx.ACCEL_NORMAL, ord("L")),
-    ("toggle_favorite", wx.ACCEL_NORMAL, ord("F")),
 )
 
 
@@ -65,21 +47,33 @@ class MainFrame(wx.Frame):
         self._closing = False
         self._comments_dialog: CommentsDialog | None = None
         self._search_dialog: SearchDialog | None = None
+        self._pending_tiktok_events: list[WorkerEvent] = []
 
-        panel = wx.Panel(self)
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        container = wx.Panel(self)
+        outer_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        heading = wx.StaticText(panel, label="Accessible Reels")
+        heading = wx.StaticText(container, label="Accessible Reels")
         heading.SetName("Título: Accessible Reels")
         font = heading.GetFont()
         font.MakeBold()
         font.SetPointSize(font.GetPointSize() + 3)
         heading.SetFont(font)
-        main_sizer.Add(heading, 0, wx.ALL, 12)
+        outer_sizer.Add(heading, 0, wx.ALL, 12)
 
-        self.status = wx.StaticText(panel, label="Status: pronto.")
+        self.status = wx.StaticText(container, label="Status: pronto.")
         self.status.SetName("Status do aplicativo")
-        main_sizer.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+        outer_sizer.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+
+        self.platform_tabs = wx.Notebook(container)
+        self.platform_tabs.SetName("Plataformas")
+        self.platform_tabs.SetHelpText("Setas ou Ctrl+Tab alternam as guias; Tab acessa os controles.")
+        set_shortcut(self.platform_tabs, shortcut="Ctrl+Tab")
+        panel = wx.Panel(self.platform_tabs)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.platform_tabs.AddPage(panel, "TikTok", select=True)
+        self.instagram_panel = InstagramPanel(self.platform_tabs, self)
+        self.platform_tabs.AddPage(self.instagram_panel, "Instagram")
+        outer_sizer.Add(self.platform_tabs, 1, wx.EXPAND | wx.ALL, 12)
 
         self.open_button = self._button(panel, "Abrir &TikTok", "Abrir TikTok")
         self.browser_mode = wx.RadioBox(
@@ -100,6 +94,7 @@ class MainFrame(wx.Frame):
         self.local_minimized_checkbox.SetName(
             "Abrir TikTok em janela minimizada exclusiva"
         )
+        set_shortcut(self.local_minimized_checkbox)
         self.local_minimized_checkbox.SetValue(True)
         self.local_minimized_checkbox.Enable(False)
         self.import_button = self._button(
@@ -118,7 +113,7 @@ class MainFrame(wx.Frame):
         main_sizer.Add(self.import_button, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
         self.show_browser_checkbox = wx.CheckBox(
-            panel, label="Mostrar &janela do navegador"
+            panel, label="Mostrar janela do navegador"
         )
         self.show_browser_checkbox.SetName("Mostrar janela do navegador")
         self.show_browser_checkbox.SetValue(True)
@@ -155,7 +150,7 @@ class MainFrame(wx.Frame):
 
         self.next_button = self._button(panel, "Próximo vídeo", "Próximo vídeo")
         self.search_button = self._button(
-            panel, "P&esquisar vídeos", "Pesquisar vídeos, atalho Alt mais E"
+            panel, "P&esquisar vídeos", "Pesquisar vídeos"
         )
         self.previous_button = self._button(panel, "Vídeo anterior", "Vídeo anterior")
         self.toggle_button = self._button(
@@ -179,36 +174,37 @@ class MainFrame(wx.Frame):
             panel, "Ativar ou desativar mudo", "Ativar ou desativar mudo"
         )
         self.comments_button = self._button(
-            panel, "&Comentários", "Abrir comentários do vídeo atual, atalho C"
+            panel, "Comentários", "Abrir comentários do vídeo atual"
         )
         self.like_button = self._button(
-            panel, "Curtir ou descurtir", "Curtir ou descurtir o vídeo atual, atalho L"
+            panel, "Curtir ou descurtir", "Curtir ou descurtir"
         )
         self.favorite_button = self._button(
             panel,
             "Favoritar ou desfavoritar",
-            "Favoritar ou desfavoritar o vídeo atual, atalho F",
+            "Favoritar ou desfavoritar",
         )
 
         video_sizer = wx.FlexGridSizer(rows=0, cols=2, vgap=8, hgap=8)
         video_sizer.AddGrowableCol(0, 1)
         video_sizer.AddGrowableCol(1, 1)
-        for button in (
-            self.search_button,
-            self.next_button,
-            self.previous_button,
-            self.toggle_button,
-            self.author_button,
-            self.description_button,
-            self.copy_button,
-            self.refresh_button,
-            self.volume_up_button,
-            self.volume_down_button,
-            self.mute_button,
-            self.comments_button,
-            self.like_button,
-            self.favorite_button,
+        for button, action in (
+            (self.search_button, "search"),
+            (self.next_button, "next_video"),
+            (self.previous_button, "previous_video"),
+            (self.toggle_button, "toggle_playback"),
+            (self.author_button, "read_author"),
+            (self.description_button, "read_description"),
+            (self.copy_button, "copy_link"),
+            (self.refresh_button, "refresh_info"),
+            (self.volume_up_button, "volume_up"),
+            (self.volume_down_button, "volume_down"),
+            (self.mute_button, "toggle_mute"),
+            (self.comments_button, "open_comments"),
+            (self.like_button, "toggle_like"),
+            (self.favorite_button, "toggle_favorite"),
         ):
+            set_shortcut(button, action=action)
             video_sizer.Add(button, 0, wx.EXPAND)
         main_sizer.Add(video_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
@@ -216,7 +212,7 @@ class MainFrame(wx.Frame):
             panel, "&Fechar navegador", "Fechar navegador"
         )
         self.exit_button = self._button(
-            panel, "&Sair", "Sair do Accessible Reels"
+            container, "&Sair", "Sair do Accessible Reels"
         )
         main_sizer.Add(
             self.close_browser_button,
@@ -224,10 +220,11 @@ class MainFrame(wx.Frame):
             wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
             12,
         )
-        main_sizer.Add(
+        outer_sizer.Add(
             self.exit_button, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12
         )
         panel.SetSizer(main_sizer)
+        container.SetSizer(outer_sizer)
 
         self.open_button.Bind(wx.EVT_BUTTON, self._on_open)
         self.browser_mode.Bind(wx.EVT_RADIOBOX, self._on_browser_mode_changed)
@@ -308,15 +305,64 @@ class MainFrame(wx.Frame):
         self.close_browser_button.Bind(wx.EVT_BUTTON, self._on_close_browser)
         self.exit_button.Bind(wx.EVT_BUTTON, lambda _event: self.Close())
         self.Bind(wx.EVT_CLOSE, self._on_close_window)
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_tab_navigation)
+        self.platform_tabs.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self._on_platform_changed)
         self._configure_accelerators()
 
         self.Centre()
-        wx.CallAfter(self.open_button.SetFocus)
+        wx.CallAfter(self.platform_tabs.SetFocus)
+
+    def _on_tab_navigation(self, event: wx.KeyEvent) -> None:
+        focused = wx.Window.FindFocus()
+        if focused is None or wx.GetTopLevelParent(focused) is not self:
+            event.Skip()
+            return
+        key = event.GetKeyCode()
+        if (
+            key == wx.WXK_TAB
+            and not event.AltDown()
+            and event.ControlDown()
+        ):
+            step = -1 if event.ShiftDown() else 1
+            selection = (self.platform_tabs.GetSelection() + step) % self.platform_tabs.GetPageCount()
+            self.platform_tabs.SetSelection(selection)
+            self.platform_tabs.SetFocus()
+            return
+        if (
+            focused is self.platform_tabs
+            and key in (wx.WXK_TAB, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER)
+            and not event.HasAnyModifiers()
+        ):
+            self._focus_platform_content()
+            return
+        event.Skip()
+
+    def _focus_platform_content(self) -> None:
+        if self.platform_tabs.GetSelection() == 0:
+            self.open_button.SetFocus()
+        else:
+            self.instagram_panel.open_button.SetFocus()
+
+    def _on_platform_changed(self, event: wx.BookCtrlEvent) -> None:
+        event.Skip()
+        # Let native notebook selection/focus finish before delivering responses.
+        wx.CallAfter(self._deliver_platform_events)
+
+    def _deliver_platform_events(self) -> None:
+        if not self or self._closing:
+            return
+        if self.platform_tabs.GetSelection() == 1:
+            self.instagram_panel.activate()
+        else:
+            pending, self._pending_tiktok_events = self._pending_tiktok_events, []
+            for event in pending:
+                self._handle_worker_event(event)
 
     @staticmethod
     def _button(parent: wx.Window, label: str, name: str) -> wx.Button:
         button = wx.Button(parent, label=label)
         button.SetName(name)
+        set_shortcut(button)
         return button
 
     def _configure_accelerators(self) -> None:
@@ -343,6 +389,9 @@ class MainFrame(wx.Frame):
         if action == "exit":
             self._set_status(message)
             self.Close()
+            return
+        if self.platform_tabs.GetSelection() != 0:
+            self.instagram_panel.dispatch_shortcut(action, message)
             return
         if action == "diagnostics":
             self._set_status(message)
@@ -380,12 +429,27 @@ class MainFrame(wx.Frame):
     def _handle_worker_event(self, event: WorkerEvent) -> None:
         if not self:
             return
+        if event.kind == "stopped":
+            self._worker = None
+            self.browser_mode.Enable(True)
+            self._on_browser_mode_changed(None)
+            self.show_browser_checkbox.SetValue(True)
+            self._pending_tiktok_events.clear()
+            if not self._closing and self.platform_tabs.GetSelection() == 0:
+                self._set_status(event.message)
+            self._finish_close()
+            return
+        if self._closing:
+            return
         if event.author is not None:
             self.author_field.SetValue(event.author)
         if event.description is not None:
             self.description_field.SetValue(event.description)
         if event.browser_visible is not None:
             self.show_browser_checkbox.SetValue(event.browser_visible)
+        if self.platform_tabs.GetSelection() != 0:
+            self._pending_tiktok_events.append(event)
+            return
         if event.kind == "copy_link":
             self._copy_to_clipboard(event.link)
         elif event.kind == "comments":
@@ -404,13 +468,6 @@ class MainFrame(wx.Frame):
             self._set_status(event.message)
         if event.kind not in {"comments", "stopped"}:
             self._restore_wx_focus()
-        if event.kind == "stopped":
-            self._worker = None
-            self.browser_mode.Enable(True)
-            self._on_browser_mode_changed(None)
-            self.show_browser_checkbox.SetValue(True)
-            if self._closing:
-                self.Destroy()
 
     def _restore_wx_focus(self) -> None:
         focused = wx.Window.FindFocus()
@@ -424,7 +481,7 @@ class MainFrame(wx.Frame):
         if focused is not None and wx.GetTopLevelParent(focused) is self:
             wx.CallAfter(focused.SetFocus)
         else:
-            wx.CallAfter(self.open_button.SetFocus)
+            wx.CallAfter(self._focus_platform_content)
 
     def _show_comments(self, comments: tuple[str, ...]) -> None:
         if self._comments_dialog is not None:
@@ -532,13 +589,13 @@ class MainFrame(wx.Frame):
         self.import_button.Enable(not local)
         self.local_minimized_checkbox.Enable(local and self._worker is None)
         self.open_button.SetLabel(
-            "&Conectar à aba do TikTok" if local else "Abrir &TikTok"
+            "Conectar ao &TikTok" if local else "Abrir &TikTok"
         )
         self.open_button.SetName(
             "Conectar à aba autenticada do TikTok" if local else "Abrir TikTok"
         )
         self.close_browser_button.SetLabel(
-            "&Desconectar navegador local" if local else "&Fechar navegador"
+            "&Fechar conexão do navegador" if local else "&Fechar navegador"
         )
         self.close_browser_button.SetName(
             "Desconectar navegador local" if local else "Fechar navegador"
@@ -583,9 +640,20 @@ class MainFrame(wx.Frame):
             return
         self._closing = True
         self.Enable(False)
-        if self._worker is not None and self._worker.is_alive():
+        workers = [worker for worker in (self._worker, self.instagram_panel.worker)
+                   if worker is not None and worker.is_alive()]
+        if workers:
             event.Veto()
-            self._set_status("encerrando o navegador e o aplicativo...")
-            self._worker.shutdown()
+            self._set_status("encerrando as conexões e o aplicativo...")
+            if self._worker not in workers:
+                self._worker = None
+            if self.instagram_panel.worker not in workers:
+                self.instagram_panel.worker = None
+            for worker in workers:
+                worker.shutdown()
         else:
             event.Skip()
+
+    def _finish_close(self) -> None:
+        if self._closing and self._worker is None and self.instagram_panel.worker is None:
+            self.Destroy()

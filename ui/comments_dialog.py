@@ -4,6 +4,8 @@ from collections.abc import Callable, Iterable
 
 import wx
 
+from ui.shortcuts import set_shortcut
+
 
 class CommentsDialog(wx.Dialog):
     """Janela nativa para leitura e publicação consciente de comentários."""
@@ -14,6 +16,8 @@ class CommentsDialog(wx.Dialog):
         comments: Iterable[str],
         on_post: Callable[[str], None],
         on_closed: Callable[[], None],
+        *,
+        platform: str = "TikTok",
     ) -> None:
         super().__init__(
             parent,
@@ -22,6 +26,7 @@ class CommentsDialog(wx.Dialog):
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
         self._on_post = on_post
+        self._platform = platform
         self._on_closed = on_closed
         self._closed_notified = False
 
@@ -41,8 +46,10 @@ class CommentsDialog(wx.Dialog):
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         self.write_button = wx.Button(panel, label="&Escrever comentário")
         self.write_button.SetName("Escrever comentário")
+        set_shortcut(self.write_button)
         self.close_button = wx.Button(panel, wx.ID_CANCEL, "&Fechar")
         self.close_button.SetName("Fechar comentários")
+        set_shortcut(self.close_button, shortcut="Alt+F ou Esc")
         buttons.Add(self.write_button, 1, wx.RIGHT, 8)
         buttons.Add(self.close_button, 1)
         sizer.Add(buttons, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
@@ -81,7 +88,7 @@ class CommentsDialog(wx.Dialog):
     def _write_comment(self, _event: wx.CommandEvent) -> None:
         dialog = wx.TextEntryDialog(
             self,
-            "Digite o comentário. Selecione Publicar para enviá-lo ao TikTok.",
+            f"Digite o comentário. Selecione Publicar para enviá-lo ao {self._platform}.",
             "Escrever comentário",
             style=wx.OK | wx.CANCEL | wx.TE_MULTILINE,
         )
@@ -89,6 +96,11 @@ class CommentsDialog(wx.Dialog):
         if publish_button is not None:
             publish_button.SetLabel("&Publicar")
             publish_button.SetName("Publicar comentário")
+            set_shortcut(publish_button)
+        cancel_button = dialog.FindWindowById(wx.ID_CANCEL)
+        if cancel_button is not None:
+            cancel_button.SetName("Cancelar publicação")
+            set_shortcut(cancel_button, shortcut="Esc")
         try:
             if dialog.ShowModal() != wx.ID_OK:
                 return

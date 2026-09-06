@@ -2,7 +2,7 @@
 
 Aplicativo desktop para Windows com interface nativa wxPython acessível ao NVDA. Ele controla uma janela real do Chromium pelo Playwright, usando o perfil persistente `data/browser_profile`.
 
-O aplicativo abre o TikTok, importa cookies JSON, navega pelos vídeos, controla a reprodução, apresenta autor, descrição e comentários, permite curtir e favoritar e copia o link atual. A publicação de comentários exige confirmação explícita no botão Publicar.
+O aplicativo abre o TikTok, importa cookies JSON, navega pelos vídeos, controla a reprodução, apresenta autor, descrição e comentários, permite curtir e favoritar e copia o link atual. A guia Instagram controla os Reels pela extensão do Chrome ou Brave, com os mesmos atalhos. A publicação de comentários exige confirmação explícita no botão Publicar.
 
 Também existe um modo opcional para usar uma sessão já autenticada no Chrome ou
 Brave. Nesse modo, uma extensão local executa as ações na aba do TikTok e devolve
@@ -50,7 +50,7 @@ python main.py
 2. Ative o **Modo do desenvolvedor**.
 3. Escolha **Carregar sem compactação** e selecione a pasta
    `browser_extension` deste projeto.
-4. Recarregue qualquer aba do TikTok que já estava aberta.
+4. Recarregue qualquer aba do TikTok ou Instagram que já estava aberta.
 5. No Accessible Reels, em **Modo do navegador**, escolha
    **Chrome ou Brave com extensão** e pressione **Conectar à aba do TikTok**.
 6. Continue usando os botões e atalhos normalmente. Os atalhos de vídeo também
@@ -78,8 +78,8 @@ completamente invisíveis.
 Ao usar **Desconectar navegador local**, a aba do TikTok permanece aberta. Ao
 fechar o Accessible Reels pelo botão Sair, pelo atalho ou pelo X, a extensão fecha
 somente a aba do TikTok que estava sendo controlada; as demais abas e o Chrome ou
-Brave permanecem abertos. A ponte aceita conexões somente no endereço local `127.0.0.1`; a extensão
-tem permissão somente para páginas do TikTok e para essa ponte local. Se Chrome e
+Brave permanecem abertos. As pontes aceitam conexões somente no endereço local `127.0.0.1`; a extensão
+tem permissão para páginas do TikTok e Instagram e para essas pontes locais. Se Chrome e
 Brave estiverem abertos ao mesmo tempo com a extensão instalada, use somente um
 deles durante a sessão para evitar que os dois tentem receber o mesmo comando.
 
@@ -91,6 +91,63 @@ DevTools, não lê cookies e não envia dados para servidores próprios.
 Para voltar ao comportamento original, desconecte o navegador local e selecione
 **Chromium integrado**. A importação de cookies permanece disponível apenas nesse
 modo.
+
+## Instagram pela extensão
+
+1. Atualize a extensão para a versão **1.3.1**: em `chrome://extensions` ou
+   `brave://extensions`, localize **Accessible Reels — ponte local** e pressione
+   **Recarregar**. Se solicitado, permita o acesso ao Instagram.
+2. Recarregue também a aba do Instagram. Abra os **Reels** e faça login no próprio
+   navegador, se necessário.
+3. Reinicie o aplicativo, selecione a guia **Instagram** e pressione Enter para
+   acessar **Conectar Instagram** (`Alt+I`). A conexão reutiliza uma aba existente;
+   se não encontrar nenhuma, abre o Instagram.
+4. Use `F5` para atualizar autor e descrição. Os atalhos de reprodução, volume,
+   navegação, comentários, curtida, copiar link e pesquisa são os mesmos do TikTok.
+   No Instagram, `F` salva ou remove o Reel dos salvos.
+
+O Instagram também oferece **Chromium integrado** no seletor de navegador da guia.
+Nesse modo, use **Abrir Instagram** (`Alt+G`) para fazer login ou **Importar cookies
+do Instagram** (`Alt+I`) para selecionar um arquivo JSON ou Netscape cookies.txt.
+Somente cookies do domínio Instagram são importados; o arquivo original não é alterado.
+O perfil persistente fica em `data/instagram_profile`, separado do TikTok, e o volume
+fica em `data/instagram_preferences.json`. A aceitação da sessão depende do Instagram;
+se solicitado, complete o login no navegador. Fechar navegador encerra esse Chromium.
+Os controles de Reels e os passos de volume de 5% funcionam nos dois modos.
+
+O modo Chrome ou Brave com extensão continua selecionado por padrão. A janela fica visível
+por padrão para permitir login; a opção de minimizá-la pode ser marcada antes
+de conectar. Ao reutilizar uma aba, essa opção minimiza a janela que a contém.
+
+Cada guia mantém seus próprios campos, conexão e preferências de volume. Os
+atalhos da interface são enviados apenas à plataforma selecionada. Resultados
+que chegam após uma troca de guia aguardam o retorno à guia correspondente.
+Os atalhos de vídeo também funcionam na página do Instagram e não interceptam
+a digitação nos campos de comentário ou pesquisa.
+
+No Instagram, aumentar ou diminuir volume usa passos de **5 pontos percentuais**.
+Se o Reel estiver silenciado ou com volume zero, o primeiro aumento define **5%**
+e desativa o mudo; os seguintes passam para 10%, 15% e assim por diante. Diminuir
+partindo do silêncio mantém o volume em zero. A preferência continua sendo salva
+e aplicada aos próximos Reels.
+
+`Alt+E` na interface abre a pesquisa acessível do Instagram, com até 50 Reels ou
+posts carregados. Quando o Instagram não oferece uma descrição na miniatura,
+o resultado recebe um número; abra-o e use `Alt+A` e `Alt+D` para ler os detalhes.
+A navegação anterior/próximo requer o feed **Reels**; posts de foto e páginas
+sem vídeo não respondem aos comandos de reprodução. No navegador, `Alt+E` abre
+a pesquisa do próprio Instagram.
+
+Comentários são lidos do painel do Reel atual. A publicação só ocorre ao
+confirmar **Publicar** na interface. Se o Reel mudar ou houver um rascunho no
+navegador, o aplicativo pede que você revise a situação antes de enviar. Uma
+alteração de curtida, salvo ou comentário sem confirmação na página é informada
+como falha, para evitar anunciar uma ação que o Instagram não confirmou.
+
+**Fechar conexão do Instagram** (`Alt+F`) desconecta sem fechar a aba. Sair do
+aplicativo fecha somente as abas controladas pelas conexões ainda ativas. TikTok
+e Instagram utilizam as portas locais 43119 e 43120, respectivamente; uma conexão
+pode ser encerrada sem interromper a outra.
 
 O perfil do navegador é criado automaticamente em `data/browser_profile`. Para importar uma sessão, use um `.json` contendo uma lista de cookies ou um `.txt` no formato Netscape; arquivos `.txt` contendo JSON também continuam aceitos. O arquivo escolhido não é alterado, movido ou removido.
 
@@ -109,8 +166,30 @@ Se nenhum cookie TikTok for encontrado, nenhum cookie aparecer no contexto ou os
 
 ## Atalhos e acessibilidade
 
+O aplicativo possui as guias **TikTok** e **Instagram**. A guia TikTok contém os
+controles existentes; a guia Instagram contém os controles dos Reels, com Chromium integrado ou extensão.
+Trocar de guia mantém as sessões abertas.
+
+- Com o foco nos títulos das guias, as setas alternam entre elas;
+- `Tab` ou `Enter` acessa os controles da guia selecionada;
+- `Ctrl+Tab` e `Ctrl+Shift+Tab` trocam de guia a partir dos controles;
+- Dentro de cada guia, `Tab` e `Shift+Tab` percorrem os controles normalmente.
+
+Os comandos controlam a plataforma da guia selecionada.
+O botão Sair e `Alt+S` estão disponíveis nas duas guias.
+
+Os controles com atalhos informam separadamente o nome, o tipo nativo e a tecla
+à acessibilidade do Windows. Assim, o NVDA pode anunciar, por exemplo,
+“Curtir ou descurtir, botão, L” e “Próximo vídeo, botão, Alt+Seta para baixo”.
+A palavra “botão” não faz parte dos rótulos. A ordem da fala e o anúncio das
+teclas dependem das configurações do leitor de tela. Esse comportamento também
+se aplica às opções de janela minimizada e aos controles de pesquisa e comentários.
+
+No modo de extensão do TikTok, **Conectar ao TikTok** continua usando `Alt+T`,
+e **Fechar conexão do navegador** usa `Alt+F`.
+
 - `Alt+T`: Abrir TikTok;
-- `Alt+I`: Importar cookies;
+- `Alt+I`: importar cookies no TikTok; conectar Instagram na guia Instagram;
 - `Alt+Seta para baixo`: próximo vídeo;
 - `Alt+Seta para cima`: vídeo anterior;
 - `Alt+P`: reproduzir ou pausar;
@@ -119,21 +198,21 @@ Se nenhum cookie TikTok for encontrado, nenhum cookie aparecer no contexto ou os
 - `Alt+C`: copiar link;
 - `C`: abrir a janela de comentários do vídeo atual;
 - `L`: curtir ou descurtir o vídeo atual;
-- `F`: favoritar ou desfavoritar o vídeo atual;
+- `F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
 - `Esc`: fechar a janela de comentários;
 - `F5`: atualizar autor e descrição;
-- `Alt+Shift+Seta para cima`: aumentar o volume em 10%;
-- `Alt+Shift+Seta para baixo`: diminuir o volume em 10%;
+- `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos no Instagram e 10 no TikTok;
+- `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos no Instagram e 10 no TikTok;
 - `Alt+E`: abrir a pesquisa de vídeos;
 - `Alt+Shift+M`: ativar ou desativar o mudo;
 - `Alt+F12`: anunciar diagnóstico seguro da página e do último comando;
-- `Alt+F`: Fechar navegador;
+- `Alt+F`: fechar navegador/conexão da plataforma;
 - `Alt+S`: Sair;
 - `Tab` e `Shift+Tab`: percorrer os controles em ordem.
 
-Na janela de comentários, o foco começa na lista somente para leitura. Use as setas para ler, `Tab` para chegar a “Escrever comentário” e depois ao botão Fechar. O texto somente é enviado ao TikTok quando o botão Publicar é confirmado.
+Na janela de comentários, o foco começa na lista somente para leitura. Use as setas para ler, `Tab` para chegar a “Escrever comentário” e depois ao botão Fechar. O texto somente é enviado à plataforma identificada na janela quando o botão Publicar é confirmado.
 
-O foco inicial fica em “Abrir TikTok”. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.
+O foco inicial fica no seletor de guias, com TikTok selecionado. Use as setas no seletor ou Ctrl+Tab (Ctrl+Shift+Tab para voltar) para trocar de plataforma. Tab acessa Abrir/Conectar e percorre as opções da guia selecionada; Shift+Tab retorna pelos controles. Enter no seletor também acessa Abrir/Conectar. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.
 
 O volume escolhido é mantido e salvo pela extensão: novos elementos `video`,
 recargas da aba e redefinições feitas durante o carregamento recebem a preferência
@@ -153,14 +232,15 @@ Todos os atalhos de vídeo estão registrados explicitamente em uma única `Acce
 Os testes usam cookies fictícios e páginas Playwright falsas; não acessam a internet:
 
 ```powershell
-python -m pytest
+python -m pytest tests -q -p no:cacheprovider
+node --test tests/test_extension_routing.cjs
 ```
 
 ## Teste manual com NVDA
 
 1. Inicie o NVDA e execute `python main.py` com o ambiente virtual ativado.
-2. Confirme que o foco inicial é anunciado como “Abrir TikTok”.
-3. Percorra a janela com `Tab` e confira a ordem: abrir, importar, mostrar janela do navegador, autor, descrição, controles de vídeo e volume, fechar navegador e sair.
+2. Confirme que o foco inicial está nas guias e que TikTok está selecionado. Use a seta para selecionar Instagram e confira o anúncio da guia. Pressione Tab para acessar Conectar Instagram.
+3. Use `Ctrl+Tab` para voltar ao TikTok e Enter para acessar “Abrir TikTok”. Percorra os controles com `Tab`. Confira também `Shift+Tab`, `Ctrl+Shift+Tab`, a troca de guias com as setas e o botão Sair nas duas guias.
 4. Abra o TikTok e confirme que o Chromium permanece visível. O status deve anunciar “Ocultamento temporariamente desativado para preservar a reprodução.” A caixa correspondente deve estar marcada e desabilitada.
 5. Pressione `F5`. Autor e descrição devem ser preenchidos sem mudança automática do foco.
 6. Use `Alt+A` e `Alt+D`. O status deve anunciar o autor e a descrição.
@@ -171,7 +251,18 @@ python -m pytest
 11. Use `Alt+F12` e confira página conectada, URL sem parâmetros, quantidade de vídeos, vídeo ativo, reprodução, volume e os últimos comandos/falha. O diagnóstico não deve conter cookies ou tokens.
 12. Feche o navegador e abra-o novamente. Por fim, use `Alt+S` e depois teste o X em outra execução, verificando no Gerenciador de Tarefas que não restou processo Chromium iniciado pelo aplicativo.
 
-Os testes automatizados usam HTML conceitual e mocks e não comprovam os seletores contra o TikTok real. Se o TikTok alterar sua estrutura, o status deve informar uma falha compreensível, e a janela deve continuar respondendo ao teclado.
+13. Na guia Instagram, conecte à extensão atualizada e teste `F5`, `Alt+A`, `Alt+D`,
+    `Alt+C`, reprodução, volume e navegação. Confirme que os campos do TikTok não
+    mudam. Abra comentários com `C` e confira que a janela identifica Instagram.
+14. Com as duas conexões ativas, alterne as guias durante um comando, desconecte
+    uma plataforma e confirme que a outra continua funcionando. Ao sair, confira
+    que outras abas do navegador permanecem abertas.
+
+Os testes automatizados usam HTML fictício e mocks. Os seletores de leitura do
+Instagram foram também conferidos em uma sessão real, mas ações de publicação,
+curtida e salvar foram testadas apenas em páginas fictícias. A leitura pelo NVDA
+e o fluxo completo da extensão atualizada precisam de validação manual. Mudanças
+na estrutura de qualquer plataforma podem exigir atualização dos seletores.
 
 ## Privacidade
 

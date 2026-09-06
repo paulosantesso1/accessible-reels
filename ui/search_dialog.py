@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 import wx
 
 from tiktok.search import SearchResult
+from ui.shortcuts import set_shortcut
 
 
 class SearchDialog(wx.Dialog):
@@ -16,10 +17,12 @@ class SearchDialog(wx.Dialog):
         on_search: Callable[[str], None],
         on_open: Callable[[str], None],
         on_closed: Callable[[], None],
+        *,
+        platform: str = "TikTok",
     ) -> None:
         super().__init__(
             parent,
-            title="Pesquisar vídeos",
+            title=f"Pesquisar vídeos no {platform}",
             size=(700, 560),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
@@ -31,14 +34,17 @@ class SearchDialog(wx.Dialog):
 
         panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
-        label = wx.StaticText(panel, label="Pesquisar vídeos no TikTok:")
+        label = wx.StaticText(panel, label=f"Pesquisar vídeos no {platform}:")
         sizer.Add(label, 0, wx.ALL, 12)
         self.query_field = wx.TextCtrl(panel, style=wx.TE_PROCESS_ENTER)
         self.query_field.SetName("Termo da pesquisa")
+        self.query_field.SetHelpText("Pressione Enter para pesquisar.")
+        set_shortcut(self.query_field, shortcut="Enter")
         sizer.Add(self.query_field, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
         self.search_button = wx.Button(panel, label="&Pesquisar")
         self.search_button.SetName("Pesquisar vídeos")
+        set_shortcut(self.search_button)
         sizer.Add(self.search_button, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
         results_label = wx.StaticText(panel, label="Resultados:")
@@ -50,9 +56,12 @@ class SearchDialog(wx.Dialog):
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         self.open_button = wx.Button(panel, label="&Abrir vídeo")
         self.open_button.SetName("Abrir vídeo selecionado")
+        set_shortcut(self.open_button)
         self.open_button.SetDefault()
         self.open_button.Enable(False)
         close_button = wx.Button(panel, wx.ID_CANCEL, "&Fechar")
+        close_button.SetName("Fechar pesquisa")
+        set_shortcut(close_button, shortcut="Alt+F ou Esc")
         buttons.Add(self.open_button, 1, wx.RIGHT, 8)
         buttons.Add(close_button, 1)
         sizer.Add(buttons, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)

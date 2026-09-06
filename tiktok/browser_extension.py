@@ -12,6 +12,7 @@ from typing import Any, Callable
 from tiktok.client import BrowserCommand, WorkerEvent
 from tiktok.search import normalize_search_results, validate_search_result_url
 from tiktok.video_controls import VideoControlError, clamp_volume, volume_message
+from instagram.search import normalize_reel_results, validate_reel_url
 
 
 BRIDGE_HOST = "127.0.0.1"
@@ -20,7 +21,8 @@ BRIDGE_HEADER = "X-Accessible-Reels-Bridge"
 EXTENSION_HEADER = "X-Accessible-Reels-Extension"
 BRIDGE_TOKEN = "ar-local-tiktok-bridge-v1-8f24c6d1"
 
-MINIMUM_EXTENSION_VERSION = (1, 2, 1)
+MINIMUM_EXTENSION_VERSION = (1, 3, 0)
+INSTAGRAM_BRIDGE_PORT = 43120
 
 
 def _extension_version(value: Any) -> tuple[int, int, int] | None:
@@ -44,7 +46,10 @@ class _PendingCommand:
 class BrowserExtensionBridge:
     """Ponte HTTP exclusivamente local entre a interface e a extensão."""
 
-    def __init__(self, port: int = BRIDGE_PORT) -> None:
+    def __init__(self, port: int = BRIDGE_PORT, *, platform: str = "tiktok") -> None:
+        if platform not in {"tiktok", "instagram"}:
+            raise ValueError("Plataforma desconhecida")
+        self.platform = platform
         self.port = port
         self._commands: queue.Queue[_PendingCommand] = queue.Queue()
         self._pending: dict[str, _PendingCommand] = {}
@@ -136,6 +141,7 @@ class BrowserExtensionBridge:
                         "id": command.identifier,
                         "action": command.action,
                         "argument": command.argument,
+                        "platform": bridge.platform,
                     },
                 )
 
@@ -204,7 +210,8 @@ class BrowserExtensionBridge:
                 self._pending.pop(command.identifier, None)
                 self._cancelled.add(command.identifier)
             raise VideoControlError(
-                "A extensão não respondeu. Abra uma aba do TikTok no Chrome ou Brave, "
+                "A extensão não respondeu. Recarregue a extensão e abra uma aba do "
+                f"{'Instagram' if self.platform == 'instagram' else 'TikTok'} no Chrome ou Brave, "
                 "confirme que a extensão Accessible Reels está ativada e tente novamente."
             )
         result = command.result or {"ok": False, "error": "Resposta vazia da extensão."}
@@ -245,12 +252,22 @@ class LocalBrowserWorker(threading.Thread):
         callback: Callable[[WorkerEvent], None],
         *,
         open_minimized: bool = True,
+        platform: str = "tiktok",
     ) -> None:
-        super().__init__(name="TikTokLocalBrowserWorker", daemon=False)
+        if platform not in {"tiktok", "instagram"}:
+            raise ValueError("Plataforma desconhecida")
+        super().__init__(name=f"{platform}LocalBrowserWorker", daemon=False)
+        self.platform = platform
         self._callback = callback
         self._open_minimized = open_minimized
         self._commands: queue.Queue[BrowserCommand] = queue.Queue()
-        self._bridge = BrowserExtensionBridge()
+        self._bridge = BrowserExtensionBridge(
+            INSTAGRAM_BRIDGE_PORT if platform == "instagram" else BRIDGE_PORT,
+            platform=platform,
+        )
+
+    def open_platform(self) -> None:
+        self._enqueue("open")
 
     def open_tiktok(self) -> None:
         self._enqueue("open")
@@ -283,7 +300,8 @@ class LocalBrowserWorker(threading.Thread):
         self._enqueue("search", query)
 
     def open_search_result(self, url: str) -> None:
-        self._enqueue("open_search_result", validate_search_result_url(url))
+        validate = validate_reel_url if self.platform == "instagram" else validate_search_result_url
+        self._enqueue("open_search_result", validate(url))
 
     def volume_up(self) -> None:
         self._enqueue("volume_up")
@@ -333,7 +351,7 @@ class LocalBrowserWorker(threading.Thread):
                 if command.action == "shutdown":
                     if command.argument:
                         try:
-                            self._bridge.execute("close_tiktok", timeout=4)
+                            self._bridge.execute(f"close_{self.platform}", timeout=4)
                         except VideoControlError:
                             # O aplicativo deve conseguir encerrar mesmo se o navegador
                             # ou a extensão já tiverem sido fechados pelo usuário.
@@ -361,9 +379,11 @@ class LocalBrowserWorker(threading.Thread):
     def _execute(self, command: BrowserCommand) -> None:
         if command.action == "open":
             self._bridge.start()
+            self._verify_extension_version()
             if self._open_minimized:
                 self._bridge.execute("open_minimized", timeout=15)
-            self._verify_extension_version()
+            elif self.platform == "instagram":
+                self._bridge.execute("open_platform", timeout=20)
             self._notify(
                 WorkerEvent(
                     "status",
@@ -374,11 +394,13 @@ class LocalBrowserWorker(threading.Thread):
                 )
             )
             return
-        timeout = 25 if command.action in {"search", "open_search_result"} else 12
+        timeout = (25 if command.action in {"search", "open_search_result"}
+                   else 20 if self.platform == "instagram" else 12)
         result = self._bridge.execute(command.action, command.argument, timeout=timeout)
         action = command.action
         if action == "search":
-            results = normalize_search_results(result.get("results"))
+            normalize = normalize_reel_results if self.platform == "instagram" else normalize_search_results
+            results = normalize(result.get("results"))
             count = len(results)
             self._notify(
                 WorkerEvent(
@@ -455,16 +477,16 @@ class LocalBrowserWorker(threading.Thread):
             self._notify(
                 WorkerEvent(
                     "announcement",
-                    "Vídeo adicionado aos favoritos."
+                    ("Reel salvo." if self.platform == "instagram" else "Vídeo adicionado aos favoritos.")
                     if result.get("state")
-                    else "Vídeo removido dos favoritos.",
+                    else ("Reel removido dos salvos." if self.platform == "instagram" else "Vídeo removido dos favoritos."),
                 )
             )
         elif action == "diagnostics":
             self._notify(
                 WorkerEvent(
                     "announcement",
-                    str(result.get("message") or "Extensão conectada ao TikTok."),
+                    str(result.get("message") or f"Extensão conectada ao {self.platform}."),
                 )
             )
 
@@ -494,7 +516,7 @@ class LocalBrowserWorker(threading.Thread):
                 f"A extensão carregada está desatualizada (versão {found}; mínima "
                 f"{required}). Abra a página de extensões do Chrome ou Brave, "
                 "pressione Recarregar no Accessible Reels e recarregue também a aba "
-                "do TikTok."
+                "da plataforma desejada."
             )
 
     def _notify(self, event: WorkerEvent) -> None:
