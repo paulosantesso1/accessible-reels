@@ -191,6 +191,30 @@
     }
     commentsVideo = null;
   }
+  async function openComments(video) {
+    let dialog = commentDialog();
+    if (!dialog) {
+      const button = buttonNamed(reelRoot(video), /^(comentar|comment)(\s+.*)?$/i);
+      if (!button) throw new Error("Não foi possível localizar Comentar neste Reel.");
+      await click(button);
+      dialog = await waitFor(commentDialog, "O Instagram não abriu os comentários.");
+    }
+    commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
+    await waitFor(() => commentRows(dialog).length || !dialog.querySelector('[role="status"]'),
+      "Os comentários ainda estão carregando. Tente novamente.", 5000);
+    return dialog;
+  }
+  async function replyToComment(dialog, identifier, text) {
+    const rows = commentRows(dialog);
+    const target = rows.find(item => item.id === String(identifier || "")) ||
+      rows.find(item => item.text === clean(text));
+    if (!target) throw new Error("O comentário selecionado não está mais disponível.");
+    const element = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(target.id)}"]`);
+    const reply = buttonNamed(element, /^(responder|reply)$/i);
+    if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+    await click(reply);
+    return clean(element.innerText);
+  }
   async function toggleSocial(pattern, undoPattern, name) {
     const video = activeVideo();
     const button = buttonNamed(reelRoot(video), pattern);
@@ -318,48 +342,47 @@
     if (action === "toggle_like") return toggleSocial(/^(curtir|descurtir|like|unlike)$/i, /^(descurtir|unlike)$/i, "a curtida");
     if (action === "toggle_favorite") return toggleSocial(/^(salvar|remover|remover dos salvos|save|unsave|remove)$/i, /^(remover|remover dos salvos|unsave|remove)$/i, "Salvar");
     if (action === "comments") {
-      let dialog = commentDialog();
-      if (!dialog) {
-        const button = buttonNamed(reelRoot(video), /^(comentar|comment)(\s+.*)?$/i);
-        if (!button) throw new Error("Não foi possível localizar Comentar neste Reel.");
-        await click(button);
-        dialog = await waitFor(commentDialog, "O Instagram não abriu os comentários.");
+      try {
+        const dialog = await openComments(video);
+        return {comments: commentRows(dialog)};
+      } finally {
+        await closeComments();
       }
-      commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
-      await waitFor(() => commentRows(dialog).length || !dialog.querySelector('[role="status"]'),
-        "Os comentários ainda estão carregando. Tente novamente.", 5000);
-      return {comments: commentRows(dialog)};
     }
     if (action === "reply_comment") {
-      const target = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(String(argument || ""))}"]`);
-      if (!target || !commentDialog()?.contains(target)) throw new Error("O comentário selecionado não está mais disponível.");
-      const reply = buttonNamed(target, /^(responder|reply)$/i);
-      if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
-      await click(reply);
-      return {replyTo: clean(target.innerText)};
+      const dialog = await openComments(video);
+      const identifier = typeof argument === "object" ? argument.replyTo || argument.id : argument;
+      const text = typeof argument === "object" ? argument.replyText || argument.text : "";
+      return {replyTo: await replyToComment(dialog, identifier, text)};
     }
     if (action === "post_comment") {
       const text = String(typeof argument === "object" ? argument.text : argument || "").trim();
       if (!text) throw new Error("Digite um comentário antes de publicar.");
-      const dialog = commentDialog();
-      const sameReel = () => commentsVideo && commentsVideo.video === activeVideo() &&
-        commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
-      if (!dialog || !sameReel()) throw new Error("Abra novamente os comentários do Reel antes de publicar.");
-      const editor = [...dialog.querySelectorAll('input[placeholder],textarea[placeholder]')]
-        .find(el => visible(el) && /coment|comment/i.test(el.placeholder));
-      if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
-      if (editor.value.trim()) throw new Error("Há um comentário não enviado no navegador. Revise-o antes de publicar pela interface.");
-      editor.focus();
-      const prototype = editor.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype, "value").set.call(editor, text);
-      editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
-      const post = await waitFor(() => buttonNamed(dialog, /^(publicar|post)$/i), "Não foi possível localizar Publicar comentário.", 2000);
-      if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
-      await click(post);
-      await waitFor(() => sameReel() && editor.isConnected && editor.value === "" &&
-        commentRows(dialog).some(row => row.text.includes(clean(text))),
-        "O envio não foi confirmado. Confira no Instagram antes de tentar novamente.", 4000);
-      return {};
+      try {
+        const dialog = await openComments(video);
+        const replyTo = typeof argument === "object" ? argument.replyTo : "";
+        if (replyTo) await replyToComment(dialog, replyTo, argument.replyText);
+        const sameReel = () => commentsVideo && commentsVideo.video === activeVideo() &&
+          commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
+        if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
+        const editor = [...dialog.querySelectorAll('input[placeholder],textarea[placeholder]')]
+          .find(el => visible(el) && /coment|comment/i.test(el.placeholder));
+        if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
+        if (editor.value.trim()) throw new Error("Há um comentário não enviado no navegador. Revise-o antes de publicar pela interface.");
+        editor.focus();
+        const prototype = editor.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, "value").set.call(editor, text);
+        editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
+        const post = await waitFor(() => buttonNamed(dialog, /^(publicar|post)$/i), "Não foi possível localizar Publicar comentário.", 2000);
+        if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
+        await click(post);
+        await waitFor(() => sameReel() && editor.isConnected && editor.value === "" &&
+          commentRows(dialog).some(row => row.text.includes(clean(text))),
+          "O envio não foi confirmado. Confira no Instagram antes de tentar novamente.", 4000);
+        return {};
+      } finally {
+        await closeComments();
+      }
     }
     throw new Error("Comando desconhecido recebido pela extensão do Instagram.");
   }

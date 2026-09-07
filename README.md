@@ -255,10 +255,10 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+A`: ler autor;
 - `Alt+D`: ler descrição;
 - `Alt+C`: copiar link;
-- `Alt+Shift+C`: abrir a janela de comentários do vídeo atual;
+- `Alt+Shift+C`: abrir os comentários nativos do vídeo atual;
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
-- `Esc`: fechar a janela de comentários;
+- `Esc`: voltar dos comentários ao player;
 - `F5`: atualizar autor e descrição;
 - `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos no Instagram e 10 no TikTok;
 - `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos no Instagram e 10 no TikTok;
@@ -271,7 +271,7 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+S`: Sair;
 - `Tab` e `Shift+Tab`: percorrer os controles em ordem.
 
-Na janela de comentários, o foco começa na lista somente para leitura. Use as setas para ler, `Tab` para chegar a “Escrever comentário” e depois ao botão Fechar. O texto somente é enviado à plataforma identificada na janela quando o botão Publicar é confirmado.
+Os comentários são carregados da plataforma e o painel web é fechado em seguida. A tela nativa começa na lista: use as setas para escolher um comentário; `Tab` leva aos detalhes somente leitura, a **Responder ao comentário selecionado**, ao campo para escrever e a **Publicar**. Ao escolher **Responder**, o foco vai diretamente para o campo de escrita e ele passa a publicar uma resposta ao comentário selecionado. Sem uma resposta selecionada, o mesmo campo publica um comentário novo para o vídeo. O texto só é enviado quando **Publicar** é confirmado.
 
 O foco inicial fica no seletor de guias, com TikTok selecionado. Use as setas no seletor ou Ctrl+Tab (Ctrl+Shift+Tab para voltar) para trocar de plataforma. Tab acessa Abrir/Conectar e percorre as opções da guia selecionada; Shift+Tab retorna pelos controles. Enter no seletor também acessa Abrir/Conectar. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.
 

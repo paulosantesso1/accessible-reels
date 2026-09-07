@@ -421,6 +421,47 @@
     "[data-e2e=comment-icon]", "[role=button][aria-label*='coment' i]",
     "[role=button][aria-label*='comment' i]"
   ];
+  function commentRows() {
+    const seen = new Set();
+    return [...document.querySelectorAll(
+      "[data-e2e=comment-item], [data-e2e=comment-level-1], [class*='CommentItem']"
+    )].filter(visible).map(item => {
+      const text = normalizedText(item.innerText);
+      if (!text || seen.has(text)) return null;
+      seen.add(text);
+      const id = item.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${seen.size}`;
+      item.setAttribute("data-accessible-reels-comment-id", id);
+      return {id, text};
+    }).filter(Boolean).slice(0, 200);
+  }
+  async function openComments(video) {
+    const button = findNearVideo(COMMENT_SELECTORS);
+    if (!button) throw new Error("Não foi possível localizar o botão de comentários.");
+    await trustedClick(button);
+    await sleep(1200);
+    commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
+    return commentRows();
+  }
+  async function closeComments() {
+    const close = [...document.querySelectorAll(
+      "button[aria-label='exit' i], button[data-e2e*='comment-close' i], " +
+      "button[aria-label*='fechar' i], button[aria-label*='close' i]"
+    )].find(visible);
+    if (close) await trustedClick(close);
+    commentsVideo = null;
+  }
+  async function replyToComment(identifier, text) {
+    const rows = commentRows();
+    const target = rows.find(item => item.id === String(identifier || "")) ||
+      rows.find(item => item.text === normalizedText(text));
+    if (!target) throw new Error("O comentário selecionado não está mais disponível.");
+    const element = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(target.id)}"]`);
+    const reply = element && [...element.querySelectorAll("button, [role=button], [data-e2e*='reply' i]")]
+      .find(button => visible(button) && /^(responder|reply)$/i.test(normalizedText(button.innerText || button.getAttribute("aria-label"))));
+    if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+    await trustedClick(reply);
+    return normalizedText(element.innerText);
+  }
 
   async function execute(action, argument) {
     if (action === "play") {
@@ -552,69 +593,56 @@
         "Não foi possível localizar o botão Favoritar.")};
     }
     if (action === "comments") {
-      const button = findNearVideo(COMMENT_SELECTORS);
-      if (!button) throw new Error("Não foi possível localizar o botão de comentários.");
-      await trustedClick(button);
-      await sleep(1200);
-      commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
-      const seen = new Set();
-      const comments = [...document.querySelectorAll(
-        "[data-e2e=comment-item], [data-e2e=comment-level-1], [class*='CommentItem']"
-      )].filter(visible).map(item => {
-        const text = normalizedText(item.innerText);
-        if (!text || seen.has(text)) return null;
-        seen.add(text);
-        const id = item.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${seen.size}`;
-        item.setAttribute("data-accessible-reels-comment-id", id);
-        return {id, text};
-      }).filter(Boolean).slice(0, 200);
-      return {comments};
+      try {
+        return {comments: await openComments(video)};
+      } finally {
+        await closeComments();
+      }
     }
     if (action === "reply_comment") {
-      const target = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(String(argument || ""))}"]`);
-      if (!target) throw new Error("O comentário selecionado não está mais disponível.");
-      const reply = [...target.querySelectorAll("button, [role=button], [data-e2e*='reply' i]")]
-        .find(element => visible(element) && /^(responder|reply)$/i.test(normalizedText(element.innerText || element.getAttribute("aria-label"))));
-      if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
-      await trustedClick(reply);
-      return {replyTo: normalizedText(target.innerText)};
+      await openComments(video);
+      const identifier = typeof argument === "object" ? argument.replyTo || argument.id : argument;
+      const text = typeof argument === "object" ? argument.replyText || argument.text : "";
+      return {replyTo: await replyToComment(identifier, text)};
     }
     if (action === "post_comment") {
       const text = normalizedText(typeof argument === "object" ? argument.text : String(argument || ""));
       if (!text) throw new Error("Digite um comentário antes de publicar.");
-      const sameVideo = () => commentsVideo && commentsVideo.video === activeVideo() &&
-        commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
-      if (!sameVideo()) throw new Error("Abra novamente os comentários do vídeo antes de publicar.");
-      const editor = [...document.querySelectorAll(
-        "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
-      )].find(visible);
-      if (!editor) throw new Error("Abra os comentários antes de escrever.");
-      if (normalizedText(editor.textContent)) throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
-      editor.focus();
-      editor.textContent = text;
-      editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
-      await sleep(150);
-      const post = [...document.querySelectorAll(
-        "button[data-e2e=comment-post], [data-e2e=comment-post], button"
-      )].find(element => visible(element) && /publicar|post/i.test(normalizedText(element.textContent)));
-      if (!post) throw new Error("Não foi possível localizar o botão Publicar comentário.");
-      if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
-      await trustedClick(post);
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        await sleep(200);
-        const rows = [...document.querySelectorAll('[data-e2e=comment-item], [data-e2e=comment-level-1], [class*="CommentItem"]')];
-        if (sameVideo() && editor.isConnected && !normalizedText(editor.textContent) &&
-            rows.some(row => normalizedText(row.innerText).includes(text))) return {};
+      try {
+        await openComments(video);
+        const replyTo = typeof argument === "object" ? argument.replyTo : "";
+        if (replyTo) await replyToComment(replyTo, argument.replyText);
+        const sameVideo = () => commentsVideo && commentsVideo.video === activeVideo() &&
+          commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
+        if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
+        const editor = [...document.querySelectorAll(
+          "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
+        )].find(visible);
+        if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
+        if (normalizedText(editor.textContent)) throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
+        editor.focus();
+        editor.textContent = text;
+        editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
+        await sleep(150);
+        const post = [...document.querySelectorAll(
+          "button[data-e2e=comment-post], [data-e2e=comment-post], button"
+        )].find(element => visible(element) && /publicar|post/i.test(normalizedText(element.textContent)));
+        if (!post) throw new Error("Não foi possível localizar Publicar comentário.");
+        if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
+        await trustedClick(post);
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          await sleep(200);
+          if (sameVideo() && editor.isConnected && !normalizedText(editor.textContent) &&
+              commentRows().some(row => normalizedText(row.text).includes(text))) return {};
+        }
+        throw new Error("O envio não foi confirmado. Confira os comentários antes de tentar novamente.");
+      } finally {
+        await closeComments();
       }
-      throw new Error("O envio não foi confirmado. Confira os comentários antes de tentar novamente.");
     }
     if (action === "close_comments") {
-      const close = [...document.querySelectorAll(
-        "button[aria-label='exit' i], button[data-e2e*='comment-close' i], " +
-        "button[aria-label*='fechar' i], button[aria-label*='close' i]"
-      )].find(visible);
-      if (close) await trustedClick(close);
+      await closeComments();
       return {};
     }
     if (action === "diagnostics") {

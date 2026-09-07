@@ -163,6 +163,7 @@ def test_instagram_comments_and_explicit_post(page):
     assert len(result["comments"]) == 2
     assert "Comentário de teste" in result["comments"][0]["text"]
     assert result["comments"][0]["id"]
+    assert not page.locator('[role="dialog"]').is_visible()
     page.evaluate('''id => {
       const row = document.querySelector(`[data-accessible-reels-comment-id="${id}"]`);
       const reply = document.createElement("button");
@@ -170,20 +171,20 @@ def test_instagram_comments_and_explicit_post(page):
       reply.textContent = "Responder";
       row.append(reply);
     }''', result["comments"][0]["id"])
-    assert command(page, "reply_comment", result["comments"][0]["id"])["replyTo"].startswith("ana")
+    reply = {"text": "Comentário fictício", "replyTo": result["comments"][0]["id"],
+             "replyText": result["comments"][0]["text"]}
+    assert command(page, "post_comment", reply)["ok"] is True
     assert "reply" in page.evaluate("window.igClicks")
-    assert command(page, "post_comment", "Comentário fictício")["ok"] is True
     assert "Publicar" in page.evaluate("window.igClicks")
-    assert command(page, "close_comments")["ok"] is True
     assert not page.locator('[role="dialog"]').is_visible()
 
 
 def test_instagram_does_not_overwrite_unsent_comment(page):
     command(page, "comments")
-    page.locator("input").fill("Rascunho do usuário")
+    page.evaluate("document.querySelector('input').value = 'Rascunho do usuário'")
     result = command(page, "post_comment", "Outro texto")
     assert result["ok"] is False
-    assert page.locator("input").input_value() == "Rascunho do usuário"
+    assert page.evaluate("document.querySelector('input').value") == "Rascunho do usuário"
     assert "Publicar" not in page.evaluate("window.igClicks")
 
 
@@ -197,6 +198,7 @@ def test_instagram_post_rejects_different_reel(page):
 
 def test_instagram_plain_letters_do_not_intercept_comment_typing(page):
     command(page, "comments")
+    page.evaluate("document.querySelector('[role=dialog]').style.display = 'block'")
     page.locator("input").fill("")
     page.locator("input").press_sequentially("clf")
     assert page.locator("input").input_value() == "clf"
