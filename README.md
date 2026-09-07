@@ -239,7 +239,7 @@ O botão Sair e `Alt+S` estão disponíveis nas duas guias.
 
 Os controles com atalhos informam separadamente o nome, o tipo nativo e a tecla
 à acessibilidade do Windows. Assim, o NVDA pode anunciar, por exemplo,
-“Curtir ou descurtir, botão, L” e “Próximo vídeo, botão, Alt+Seta para baixo”.
+“Curtir ou descurtir, botão, Alt+L” e “Próximo vídeo, botão, Alt+Seta para baixo”.
 A palavra “botão” não faz parte dos rótulos. A ordem da fala e o anúncio das
 teclas dependem das configurações do leitor de tela. Esse comportamento também
 se aplica às opções de janela minimizada e aos controles de pesquisa e comentários.
@@ -255,9 +255,9 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+A`: ler autor;
 - `Alt+D`: ler descrição;
 - `Alt+C`: copiar link;
-- `C`: abrir a janela de comentários do vídeo atual;
-- `L`: curtir ou descurtir o vídeo atual;
-- `F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
+- `Alt+Shift+C`: abrir a janela de comentários do vídeo atual;
+- `Alt+L`: curtir ou descurtir o vídeo atual;
+- `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
 - `Esc`: fechar a janela de comentários;
 - `F5`: atualizar autor e descrição;
 - `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos no Instagram e 10 no TikTok;

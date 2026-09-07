@@ -5,6 +5,8 @@ import os
 import shutil
 import sys
 import threading
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
@@ -23,6 +25,59 @@ from updater import UpdateError, can_self_update, check_for_update, download_upd
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
+
+
+def _copy_text_to_clipboard(text):
+    """Store rendered Unicode text so it survives this process closing on Windows."""
+    if sys.platform != 'win32':
+        if not wx.TheClipboard.Open():
+            return False
+        try:
+            return wx.TheClipboard.SetData(wx.TextDataObject(text))
+        finally:
+            wx.TheClipboard.Close()
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.argtypes = []
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = wintypes.BOOL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    if not user32.OpenClipboard(None):
+        return False
+    handle = None
+    try:
+        encoded = (text + '\0').encode('utf-16-le')
+        handle = kernel32.GlobalAlloc(0x0002, len(encoded))
+        if not handle:
+            return False
+        address = kernel32.GlobalLock(handle)
+        if not address:
+            return False
+        ctypes.memmove(address, encoded, len(encoded))
+        kernel32.GlobalUnlock(handle)
+        if not user32.EmptyClipboard():
+            return False
+        if not user32.SetClipboardData(13, handle):
+            return False
+        handle = None
+        return True
+    finally:
+        if handle:
+            kernel32.GlobalFree(handle)
+        user32.CloseClipboard()
 
 
 def session_summary(opened_platforms):
@@ -55,7 +110,9 @@ def keyboard_help_text():
         'F5 — Atualizar autor e descrição\n'
         'Alt+A / Alt+D — Ler autor / descrição\n'
         'Alt+C — Copiar link\n'
-        'C — Comentários\n'
+        'Alt+Shift+C — Comentários\n'
+        'Alt+L — Curtir ou descurtir\n'
+        'Alt+F — Salvar ou remover dos salvos\n'
         'L — Curtir ou descurtir\n'
         'F — Salvar ou remover dos salvos\n'
         'Alt+E — Pesquisar vídeos\n'
@@ -301,8 +358,6 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
     def _configure_accelerators(self):
         entries = []
         for action, modifiers, key in ACCELERATOR_SPECS + SEEK_ACCELERATOR_SPECS:
-            if modifiers == wx.ACCEL_NORMAL and key in (ord('C'), ord('L'), ord('F')):
-                continue  # Preserve typing in comment/search editors.
             identifier = wx.NewIdRef()
             self._accelerator_ids[action] = identifier
             self.Bind(wx.EVT_MENU, lambda e, a=action: self.dispatch(a), id=identifier)
@@ -359,11 +414,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
                 or focused is self.current()):
             event.Skip()
             return
-        action = {ord('C'):'open_comments', ord('L'):'toggle_like', ord('F'):'toggle_favorite'}.get(event.GetKeyCode())
-        if action:
-            self.dispatch(action)
-        else:
-            event.Skip()
+        event.Skip()
 
     def _comment_key_down(self, event):
         if event.ControlDown() and event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
@@ -630,13 +681,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         except (ValueError, VideoControlError):
             self.status('Não foi possível identificar um link válido para o vídeo.')
             return
-        if not wx.TheClipboard.Open():
-            self.status('A área de transferência está ocupada.')
-            return
-        try:
-            success = wx.TheClipboard.SetData(wx.TextDataObject(link))
-        finally:
-            wx.TheClipboard.Close()
+        success = _copy_text_to_clipboard(link)
         self.status('Link copiado.' if success else 'Não foi possível copiar o link.')
 
     def publish_comment(self, event=None):

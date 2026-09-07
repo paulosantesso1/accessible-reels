@@ -54,6 +54,9 @@ def test_required_accelerators_are_preserved():
     assert shortcuts["previous_video"] == (wx.ACCEL_ALT, wx.WXK_UP)
     assert shortcuts["volume_up"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_UP)
     assert shortcuts["volume_down"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_DOWN)
+    assert shortcuts["open_comments"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C"))
+    assert shortcuts["toggle_like"] == (wx.ACCEL_ALT, ord("L"))
+    assert shortcuts["toggle_favorite"] == (wx.ACCEL_ALT, ord("F"))
 
 
 def test_accelerators_dispatch_the_current_window_actions():

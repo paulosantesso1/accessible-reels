@@ -26,9 +26,9 @@ ACCELERATOR_SPECS = (
     ("volume_down", wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_DOWN),
     ("toggle_mute", wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("M")),
     ("diagnostics", wx.ACCEL_ALT, wx.WXK_F12),
-    ("open_comments", wx.ACCEL_NORMAL, ord("C")),
-    ("toggle_like", wx.ACCEL_NORMAL, ord("L")),
-    ("toggle_favorite", wx.ACCEL_NORMAL, ord("F")),
+    ("open_comments", wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C")),
+    ("toggle_like", wx.ACCEL_ALT, ord("L")),
+    ("toggle_favorite", wx.ACCEL_ALT, ord("F")),
 )
 
 

@@ -216,6 +216,7 @@
       if (event.key === "ArrowUp") return "volume_up";
       if (event.key === "ArrowDown") return "volume_down";
       if (key === "m") return "toggle_mute";
+      if (key === "c") return "comments";
       return null;
     }
     if (event.altKey) {
@@ -231,7 +232,7 @@
     }
     if (event.shiftKey) return null;
     if (event.key === "F5") return "refresh_info";
-    return ({c: "comments", l: "toggle_like", f: "toggle_favorite"})[key] || null;
+    return ({l: "toggle_like", f: "toggle_favorite"})[key] || null;
   }
 
   function editableTarget(target) {
