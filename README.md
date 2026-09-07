@@ -43,7 +43,7 @@ e persistência após reiniciar. A execução sem `--webview` também usa a jane
 
 Aplicativo desktop para Windows com interface nativa wxPython acessível ao NVDA. Ele controla uma janela real do Chromium pelo Playwright, usando o perfil persistente `data/browser_profile`.
 
-O aplicativo abre o TikTok, importa cookies JSON, navega pelos vídeos, controla a reprodução, apresenta autor, descrição e comentários, permite curtir e favoritar e copia o link atual. A guia Instagram controla os Reels pela extensão do Chrome ou Brave, com os mesmos atalhos. A publicação de comentários exige confirmação explícita no botão Publicar.
+O aplicativo abre o TikTok, importa cookies JSON, navega pelos vídeos, controla a reprodução, apresenta autor, descrição e comentários, permite curtir e favoritar e copia o link atual. A guia Instagram controla os Reels pela extensão do Chrome ou Brave, com os mesmos atalhos. Os comentários estão disponíveis somente para leitura.
 
 Também existe um modo opcional para usar uma sessão já autenticada no Chrome ou
 Brave. Nesse modo, uma extensão local executa as ações na aba do TikTok e devolve
@@ -197,11 +197,9 @@ A navegação anterior/próximo requer o feed **Reels**; posts de foto e página
 sem vídeo não respondem aos comandos de reprodução. No navegador, `Alt+E` abre
 a pesquisa do próprio Instagram.
 
-Comentários são lidos do painel do Reel atual. A publicação só ocorre ao
-confirmar **Publicar** na interface. Se o Reel mudar ou houver um rascunho no
-navegador, o aplicativo pede que você revise a situação antes de enviar. Uma
-alteração de curtida, salvo ou comentário sem confirmação na página é informada
-como falha, para evitar anunciar uma ação que o Instagram não confirmou.
+Comentários são lidos do painel do Reel atual. A publicação e as respostas estão
+temporariamente desativadas; a interface apresenta somente a lista e os detalhes
+em modo de leitura.
 
 **Fechar conexão do Instagram** (`Alt+F`) desconecta sem fechar a aba. Sair do
 aplicativo fecha somente as abas controladas pelas conexões ainda ativas. TikTok
@@ -271,7 +269,7 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+S`: Sair;
 - `Tab` e `Shift+Tab`: percorrer os controles em ordem.
 
-Os comentários são carregados da plataforma e o painel web é fechado em seguida. A tela nativa começa na lista: use as setas para escolher um comentário; `Tab` leva aos detalhes somente leitura, a **Responder ao comentário selecionado**, ao campo para escrever e a **Publicar**. Ao escolher **Responder**, o foco vai diretamente para o campo de escrita e ele passa a publicar uma resposta ao comentário selecionado. Sem uma resposta selecionada, o mesmo campo publica um comentário novo para o vídeo. O texto só é enviado quando **Publicar** é confirmado.
+Os comentários são carregados da plataforma e o painel web é fechado em seguida. A tela nativa é somente leitura: use as setas para escolher um comentário e `Tab` para acessar seus detalhes completos. A publicação e as respostas estão temporariamente desativadas.
 
 O foco inicial fica no seletor de guias, com TikTok selecionado. Use as setas no seletor ou Ctrl+Tab (Ctrl+Shift+Tab para voltar) para trocar de plataforma. Tab acessa Abrir/Conectar e percorre as opções da guia selecionada; Shift+Tab retorna pelos controles. Enter no seletor também acessa Abrir/Conectar. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.
 

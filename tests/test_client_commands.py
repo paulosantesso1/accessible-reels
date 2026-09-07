@@ -255,12 +255,12 @@ def test_comments_response_carries_accessible_comment_list():
     assert events[-1].message == "Comentários carregados: 2."
 
 
-def test_comment_is_only_published_after_explicit_command():
+def test_comment_publication_is_disabled():
     events: list[WorkerEvent] = []
     worker = make_worker(events)
-    worker._execute_command(BrowserCommand("post_comment", "Comentário consciente"))
-    assert FakeVideoController.last_instance.posted_comment == "Comentário consciente"
-    assert events[-1].message == "Comentário publicado."
+    with pytest.raises(VideoControlError, match="desativada temporariamente"):
+        worker._execute_command(BrowserCommand("post_comment", "Comentário consciente"))
+    assert not hasattr(FakeVideoController.last_instance, "posted_comment")
 
 
 def test_like_and_favorite_commands_announce_result():

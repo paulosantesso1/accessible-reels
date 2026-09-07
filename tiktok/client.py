@@ -303,8 +303,9 @@ class BrowserWorker(threading.Thread):
                 )
             )
         elif command.action == "post_comment":
-            controller.post_comment(str(command.argument or ""))
-            self._notify(WorkerEvent("announcement", "Comentário publicado."))
+            raise VideoControlError(
+                "A publicação de comentários está desativada temporariamente."
+            )
         elif command.action == "close_comments":
             controller.close_comments()
             self._notify(WorkerEvent("status", "Comentários fechados."))

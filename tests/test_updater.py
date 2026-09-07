@@ -12,13 +12,19 @@ def asset(name):
 
 
 def test_accepts_new_release_with_installer_and_checksum():
-    info = release_from_payload(release_payload(asset("Accessible-Reels-Setup.exe"), asset("Accessible-Reels-Setup.exe.sha256")))
+    info = release_from_payload(
+        release_payload(asset("Accessible-Reels-Setup.exe"), asset("Accessible-Reels-Setup.exe.sha256")),
+        current_version="0.1.0",
+    )
     assert info and info.latest_version == "0.2.0"
 
 
 def test_rejects_release_without_checksum():
     with pytest.raises(UpdateError, match="checksum"):
-        release_from_payload(release_payload(asset("Accessible-Reels-Setup.exe")))
+        release_from_payload(
+            release_payload(asset("Accessible-Reels-Setup.exe")),
+            current_version="0.1.0",
+        )
 
 
 def test_version_comparison_handles_v_prefix():

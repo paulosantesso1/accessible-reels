@@ -8,13 +8,12 @@ from ui.shortcuts import set_shortcut
 
 
 class CommentsDialog(wx.Dialog):
-    """Janela nativa para leitura e publicação consciente de comentários."""
+    """Janela nativa de comentários somente para leitura."""
 
     def __init__(
         self,
         parent: wx.Window,
         comments: Iterable[str],
-        on_post: Callable[[str], None],
         on_closed: Callable[[], None],
         *,
         platform: str = "TikTok",
@@ -25,8 +24,6 @@ class CommentsDialog(wx.Dialog):
             size=(620, 560),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
-        self._on_post = on_post
-        self._platform = platform
         self._on_closed = on_closed
         self._closed_notified = False
 
@@ -44,18 +41,13 @@ class CommentsDialog(wx.Dialog):
         sizer.Add(self.comments_field, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
         buttons = wx.BoxSizer(wx.HORIZONTAL)
-        self.write_button = wx.Button(panel, label="&Escrever comentário")
-        self.write_button.SetName("Escrever comentário")
-        set_shortcut(self.write_button)
         self.close_button = wx.Button(panel, wx.ID_CANCEL, "&Fechar")
         self.close_button.SetName("Fechar comentários")
         set_shortcut(self.close_button, shortcut="Alt+F ou Esc")
-        buttons.Add(self.write_button, 1, wx.RIGHT, 8)
-        buttons.Add(self.close_button, 1)
+        buttons.Add(self.close_button, 0, wx.ALIGN_RIGHT)
         sizer.Add(buttons, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
         panel.SetSizer(sizer)
 
-        self.write_button.Bind(wx.EVT_BUTTON, self._write_comment)
         self.close_button.Bind(wx.EVT_BUTTON, lambda _event: self.Close())
         self.Bind(wx.EVT_CLOSE, self._close)
         self.SetEscapeId(wx.ID_CANCEL)
@@ -84,39 +76,6 @@ class CommentsDialog(wx.Dialog):
         self.Raise()
         self.comments_field.SetInsertionPoint(0)
         self.comments_field.SetFocus()
-
-    def _write_comment(self, _event: wx.CommandEvent) -> None:
-        dialog = wx.TextEntryDialog(
-            self,
-            f"Digite o comentário. Selecione Publicar para enviá-lo ao {self._platform}.",
-            "Escrever comentário",
-            style=wx.OK | wx.CANCEL | wx.TE_MULTILINE,
-        )
-        publish_button = dialog.FindWindowById(wx.ID_OK)
-        if publish_button is not None:
-            publish_button.SetLabel("&Publicar")
-            publish_button.SetName("Publicar comentário")
-            set_shortcut(publish_button)
-        cancel_button = dialog.FindWindowById(wx.ID_CANCEL)
-        if cancel_button is not None:
-            cancel_button.SetName("Cancelar publicação")
-            set_shortcut(cancel_button, shortcut="Esc")
-        try:
-            if dialog.ShowModal() != wx.ID_OK:
-                return
-            text = dialog.GetValue().strip()
-        finally:
-            dialog.Destroy()
-        if not text:
-            wx.MessageBox(
-                "Digite um comentário antes de publicar.",
-                "Comentário vazio",
-                wx.OK | wx.ICON_INFORMATION,
-                self,
-            )
-            self.write_button.SetFocus()
-            return
-        self._on_post(text)
 
     def _close(self, event: wx.CloseEvent) -> None:
         if not self._closed_notified:

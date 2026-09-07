@@ -16,7 +16,7 @@ from ui.video_link import parse_video_link
 PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/'}
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
-           'post_comment', 'reply_comment', 'close_comments', 'toggle_like', 'toggle_favorite',
+           'close_comments', 'toggle_like', 'toggle_favorite',
            'collect_search_results', 'diagnostics'}
 
 

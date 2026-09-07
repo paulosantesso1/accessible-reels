@@ -1,5 +1,7 @@
 from unittest.mock import Mock, patch
 
+import pytest
+
 from ui.webview_client import WebViewClient
 
 
@@ -53,3 +55,10 @@ def test_inactive_network_does_not_execute_commands():
     with patch('ui.webview_client.webview_native.evaluate') as evaluate:
         client.execute('toggle', None, Mock())
         evaluate.assert_not_called()
+
+
+@pytest.mark.parametrize('action', ('post_comment', 'reply_comment'))
+def test_comment_writing_commands_are_not_accepted(action):
+    client = make_client()
+    with pytest.raises(ValueError, match='Comando desconhecido'):
+        client.execute(action, None, Mock())

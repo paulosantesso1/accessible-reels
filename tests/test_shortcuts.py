@@ -89,15 +89,11 @@ def test_f6_shortcut_toggles_between_page_and_controls():
 
 
 def test_tab_cycle_stays_within_the_active_app_controls():
-    detail, comments, comment_details, reply, draft = Mock(), Mock(), Mock(), Mock(), Mock()
+    detail, comments, comment_details = Mock(), Mock(), Mock()
     frame = type('Frame', (), {})()
     frame.details_field = detail
     frame.comments_list = comments
     frame.comment_details_field = comment_details
-    frame.reply_button = reply
-    frame.reply_button.IsEnabled.return_value = True
-    frame.comment_input = draft
-    frame.publish_button = Mock()
     frame.query_field = Mock()
     frame.results_list = Mock()
     frame.activities = Mock()
@@ -109,9 +105,9 @@ def test_tab_cycle_stays_within_the_active_app_controls():
     event.ControlDown.return_value = False
     event.AltDown.return_value = False
     event.ShiftDown.return_value = False
-    event.GetEventObject.return_value = reply
+    event.GetEventObject.return_value = comments
     MainFrame._keep_tab_in_app(frame, event)
-    draft.SetFocus.assert_called_once()
+    comment_details.SetFocus.assert_called_once()
     event.Skip.assert_not_called()
 
 
@@ -166,18 +162,6 @@ def test_comments_use_a_short_list_label_and_full_read_only_details():
     assert label.endswith('...')
     assert comment_details_text(2, 3, text) == f'Comentário 2 de 3\n\n{text.strip()}'
 
-
-def test_replying_to_a_selected_comment_moves_focus_to_the_native_editor():
-    frame = type('Frame', (), {})()
-    frame._reply_target = None
-    frame._update_comment_composer = Mock()
-    frame.comment_input = Mock()
-    frame.status = Mock()
-    MainFrame.reply_to_comment(frame, {'id': 'comment-2', 'text': 'Texto selecionado'})
-    assert frame._reply_target == {'id': 'comment-2', 'text': 'Texto selecionado'}
-    frame._update_comment_composer.assert_called_once_with()
-    frame.comment_input.SetFocus.assert_called_once_with()
-    frame.status.assert_called_once_with('Resposta selecionada. Digite o texto e escolha Publicar.')
 
 
 def test_platform_menu_action_selects_and_opens_the_requested_platform():
