@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import wx
 
-from ui.webview_focus import EmbeddedFocusMixin as WebViewFrame, FOCUS_PAGE_HOTKEY, FOCUS_CONTROLS_HOTKEY
+from ui.webview_focus import EmbeddedFocusMixin as WebViewFrame, FOCUS_PAGE_HOTKEY
 
 
 def test_windows_hotkeys_use_virtual_key_f6_and_valid_ids():
@@ -14,7 +14,6 @@ def test_windows_hotkeys_use_virtual_key_f6_and_valid_ids():
     WebViewFrame._activation_changed(frame, event)
     assert frame.RegisterHotKey.call_args_list == [
         ((FOCUS_PAGE_HOTKEY, 0, 0x75),),
-        ((FOCUS_CONTROLS_HOTKEY, wx.MOD_SHIFT, 0x75),),
     ]
     assert all(0 <= key <= 0xBFFF for key in frame._registered_hotkeys)
     frame.RegisterHotKey.reset_mock()
@@ -22,7 +21,7 @@ def test_windows_hotkeys_use_virtual_key_f6_and_valid_ids():
     frame.RegisterHotKey.assert_not_called()
     frame.UnregisterHotKey = Mock()
     WebViewFrame._release_hotkey(frame)
-    assert frame.UnregisterHotKey.call_count == 2
+    assert frame.UnregisterHotKey.call_count == 1
     assert not frame._registered_hotkeys
 
 

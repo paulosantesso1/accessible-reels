@@ -227,8 +227,23 @@
       const nav = buttonNamed(document, action === "next" ?
         /^(navegar para o próximo reel|go to next reel|next reel)$/i :
         /^(navegar para o reel anterior|go to previous reel|previous reel)$/i);
-      if (!nav) throw new Error("Abra o feed Reels para navegar entre os vídeos.");
-      await click(nav);
+      if (nav) {
+        await click(nav);
+      } else {
+        // Instagram removes the arrow buttons in the narrower layout used by
+        // the embedded WebView. Move to the adjacent loaded Reel instead.
+        const currentRect = video.getBoundingClientRect();
+        const candidates = [...document.querySelectorAll("video")]
+          .filter(item => item !== video && visible(item))
+          .map(item => ({item, rect: item.getBoundingClientRect()}))
+          .filter(({rect}) => action === "next" ? rect.top > currentRect.top + 20 : rect.top < currentRect.top - 20)
+          .sort((a, b) => action === "next" ? a.rect.top - b.rect.top : b.rect.top - a.rect.top);
+        if (!candidates.length) {
+          throw new Error(action === "next" ?
+            "Não há um próximo Reel carregado." : "Você está no primeiro Reel carregado.");
+        }
+        candidates[0].item.scrollIntoView({block: "center", inline: "nearest"});
+      }
       await waitFor(() => {const active = activeVideo(); return active && (active !== video || active.currentSrc !== before);},
         "O Instagram não mudou de Reel; você pode estar no início ou fim da lista.", 4000);
       await sleep(350);

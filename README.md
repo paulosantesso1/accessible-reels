@@ -10,16 +10,19 @@ aplicativo anuncia a nova posição. Funciona no TikTok e no Instagram.
 Execute `.\.venv\Scripts\python.exe main.py --webview` para testar TikTok e
 Instagram em WebView2, sem extensão e sem janela externa de navegador.
 Requer Microsoft Edge WebView2 Runtime e wxPython com backend Edge disponível.
-O app inicia sem abrir nenhuma rede. Escolha TikTok ou Instagram e pressione
-**Logar / abrir rede selecionada**. Use **F6** para acessar a página e
-fazer login; **Shift+F6** retorna ao botão Reproduzir ou pausar, mesmo com o foco
-na página. Use Tab ou Shift+Tab para os demais controles e o seletor de rede.
-F6 não abre redes: após o botão de login, aguarda o carregamento quando necessário
-antes de focar um elemento da página. Shift+F6 cancela essa
-entrada pendente. Os dois atalhos são reservados no Windows somente enquanto o
+O app inicia sem abrir nenhuma plataforma. Ele segue o modelo de player por atalhos:
+**Ctrl+1** abre TikTok e **Ctrl+2** abre Instagram. Use **F6** para alternar entre
+a página e o painel do player; faça login quando necessário. **F1** abre a ajuda rápida.
+A área superior informa a plataforma ativa e quais já foram abertas nesta sessão,
+sem afirmar que o site aceitou o login — a página sempre pode pedir autenticação
+outra vez.
+F6 não abre redes: após abrir uma plataforma, aguarda o carregamento quando necessário
+antes de focar um elemento da página. O atalho é reservado no Windows somente enquanto o
 protótipo está ativo.
 
-O perfil persistente fica em `data/webview_profile/`, ignorado pelo Git.
+O perfil persistente fica em `%LOCALAPPDATA%\Accessible Reels\webview_profile`.
+Versões de desenvolvimento migram automaticamente o perfil antigo de
+`data/webview_profile/` na primeira execução, sem apagar o original.
 Na guia **Vídeo**, use **Abrir link a partir de uma URL...**, cole o link e
 pressione **Abrir vídeo**. A rede é selecionada automaticamente e o vídeo abre
 no mesmo perfil, aproveitando o login salvo. Links curtos `vm.tiktok.com`,
@@ -86,12 +89,16 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 O aplicativo agora abre TikTok e Instagram dentro da própria janela usando
 Microsoft Edge WebView2. A extensão do navegador e as pontes locais não são mais
-necessárias. Execute `python main.py`, escolha a rede e aguarde o carregamento.
-Faça login uma vez na página incorporada; a sessão fica em `data/webview_profile/`.
-Use F6 para entrar na página e Shift+F6 para retornar aos controles acessíveis.
-Os controles nativos cobrem reprodução, volume, navegação, informações, curtida,
-salvos, comentários e pesquisa. A rede ainda pode pedir login novamente quando
-invalidar a sessão.
+necessárias. Execute `python main.py`, escolha a plataforma e aguarde o carregamento.
+Faça login uma vez na página incorporada; a sessão fica em
+`%LOCALAPPDATA%\Accessible Reels\webview_profile`, tanto ao executar pelo código
+quanto ao usar a versão instalada. Use F1 para a lista de atalhos e F6 para alternar
+entre a página e os controles acessíveis. O painel **Player**
+mantém autor e descrição juntos em uma única caixa somente leitura. A reprodução é
+controlada pelos atalhos; comentários e pesquisa abrem como telas secundárias, sem
+abas permanentes. Os menus **Plataforma**, **Player** e **Ações** servem para
+descobrir os comandos e os atalhos continuam sendo o caminho rápido. A plataforma
+pode pedir login novamente quando invalidar a sessão.
 
 ## Compatibilidade histórica da extensão
 

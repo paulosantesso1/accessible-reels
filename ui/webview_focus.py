@@ -14,7 +14,6 @@ from ui.nvda_announcer import speak_with_accessible_output
 # RegisterHotKey takes Windows virtual-key codes, NOT wx.WXK_* codes.
 VK_F6 = 0x75
 FOCUS_PAGE_HOTKEY = 0x4150
-FOCUS_CONTROLS_HOTKEY = 0x4151
 PAGE_FOCUS_SCRIPT = """(() => {
     const visible = el => el.getClientRects().length &&
         getComputedStyle(el).visibility !== 'hidden' && !el.closest('[inert]');
@@ -36,10 +35,7 @@ PAGE_FOCUS_SCRIPT = """(() => {
 class EmbeddedFocusMixin:
     def _activation_changed(self, event):
         if event.GetActive():
-            for hotkey, modifier, label in (
-                (FOCUS_PAGE_HOTKEY, 0, "F6"),
-                (FOCUS_CONTROLS_HOTKEY, wx.MOD_SHIFT, "Shift+F6"),
-            ):
+            for hotkey, modifier, label in ((FOCUS_PAGE_HOTKEY, 0, "F6"),):
                 if hotkey not in self._registered_hotkeys:
                     if self.RegisterHotKey(hotkey, modifier, VK_F6):
                         self._registered_hotkeys.add(hotkey)
@@ -56,12 +52,13 @@ class EmbeddedFocusMixin:
 
     def focus_controls(self, event=None):
         self._pending_page_focus = None
-        self.play_button.SetFocus()
-        self.status("Controles do aplicativo. Reproduzir ou pausar. Use Tab para os demais controles; F6 volta à página.")
+        target = getattr(self, 'player_focus_target', None) or self.play_button
+        target.SetFocus()
+        self.status("Player do aplicativo. Use F1 para os atalhos; F6 volta à página.")
 
     def focus_page(self, event=None):
         if not self.current():
-            self.status('Escolha a rede e pressione Logar / abrir rede selecionada.')
+            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
             return
         view = self.current()
         if view is None:
@@ -72,6 +69,13 @@ class EmbeddedFocusMixin:
             return
         self._enter_page(view)
 
+    def toggle_page_controls(self, event=None):
+        view = self.current()
+        if self._pending_page_focus is not None or (view is not None and wx.Window.FindFocus() is view):
+            self.focus_controls()
+            return
+        self.focus_page()
+
     def _enter_page(self, view):
         if self._pending_page_focus is not view or self.current() is not view:
             return
@@ -80,5 +84,5 @@ class EmbeddedFocusMixin:
         # SetFocus alone can stop at the WebView2 host pane, outside RootWebArea.
         # Explicit DOM focus gives NVDA a real page element and tab position.
         view.RunScriptAsync(PAGE_FOCUS_SCRIPT)
-        self.status(f"Página do {self.network.GetStringSelection()}. Shift+F6 retorna aos controles do aplicativo.")
+        self.status(f"Página do {self.network.GetStringSelection()}. F6 retorna aos controles do aplicativo.")
 

@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -68,3 +69,30 @@ def test_delayed_play_is_skipped_after_switching_network():
     MainFrame.open_video_link(frame, 'https://instagram.com/reel/ABC/')
     frame.open_network.call_args.kwargs['after_load']()
     frame.dispatch.assert_not_called()
+
+
+def test_first_loaded_video_refreshes_its_details_automatically():
+    current = Mock()
+    frame = SimpleNamespace(_active_name='TikTok', _closing_app=False,
+                            _pending_page_focus=None, current=Mock(return_value=current),
+                            status=Mock(), dispatch=Mock())
+    MainFrame.loaded(frame, 'TikTok')
+    frame.dispatch.assert_called_once_with('refresh_info')
+    assert 'carregado' in frame.status.call_args.args[0]
+
+
+def test_automatic_detail_refresh_does_not_announce_author_or_description():
+    frame = SimpleNamespace(platform_data={'TikTok': {}}, _active_name='TikTok',
+                            comment_input=Mock(), _restore_fields=Mock(), status=Mock())
+    MainFrame._result(frame, 'TikTok', 'refresh_info', None,
+                      {'ok': True, 'author': '@ana', 'description': 'Descrição automática.'})
+    frame.status.assert_not_called()
+
+
+@pytest.mark.parametrize('action', ['next_video', 'previous_video'])
+def test_video_navigation_does_not_announce_automatic_details(action):
+    frame = SimpleNamespace(platform_data={'TikTok': {}}, _active_name='TikTok',
+                            comment_input=Mock(), _restore_fields=Mock(), status=Mock())
+    MainFrame._result(frame, 'TikTok', action, None,
+                      {'ok': True, 'author': '@ana', 'description': 'Descrição automática.'})
+    frame.status.assert_not_called()

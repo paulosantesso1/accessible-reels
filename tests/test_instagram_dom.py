@@ -198,6 +198,12 @@ def test_instagram_next_and_previous_change_active_reel(page):
     assert command(page, "previous")["author"] == "@ana"
 
 
+def test_instagram_navigates_by_scrolling_when_responsive_layout_hides_arrows(page):
+    page.locator('[aria-label="Navegar para o próximo reel"]').evaluate("element => element.parentElement.remove()")
+    assert command(page, "next")["author"] == "@errado"
+    assert command(page, "previous")["author"] == "@ana"
+
+
 def test_instagram_failed_social_state_is_reported_as_error(page):
     page.evaluate("document.querySelector('#like').onclick=null")
     result = command(page, "toggle_like")

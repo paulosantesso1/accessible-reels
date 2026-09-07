@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -9,12 +10,11 @@ from urllib.parse import quote_plus, urlsplit
 
 import wx
 import wx.html2 as html2
-from wx.lib.scrolledpanel import ScrolledPanel
 
-from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY, FOCUS_CONTROLS_HOTKEY
+from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
 from ui.webview_client import WebViewClient, PLATFORM_URLS
 from ui.video_link import parse_video_link
-from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS, set_shortcut
+from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url
 from instagram.search import normalize_reel_results, validate_reel_url
@@ -25,14 +25,67 @@ COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':
             'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
 
 
+def session_summary(opened_platforms):
+    """Describe the local session state without claiming a remote login succeeded."""
+    opened = set(opened_platforms)
+    return ' | '.join(
+        f'{name}: ' + ('aberto' if name in opened else 'não aberto')
+        for name in ('TikTok', 'Instagram')
+    )
+
+
+def video_details_text(author, description):
+    author = str(author or '').strip() or 'Não identificado'
+    description = str(description or '').strip() or 'Sem descrição disponível.'
+    return f'Autor: {author}\n\nDescrição:\n{description}'
+
+
+def keyboard_help_text():
+    return (
+        'Ajuda rápida de atalhos\n\n'
+        'F6 — Alternar entre a página da plataforma e os controles\n'
+        'Ctrl+1 / Ctrl+2 — Abrir TikTok / Instagram\n'
+        'Ctrl+O — Abrir um link de vídeo\n'
+        'Alt+Seta para cima / baixo — Vídeo anterior / próximo\n'
+        'Alt+P — Reproduzir ou pausar\n'
+        'Alt+Seta para esquerda / direita — Voltar ou avançar 30 segundos\n'
+        'Alt+Shift+Seta para esquerda / direita — Voltar ou avançar 15 segundos\n'
+        'Alt+Shift+Seta para cima / baixo — Aumentar ou diminuir o volume\n'
+        'Alt+Shift+M — Ativar ou desativar o mudo\n'
+        'F5 — Atualizar autor e descrição\n'
+        'Alt+A / Alt+D — Ler autor / descrição\n'
+        'Alt+C — Copiar link\n'
+        'C — Comentários\n'
+        'L — Curtir ou descurtir\n'
+        'F — Salvar ou remover dos salvos\n'
+        'Alt+E — Pesquisar vídeos\n'
+        'Alt+S — Sair'
+    )
+
+
+def webview_profile_path(*, local_app_data=None, frozen=None, source_root=None):
+    """Return one stable WebView2 profile and migrate the former source profile."""
+    local_root = Path(local_app_data or os.environ.get('LOCALAPPDATA') or Path.home())
+    profile = local_root / 'Accessible Reels' / 'webview_profile'
+    is_frozen = getattr(sys, 'frozen', False) if frozen is None else frozen
+    project_root = Path(__file__).resolve().parents[1] if source_root is None else Path(source_root)
+    legacy = project_root / 'data' / 'webview_profile'
+    if not is_frozen and not profile.exists() and legacy.exists():
+        try:
+            profile.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(legacy, profile)
+        except OSError:
+            # Preserving the known logged-in profile is better than silently
+            # starting an empty session when migration is temporarily blocked.
+            return legacy
+    profile.mkdir(parents=True, exist_ok=True)
+    return profile
+
+
 class MainFrame(EmbeddedFocusMixin, wx.Frame):
     def __init__(self, *, auto_open=False):
         super().__init__(None, title='Accessible Reels', size=(1180, 850))
-        data_root = (Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'Accessible Reels'
-                     if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1] / 'data')
-        profile = data_root / 'webview_profile'
-        profile.mkdir(parents=True, exist_ok=True)
-        os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(profile)
+        os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(webview_profile_path())
         self.views, self.clients, self.platform_data = {}, {}, {}
         self._active_name = 'TikTok'
         self._pending_page_focus = None
@@ -42,21 +95,30 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self._accelerator_ids = {}
         self._results = ()
         self.CreateStatusBar()
+        self._build_menu_bar()
         self.panel = wx.Panel(self)
         layout = wx.BoxSizer(wx.VERTICAL)
-        self.network = wx.RadioBox(self.panel, label='Rede social', choices=['TikTok', 'Instagram'])
-        self.network.SetHelpText('Escolha a rede e pressione Logar / abrir rede selecionada. Seu login salvo será reutilizado.')
-        layout.Add(self.network, 0, wx.EXPAND | wx.ALL, 6)
+        self.network = wx.RadioBox(self.panel, choices=['TikTok', 'Instagram'])
+        self.network.Hide()
+        session_row = wx.BoxSizer(wx.VERTICAL)
+        self.platform_field = wx.StaticText(self.panel, label='')
+        self.platform_field.SetName('Plataforma ativa')
+        session_row.Add(self.platform_field, 0, wx.EXPAND | wx.BOTTOM, 3)
+        layout.Add(session_row, 0, wx.EXPAND | wx.ALL, 8)
+        self.session_field = wx.StaticText(self.panel, label='')
+        self.session_field.SetName('Plataformas abertas nesta sessão')
+        layout.Add(self.session_field, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         self.status_field = wx.StaticText(self.panel, label='Pronto.')
         self.status_field.SetName('Status do aplicativo')
         layout.Add(self.status_field, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
         row = wx.BoxSizer(wx.HORIZONTAL)
-        self.activities = wx.Notebook(self.panel, size=(440, -1))
-        self.activities.SetMinSize((420, -1))
-        self.activities.SetName('Atividades: vídeo, comentários e pesquisa')
+        # Simplebook keeps secondary screens available without permanent tabs.
+        self.activities = wx.Simplebook(self.panel, size=(350, -1))
+        self.activities.SetMinSize((330, -1))
+        self.activities.SetName('Painel atual: player, comentários ou pesquisa')
         row.Add(self.activities, 0, wx.EXPAND | wx.ALL, 5)
         self.content = wx.BoxSizer(wx.VERTICAL)
-        self.hint = wx.StaticText(self.panel, label='Escolha a rede e pressione Logar / abrir rede selecionada.')
+        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram. A sessão salva será reutilizada quando disponível.')
         self.content.Add(self.hint, 0, wx.ALL, 8)
         row.Add(self.content, 1, wx.EXPAND | wx.ALL, 5)
         layout.Add(row, 1, wx.EXPAND)
@@ -68,64 +130,86 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self._build_comments()
         self._build_search()
         self._configure_accelerators()
-        self.network.Bind(wx.EVT_RADIOBOX, self.select_network)
-        self.Bind(wx.EVT_HOTKEY, self.focus_page, id=FOCUS_PAGE_HOTKEY)
-        self.Bind(wx.EVT_HOTKEY, self.focus_controls, id=FOCUS_CONTROLS_HOTKEY)
+        self.Bind(wx.EVT_HOTKEY, self.toggle_page_controls, id=FOCUS_PAGE_HOTKEY)
         self.Bind(wx.EVT_ACTIVATE, self._activation_changed)
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
-        self.status('Escolha a rede e pressione Logar / abrir rede selecionada. F6 entra na página; Shift+F6 retorna aos controles.')
-        self.network.SetFocus()
+        self._refresh_session_controls()
+        self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram. F1 mostra os atalhos.')
+        self.details_field.SetFocus()
         if can_self_update():
             wx.CallLater(2000, self._check_for_updates)
         if auto_open:
             wx.CallAfter(self.open_network)
 
-    def _button(self, parent, label, handler, action=None):
-        button = wx.Button(parent, label=label)
-        button.SetName(label.replace('&', ''))
-        set_shortcut(button, action=action) if action else set_shortcut(button)
-        button.Bind(wx.EVT_BUTTON, handler)
-        return button
+    def _build_menu_bar(self):
+        bar = wx.MenuBar()
+        platform = wx.Menu()
+        self._append_menu_item(platform, 'Abrir ou mostrar TikTok', lambda event: self._open_platform('TikTok'))
+        self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'))
+        platform.AppendSeparator()
+        self._append_menu_item(platform, 'Abrir link...', self.open_link, 'Ctrl+O')
+        self._append_menu_item(platform, 'Voltar ao feed', self.home)
+        self._append_menu_item(platform, 'Recarregar página', self.reload)
+        bar.Append(platform, '&Plataforma')
+
+        player = wx.Menu()
+        for label, action in [
+            ('Vídeo anterior', 'previous_video'), ('Reproduzir ou pausar', 'toggle_playback'),
+            ('Próximo vídeo', 'next_video'), ('Atualizar detalhes', 'refresh_info'),
+            ('Voltar 30 segundos', 'seek_back_30'), ('Avançar 30 segundos', 'seek_forward_30'),
+            ('Diminuir volume', 'volume_down'), ('Aumentar volume', 'volume_up'),
+            ('Ativar ou desativar mudo', 'toggle_mute'),
+        ]:
+            self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a))
+        bar.Append(player, '&Player')
+
+        actions = wx.Menu()
+        for label, action in [
+            ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
+            ('Copiar link', 'copy_link'), ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
+        ]:
+            self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a))
+        bar.Append(actions, '&Ações')
+
+        help_menu = wx.Menu()
+        self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, 'F1')
+        self._append_menu_item(help_menu, 'Verificar atualizações', self.on_check_for_updates)
+        help_menu.AppendSeparator()
+        self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), 'Alt+S')
+        bar.Append(help_menu, 'A&juda')
+        self.SetMenuBar(bar)
+
+    def _append_menu_item(self, menu, label, handler, shortcut=''):
+        item = menu.Append(wx.ID_ANY, label + (f'\t{shortcut}' if shortcut else ''))
+        self.Bind(wx.EVT_MENU, handler, item)
+        return item
+
+    def _select_platform(self, name):
+        self.network.SetStringSelection(name)
+        self.select_network()
+
+    def _open_platform(self, name):
+        self._select_platform(name)
+        if self.network.GetStringSelection() == name:
+            self.open_network()
 
     def _build_video_controls(self):
-        page = ScrolledPanel(self.activities)
+        page = wx.Panel(self.activities)
         sizer = wx.BoxSizer(wx.VERTICAL)
-        for label, handler in [('Logar / abrir rede selecionada', self.open_network),
-                               ('Abrir link a partir de uma URL...', self.open_link),
-                               ('Voltar ao feed', self.home),
-                               ('Página / login — F6', self.focus_page), ('Recarregar página', self.reload),
-                               ('Verificar atualizações', self.on_check_for_updates)]:
-            sizer.Add(self._button(page, label, handler), 0, wx.EXPAND | wx.ALL, 3)
-        sizer.Add(wx.StaticText(page, label='Autor:'), 0, wx.LEFT, 4)
-        self.author_field = wx.TextCtrl(page, style=wx.TE_READONLY)
-        self.author_field.SetName('Autor do vídeo atual, somente leitura')
-        sizer.Add(self.author_field, 0, wx.EXPAND | wx.ALL, 3)
-        sizer.Add(wx.StaticText(page, label='Descrição:'), 0, wx.LEFT, 4)
-        self.description_field = wx.TextCtrl(page, style=wx.TE_READONLY | wx.TE_MULTILINE, size=(-1, 90))
-        self.description_field.SetName('Descrição do vídeo atual, somente leitura')
-        sizer.Add(self.description_field, 0, wx.EXPAND | wx.ALL, 3)
-        grid = wx.GridSizer(cols=2, vgap=5, hgap=5)
-        for label, action in [
-            ('Vídeo anterior', 'previous_video'), ('Próximo vídeo', 'next_video'),
-            ('Reproduzir ou pausar', 'toggle_playback'), ('Atualizar informações', 'refresh_info'),
-            ('Voltar 15 segundos', 'seek_back_15'), ('Avançar 15 segundos', 'seek_forward_15'),
-            ('Voltar 30 segundos', 'seek_back_30'), ('Avançar 30 segundos', 'seek_forward_30'),
-            ('Ler autor', 'read_author'), ('Ler descrição', 'read_description'),
-            ('Diminuir volume', 'volume_down'), ('Aumentar volume', 'volume_up'),
-            ('Ativar ou desativar mudo', 'toggle_mute'), ('Copiar link', 'copy_link'),
-            ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
-            ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
-        ]:
-            button = self._button(page, label, lambda e, a=action: self.dispatch(a), action)
-            if action == 'toggle_playback':
-                self.play_button = button
-            grid.Add(button, 0, wx.EXPAND)
-        sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 3)
-        sizer.Add(self._button(page, '&Sair', lambda e: self.Close(), 'exit'), 0, wx.EXPAND | wx.ALL, 3)
+        sizer.Add(wx.StaticText(page, label='Player'), 0, wx.ALL, 8)
+        sizer.Add(wx.StaticText(page, label='Detalhes do vídeo'), 0, wx.LEFT | wx.TOP, 8)
+        self.details_field = wx.TextCtrl(page, style=wx.TE_READONLY | wx.TE_MULTILINE, size=(-1, 230))
+        self.details_field.SetName('Autor e descrição do vídeo atual, somente leitura')
+        self.player_focus_target = self.details_field
+        sizer.Add(self.details_field, 0, wx.EXPAND | wx.ALL, 8)
+        hint = wx.StaticText(page, label='Use os atalhos para controlar a reprodução. F1 mostra todos; F6 entra na página; F10 navega pelos menus.')
+        hint.SetName('Dica de navegação')
+        hint.Wrap(300)
+        sizer.Add(hint, 0, wx.EXPAND | wx.ALL, 8)
+        sizer.AddStretchSpacer()
         page.SetSizer(sizer)
-        page.SetupScrolling(scroll_x=False)
-        self.activities.AddPage(page, 'Vídeo')
+        self.activities.AddPage(page, 'Player')
 
     def on_check_for_updates(self, event=None):
         self._check_for_updates(manual=True)
@@ -188,14 +272,12 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self.comments_field = wx.TextCtrl(page, style=wx.TE_MULTILINE | wx.TE_READONLY)
         self.comments_field.SetName('Comentários, somente leitura')
         sizer.Add(self.comments_field, 1, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(self._button(page, 'Carregar comentários', lambda e: self.dispatch('open_comments')), 0, wx.EXPAND | wx.ALL, 5)
         sizer.Add(wx.StaticText(page, label='Escrever comentário:'), 0, wx.LEFT, 5)
         self.comment_input = wx.TextCtrl(page, style=wx.TE_MULTILINE, size=(-1, 100))
-        self.comment_input.SetName('Escrever comentário; envio somente pelo botão Publicar')
+        self.comment_input.SetName('Escrever comentário; Ctrl+Enter publica')
+        self.comment_input.Bind(wx.EVT_KEY_DOWN, self._comment_key_down)
         sizer.Add(self.comment_input, 0, wx.EXPAND | wx.ALL, 5)
-        self.publish_button = self._button(page, 'Publicar comentário', self.publish_comment)
-        sizer.Add(self.publish_button, 0, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(self._button(page, 'Fechar comentários', lambda e: self.dispatch('close_comments')), 0, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(wx.StaticText(page, label='Ctrl+Enter publica. Esc volta ao player.'), 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Comentários')
 
@@ -207,13 +289,12 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self.query_field.SetName('Termo da pesquisa')
         self.query_field.Bind(wx.EVT_TEXT_ENTER, self.search)
         sizer.Add(self.query_field, 0, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(self._button(page, 'Pesquisar', self.search), 0, wx.EXPAND | wx.ALL, 5)
         self.results_list = wx.ListBox(page)
         self.results_list.SetName('Resultados da pesquisa')
         self.results_list.Bind(wx.EVT_LISTBOX_DCLICK, self.open_result)
+        self.results_list.Bind(wx.EVT_KEY_DOWN, self._results_key_down)
         sizer.Add(self.results_list, 1, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(self._button(page, 'Abrir vídeo selecionado', self.open_result), 0, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(self._button(page, 'Atualizar resultados', lambda e: self.dispatch('collect_search_results')), 0, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(wx.StaticText(page, label='Enter abre o resultado. Esc volta ao player.'), 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Pesquisa')
 
@@ -226,13 +307,53 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self._accelerator_ids[action] = identifier
             self.Bind(wx.EVT_MENU, lambda e, a=action: self.dispatch(a), id=identifier)
             entries.append((modifiers, key, identifier))
-        for modifiers, callback in [(wx.ACCEL_NORMAL, self.focus_page), (wx.ACCEL_SHIFT, self.focus_controls)]:
+        for action, modifiers, callback in [('toggle_page_controls', wx.ACCEL_NORMAL, self.toggle_page_controls)]:
             identifier = wx.NewIdRef()
+            self._accelerator_ids[action] = identifier
             self.Bind(wx.EVT_MENU, callback, id=identifier)
             entries.append((modifiers, wx.WXK_F6, identifier))
+        identifier = wx.NewIdRef()
+        self.Bind(wx.EVT_MENU, getattr(self, 'show_keyboard_help', lambda event: None), id=identifier)
+        entries.append((wx.ACCEL_NORMAL, wx.WXK_F1, identifier))
+        for action, key, handler in [
+            ('select_tiktok', ord('1'), lambda event: self._open_platform('TikTok')),
+            ('select_instagram', ord('2'), lambda event: self._open_platform('Instagram')),
+            ('open_selected_platform', wx.WXK_RETURN, lambda event: self.open_network()),
+            ('open_link', ord('O'), lambda event: self.open_link()),
+        ]:
+            identifier = wx.NewIdRef()
+            self._accelerator_ids[action] = identifier
+            self.Bind(wx.EVT_MENU, handler, id=identifier)
+            entries.append((wx.ACCEL_CTRL, key, identifier))
         self.SetAcceleratorTable(wx.AcceleratorTable(entries))
 
+    def show_keyboard_help(self, event=None):
+        dialog = wx.Dialog(self, title='Ajuda rápida de atalhos', style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        dialog.SetMinSize((520, 380))
+        root = wx.BoxSizer(wx.VERTICAL)
+        label = wx.StaticText(dialog, label='Ajuda rápida de atalhos')
+        field = wx.TextCtrl(dialog, value=keyboard_help_text(), style=wx.TE_MULTILINE | wx.TE_READONLY)
+        field.SetName('Ajuda rápida de atalhos')
+        close = wx.Button(dialog, wx.ID_OK, 'Fechar')
+        root.Add(label, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        root.Add(field, 1, wx.EXPAND | wx.ALL, 10)
+        root.Add(close, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        dialog.SetSizerAndFit(root)
+        dialog.SetSize((560, 500))
+        field.SetFocus()
+        dialog.ShowModal()
+        dialog.Destroy()
+
+    def _refresh_session_controls(self):
+        opened = self.views.keys()
+        name = self.network.GetStringSelection()
+        self.platform_field.SetLabel(f'Plataforma ativa: {name}. Ctrl+1 abre TikTok; Ctrl+2 abre Instagram; F10 menus.')
+        self.session_field.SetLabel(session_summary(opened))
+
     def _plain_shortcuts(self, event):
+        if event.GetKeyCode() == wx.WXK_ESCAPE and self.activities.GetSelection() != 0:
+            self.focus_controls()
+            return
         focused = wx.Window.FindFocus()
         if (event.HasAnyModifiers() or isinstance(focused, wx.TextCtrl) and focused.IsEditable()
                 or focused is self.current()):
@@ -243,6 +364,18 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.dispatch(action)
         else:
             event.Skip()
+
+    def _comment_key_down(self, event):
+        if event.ControlDown() and event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            self.publish_comment()
+            return
+        event.Skip()
+
+    def _results_key_down(self, event):
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            self.open_result()
+            return
+        event.Skip()
 
     def status(self, message):
         if self._closing_app:
@@ -278,8 +411,9 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             view.Show(platform == name)
         self.hint.Show(self.current() is None)
         self._restore_fields()
+        self._refresh_session_controls()
         self.panel.Layout()
-        self.status(f'{name} selecionado. Pressione Logar / abrir rede selecionada.' if not self.current()
+        self.status(f'{name} selecionado. Use Ctrl+1 para TikTok ou Ctrl+2 para Instagram.' if not self.current()
                     else f'{name} aberto. Use os controles ou F6 para entrar na página.')
 
     def open_network(self, event=None, *, url=None, after_load=None):
@@ -323,6 +457,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.clients[name].navigate(url, after_load)
         self.current().Show()
         self._restore_fields()
+        self._refresh_session_controls()
         self.panel.Layout()
         self.status(f'{name} na janela do aplicativo. Use os controles ou F6 para acessar a página.')
 
@@ -350,8 +485,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
 
     def _restore_fields(self):
         data = self.platform_data.get(self._active_name, {})
-        self.author_field.ChangeValue(data.get('author', ''))
-        self.description_field.ChangeValue(data.get('description', ''))
+        self.details_field.ChangeValue(video_details_text(data.get('author'), data.get('description')))
         self.comment_input.ChangeValue(data.get('draft', ''))
         self.comments_field.ChangeValue('\n\n'.join(data.get('comments', [])))
         self._results = data.get('results', ())
@@ -369,11 +503,14 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         if self._pending_page_focus is self.current():
             wx.CallAfter(self._enter_page, self.current())
         else:
-            self.status(f'{platform} carregado. F5 atualiza autor e descrição; F6 entra na página.')
+            self.status(f'{platform} carregado. F6 alterna entre a página e os controles.')
+        # The page bridge is ready at this point. Refreshing here, rather than
+        # waiting for F5, populates details on the first video that is opened.
+        self.dispatch('refresh_info')
 
     def home(self, event=None):
         if not self.current():
-            self.status('Escolha a rede e pressione Logar / abrir rede selecionada.')
+            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
         elif not self.clients[self._active_name].pending:
             self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
         else:
@@ -383,7 +520,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         if self.current():
             self.current().Reload()
         else:
-            self.status('Escolha a rede e pressione Logar / abrir rede selecionada.')
+            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
 
     def new_window(self, event):
         if urlsplit(event.GetURL()).scheme == 'https':
@@ -400,7 +537,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.query_field.SetFocus()
             return
         if not self.current():
-            self.status('Escolha a rede e pressione Logar / abrir rede selecionada.')
+            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
             return
         name = self._active_name
         client = self.clients[name]
@@ -408,7 +545,6 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             return
         focused = wx.Window.FindFocus()
         restore_focus = focused if focused and focused is not self.current() else None
-        self.status('Executando comando no ' + name + '...')
         def completed(result):
             if self._closing_app:
                 return
@@ -448,7 +584,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             position = round(result.get('position', 0))
             message = f'Posição: {position // 60} minutos e {position % 60} segundos.'
         if action in ('next_video', 'previous_video', 'refresh_info'):
-            message = f"{data.get('author', '')}. {data.get('description', '')}"
+            message = None
         elif action == 'read_author':
             message = 'Autor: ' + data.get('author', 'Não encontrado')
         elif action == 'read_description':
@@ -482,10 +618,10 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         elif action == 'collect_search_results' and active:
             self.activities.SetSelection(2)
             self.results_list.SetFocus()
-            message = f'{len(self._results)} resultados. Selecione um e pressione Abrir vídeo selecionado.'
+            message = f'{len(self._results)} resultados. Selecione um e pressione Enter para abrir.'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
-        if active:
+        if active and message:
             self.status(message)
 
     def _copy_link(self, name, value):
@@ -516,7 +652,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.status('Digite o que deseja pesquisar.')
             return
         if not self.current():
-            self.status('Escolha a rede e pressione Logar / abrir rede selecionada.')
+            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
             return
         name = self._active_name
         if self.clients[name].pending:
