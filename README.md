@@ -50,7 +50,7 @@ copiados para o aplicativo.
 ## Requisitos
 
 - Windows 10 ou 11;
-- Python 3.11 (uma versão compatível também pode funcionar);
+- Python 3.13 ou uma versão compatível mais recente;
 - acesso à internet para instalar as dependências e abrir o TikTok.
 
 ## Instalação no Windows
@@ -58,7 +58,7 @@ copiados para o aplicativo.
 No PowerShell, dentro da pasta do projeto:
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m playwright install chromium
@@ -79,7 +79,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ## Execução
 
 ```powershell
-python main.py
+.\.venv\Scripts\python.exe main.py
 ```
 
 ## Modo atual: janela única, sem extensão

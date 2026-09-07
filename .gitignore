@@ -11,3 +11,5 @@ pytest-cache-files-*/
 *.log
 .venv/
 venv/
+build/
+dist/

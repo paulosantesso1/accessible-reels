@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
 from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
@@ -17,6 +19,7 @@ from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, rai
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url
 from instagram.search import normalize_reel_results, validate_reel_url
 from tiktok.video_controls import VideoControlError
+from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
@@ -25,15 +28,18 @@ COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':
 class MainFrame(EmbeddedFocusMixin, wx.Frame):
     def __init__(self, *, auto_open=False):
         super().__init__(None, title='Accessible Reels', size=(1180, 850))
-        profile = Path(__file__).resolve().parents[1] / 'data' / 'webview_profile'
+        data_root = (Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'Accessible Reels'
+                     if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1] / 'data')
+        profile = data_root / 'webview_profile'
         profile.mkdir(parents=True, exist_ok=True)
         os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(profile)
         self.views, self.clients, self.platform_data = {}, {}, {}
         self._active_name = 'TikTok'
         self._pending_page_focus = None
         self._closing_app = False
+        self._update_checking = False
         self._registered_hotkeys = set()
-        self._accelerator_ids = []
+        self._accelerator_ids = {}
         self._results = ()
         self.CreateStatusBar()
         self.panel = wx.Panel(self)
@@ -70,6 +76,8 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
         self.status('Escolha a rede e pressione Logar / abrir rede selecionada. F6 entra na página; Shift+F6 retorna aos controles.')
         self.network.SetFocus()
+        if can_self_update():
+            wx.CallLater(2000, self._check_for_updates)
         if auto_open:
             wx.CallAfter(self.open_network)
 
@@ -86,7 +94,8 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         for label, handler in [('Logar / abrir rede selecionada', self.open_network),
                                ('Abrir link a partir de uma URL...', self.open_link),
                                ('Voltar ao feed', self.home),
-                               ('Página / login — F6', self.focus_page), ('Recarregar página', self.reload)]:
+                               ('Página / login — F6', self.focus_page), ('Recarregar página', self.reload),
+                               ('Verificar atualizações', self.on_check_for_updates)]:
             sizer.Add(self._button(page, label, handler), 0, wx.EXPAND | wx.ALL, 3)
         sizer.Add(wx.StaticText(page, label='Autor:'), 0, wx.LEFT, 4)
         self.author_field = wx.TextCtrl(page, style=wx.TE_READONLY)
@@ -117,6 +126,60 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         page.SetSizer(sizer)
         page.SetupScrolling(scroll_x=False)
         self.activities.AddPage(page, 'Vídeo')
+
+    def on_check_for_updates(self, event=None):
+        self._check_for_updates(manual=True)
+
+    def _check_for_updates(self, manual=False):
+        if self._update_checking:
+            if manual:
+                self.status('A verificação de atualizações já está em andamento.')
+            return
+        self._update_checking = True
+        threading.Thread(target=self._update_worker, args=(manual,), daemon=True).start()
+
+    def _update_worker(self, manual):
+        try:
+            info = check_for_update()
+        except UpdateError as error:
+            wx.CallAfter(self._finish_update_check, manual, None, str(error))
+            return
+        wx.CallAfter(self._finish_update_check, manual, info, '')
+
+    def _finish_update_check(self, manual, info, error):
+        self._update_checking = False
+        if error:
+            if manual:
+                wx.MessageBox(error, 'Atualizações', wx.OK | wx.ICON_ERROR, self)
+            return
+        if not info:
+            if manual:
+                wx.MessageBox('Você já está na versão mais recente.', 'Atualizações', wx.OK | wx.ICON_INFORMATION, self)
+            return
+        if not can_self_update():
+            if manual:
+                wx.MessageBox('Há uma nova versão no GitHub. A instalação automática está disponível no aplicativo instalado para Windows.',
+                              'Atualizações', wx.OK | wx.ICON_INFORMATION, self)
+            return
+        message = f'Versão {info.latest_version} disponível.\n\n{info.notes}\n\nDeseja baixar e instalar agora?'
+        if wx.MessageBox(message, 'Atualizações', wx.YES_NO | wx.ICON_INFORMATION, self) == wx.YES:
+            threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
+
+    def _download_update_worker(self, info):
+        try:
+            wx.CallAfter(self.status, 'Baixando e validando a atualização...')
+            installer = download_update(info)
+            wx.CallAfter(self._launch_update, installer)
+        except UpdateError as error:
+            wx.CallAfter(wx.MessageBox, str(error), 'Atualizações', wx.OK | wx.ICON_ERROR, self)
+
+    def _launch_update(self, installer):
+        try:
+            launch_installer(installer)
+        except UpdateError as error:
+            wx.MessageBox(str(error), 'Atualizações', wx.OK | wx.ICON_ERROR, self)
+            return
+        self.Close()
 
     def _build_comments(self):
         page = wx.Panel(self.activities)
@@ -160,12 +223,11 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             if modifiers == wx.ACCEL_NORMAL and key in (ord('C'), ord('L'), ord('F')):
                 continue  # Preserve typing in comment/search editors.
             identifier = wx.NewIdRef()
-            self._accelerator_ids.append(identifier)
+            self._accelerator_ids[action] = identifier
             self.Bind(wx.EVT_MENU, lambda e, a=action: self.dispatch(a), id=identifier)
             entries.append((modifiers, key, identifier))
         for modifiers, callback in [(wx.ACCEL_NORMAL, self.focus_page), (wx.ACCEL_SHIFT, self.focus_controls)]:
             identifier = wx.NewIdRef()
-            self._accelerator_ids.append(identifier)
             self.Bind(wx.EVT_MENU, callback, id=identifier)
             entries.append((modifiers, wx.WXK_F6, identifier))
         self.SetAcceleratorTable(wx.AcceleratorTable(entries))
