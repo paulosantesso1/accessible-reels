@@ -161,7 +161,17 @@ def test_instagram_comments_and_explicit_post(page):
     result = command(page, "comments")
     assert result["ok"] is True
     assert len(result["comments"]) == 2
-    assert "Comentário de teste" in result["comments"][0]
+    assert "Comentário de teste" in result["comments"][0]["text"]
+    assert result["comments"][0]["id"]
+    page.evaluate('''id => {
+      const row = document.querySelector(`[data-accessible-reels-comment-id="${id}"]`);
+      const reply = document.createElement("button");
+      reply.id = "reply";
+      reply.textContent = "Responder";
+      row.append(reply);
+    }''', result["comments"][0]["id"])
+    assert command(page, "reply_comment", result["comments"][0]["id"])["replyTo"].startswith("ana")
+    assert "reply" in page.evaluate("window.igClicks")
     assert command(page, "post_comment", "Comentário fictício")["ok"] is True
     assert "Publicar" in page.evaluate("window.igClicks")
     assert command(page, "close_comments")["ok"] is True
@@ -215,6 +225,12 @@ def test_instagram_failed_social_state_is_reported_as_error(page):
 def test_instagram_serializes_rapid_social_shortcuts(page):
     results = page.evaluate("Promise.all([window.igCommand('toggle_like'),window.igCommand('toggle_like')])")
     assert [result["state"] for result in results] == [True, False]
+
+
+def test_instagram_speed_commands_use_quarter_step_presets(page):
+    assert command(page, "speed_down") == {'ok': True, 'playbackRate': 0.75}
+    assert command(page, "speed_up") == {'ok': True, 'playbackRate': 1}
+    assert command(page, "speed_up") == {'ok': True, 'playbackRate': 1.25}
 
 
 def test_instagram_playback_toggle_uses_current_video(page):

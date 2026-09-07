@@ -49,6 +49,7 @@ def test_return_to_controls_cancels_pending_page_focus():
                             current=Mock(return_value=view))
     WebViewFrame.focus_controls(frame)
     WebViewFrame._enter_page(frame, view)
+    view.SetCanFocus.assert_called_once_with(False)
     frame.play_button.SetFocus.assert_called_once()
     view.SetFocus.assert_not_called()
 
@@ -62,3 +63,13 @@ def test_enter_page_focuses_document_content_not_only_host():
     view.RunScriptAsync.assert_called_once()
     assert 'target.focus' in view.RunScriptAsync.call_args.args[0]
     assert frame._pending_page_focus is None
+
+
+def test_f6_restores_webview_focus_before_entering_page():
+    view = Mock()
+    view.IsBusy.return_value = False
+    view.GetCurrentURL.return_value = 'https://www.tiktok.com/'
+    frame = SimpleNamespace(current=Mock(return_value=view), status=Mock(), _enter_page=Mock())
+    WebViewFrame.focus_page(frame)
+    view.SetCanFocus.assert_called_once_with(True)
+    frame._enter_page.assert_called_once_with(view)

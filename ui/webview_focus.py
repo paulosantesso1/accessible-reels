@@ -52,6 +52,9 @@ class EmbeddedFocusMixin:
 
     def focus_controls(self, event=None):
         self._pending_page_focus = None
+        view = self.current()
+        if view is not None:
+            view.SetCanFocus(False)
         target = getattr(self, 'player_focus_target', None) or self.play_button
         target.SetFocus()
         self.status("Player do aplicativo. Use F1 para os atalhos; F6 volta à página.")
@@ -63,6 +66,7 @@ class EmbeddedFocusMixin:
         view = self.current()
         if view is None:
             return
+        view.SetCanFocus(True)
         self._pending_page_focus = view
         if view.IsBusy() or view.GetCurrentURL() in ("", "about:blank"):
             self.status("Carregando a rede selecionada. O foco entrará na página quando ela estiver pronta.")

@@ -59,6 +59,14 @@ def test_embedded_play_starts_paused_video_and_keeps_playing_video(page):
     assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
 
 
+def test_embedded_speed_commands_use_quarter_step_presets(page):
+    page.set_content('<video id="active" style="width:300px;height:300px"></video>')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('speed_down')") == {'ok': True, 'playbackRate': 0.75}
+    assert page.evaluate("command('speed_up')") == {'ok': True, 'playbackRate': 1}
+    assert page.evaluate("command('speed_up')") == {'ok': True, 'playbackRate': 1.25}
+
+
 @pytest.mark.parametrize("style", ["display:none", "opacity:0", "width:0;height:0"])
 def test_embedded_controls_pause_and_resume_invisible_playing_video(page, style):
     page.set_content(f"""

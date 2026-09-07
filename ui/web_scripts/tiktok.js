@@ -180,6 +180,31 @@
     lastActiveSource = selected?.currentSrc || "";
     return lastActiveVideo;
   }
+  let initialPlaybackReleased = false;
+  function startInitialPlaybackWhenReady() {
+    const deadline = Date.now() + 12000;
+    const probe = () => {
+      if (initialPlaybackReleased) return;
+      const video = activeVideo();
+      if (!video || !video.currentSrc || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+        if (Date.now() < deadline) setTimeout(probe, 150);
+        return;
+      }
+      const source = video.currentSrc;
+      video.pause();
+      setTimeout(() => {
+        const current = activeVideo();
+        if (current === video && current.currentSrc === source &&
+            current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          initialPlaybackReleased = true;
+          applyAudioPreference(video);
+          video.play().catch(() => {});
+        } else if (Date.now() < deadline) probe();
+      }, 750);
+    };
+    probe();
+  }
+  setTimeout(startInitialPlaybackWhenReady, 0);
 
   function ancestorsFor(video) {
     const result = [];
@@ -465,6 +490,7 @@
       throw new Error("O TikTok não mudou de vídeo. Tente novamente ou use F6 para acessar a página.");
     }
     if (action === "toggle" || action === "play") {
+      initialPlaybackReleased = true;
       if (video.paused) {
         applyAudioPreference(video);
         await Promise.race([video.play(), sleep(5000).then(() => {
@@ -488,6 +514,16 @@
       });
       await sleep(100);
       return {volume: preferredVolume};
+    }
+    if (action === "speed_up" || action === "speed_down") {
+      const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+      const current = Number.isFinite(video.playbackRate) ? video.playbackRate : 1;
+      const index = speeds.findIndex(speed => speed >= current - 0.001);
+      const base = index === -1 ? speeds.length - 1 : index;
+      const next = Math.max(0, Math.min(speeds.length - 1,
+        base + (action === "speed_up" ? (speeds[base] <= current + 0.001 ? 1 : 0) : -1)));
+      video.playbackRate = speeds[next];
+      return {playbackRate: video.playbackRate};
     }
     if (action === "toggle_mute") {
       if (preferredVolume === null) preferredVolume = video.volume;
@@ -521,13 +557,30 @@
       await trustedClick(button);
       await sleep(1200);
       commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
-      const items = [...document.querySelectorAll(
+      const seen = new Set();
+      const comments = [...document.querySelectorAll(
         "[data-e2e=comment-item], [data-e2e=comment-level-1], [class*='CommentItem']"
-      )].filter(visible).map(item => normalizedText(item.innerText)).filter(Boolean);
-      return {comments: [...new Set(items)].slice(0, 200)};
+      )].filter(visible).map(item => {
+        const text = normalizedText(item.innerText);
+        if (!text || seen.has(text)) return null;
+        seen.add(text);
+        const id = item.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${seen.size}`;
+        item.setAttribute("data-accessible-reels-comment-id", id);
+        return {id, text};
+      }).filter(Boolean).slice(0, 200);
+      return {comments};
+    }
+    if (action === "reply_comment") {
+      const target = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(String(argument || ""))}"]`);
+      if (!target) throw new Error("O comentário selecionado não está mais disponível.");
+      const reply = [...target.querySelectorAll("button, [role=button], [data-e2e*='reply' i]")]
+        .find(element => visible(element) && /^(responder|reply)$/i.test(normalizedText(element.innerText || element.getAttribute("aria-label"))));
+      if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+      await trustedClick(reply);
+      return {replyTo: normalizedText(target.innerText)};
     }
     if (action === "post_comment") {
-      const text = normalizedText(String(argument || ""));
+      const text = normalizedText(typeof argument === "object" ? argument.text : String(argument || ""));
       if (!text) throw new Error("Digite um comentário antes de publicar.");
       const sameVideo = () => commentsVideo && commentsVideo.video === activeVideo() &&
         commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;

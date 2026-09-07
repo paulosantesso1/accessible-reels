@@ -96,6 +96,7 @@ def video_details_text(author, description):
 
 
 def keyboard_help_text():
+    speed_help = 'Shift+< / Shift+> - Diminuir ou aumentar a velocidade\n'
     return (
         'Ajuda rápida de atalhos\n\n'
         'F6 — Alternar entre a página da plataforma e os controles\n'
@@ -117,6 +118,7 @@ def keyboard_help_text():
         'F — Salvar ou remover dos salvos\n'
         'Alt+E — Pesquisar vídeos\n'
         'Alt+S — Sair'
+        + speed_help
     )
 
 
@@ -216,6 +218,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             ('Próximo vídeo', 'next_video'), ('Atualizar detalhes', 'refresh_info'),
             ('Voltar 30 segundos', 'seek_back_30'), ('Avançar 30 segundos', 'seek_forward_30'),
             ('Diminuir volume', 'volume_down'), ('Aumentar volume', 'volume_up'),
+            ('Diminuir velocidade', 'speed_down'), ('Aumentar velocidade', 'speed_up'),
             ('Ativar ou desativar mudo', 'toggle_mute'),
         ]:
             self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a))
@@ -258,6 +261,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         sizer.Add(wx.StaticText(page, label='Detalhes do vídeo'), 0, wx.LEFT | wx.TOP, 8)
         self.details_field = wx.TextCtrl(page, style=wx.TE_READONLY | wx.TE_MULTILINE, size=(-1, 230))
         self.details_field.SetName('Autor e descrição do vídeo atual, somente leitura')
+        self.details_field.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         self.player_focus_target = self.details_field
         sizer.Add(self.details_field, 0, wx.EXPAND | wx.ALL, 8)
         hint = wx.StaticText(page, label='Use os atalhos para controlar a reprodução. F1 mostra todos; F6 entra na página; F10 navega pelos menus.')
@@ -326,17 +330,54 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         page = wx.Panel(self.activities)
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(wx.StaticText(page, label='Comentários do vídeo atual:'), 0, wx.ALL, 5)
-        self.comments_field = wx.TextCtrl(page, style=wx.TE_MULTILINE | wx.TE_READONLY)
-        self.comments_field.SetName('Comentários, somente leitura')
-        sizer.Add(self.comments_field, 1, wx.EXPAND | wx.ALL, 5)
+        self.comments_list = wx.ScrolledWindow(page, style=wx.VSCROLL)
+        self.comments_list.SetScrollRate(0, 12)
+        self.comments_list_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.comments_list.SetSizer(self.comments_list_sizer)
+        self.comment_buttons = []
+        sizer.Add(self.comments_list, 1, wx.EXPAND | wx.ALL, 5)
         sizer.Add(wx.StaticText(page, label='Escrever comentário:'), 0, wx.LEFT, 5)
         self.comment_input = wx.TextCtrl(page, style=wx.TE_MULTILINE, size=(-1, 100))
         self.comment_input.SetName('Escrever comentário; Ctrl+Enter publica')
         self.comment_input.Bind(wx.EVT_KEY_DOWN, self._comment_key_down)
+        self.comment_input.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         sizer.Add(self.comment_input, 0, wx.EXPAND | wx.ALL, 5)
+        self.publish_button = wx.Button(page, label='&Publicar')
+        self.publish_button.SetName('Publicar comentário ou resposta')
+        self.publish_button.Bind(wx.EVT_BUTTON, self.publish_comment)
+        self.publish_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        sizer.Add(self.publish_button, 0, wx.ALIGN_RIGHT | wx.ALL, 5)
+        self.reply_status = wx.StaticText(page, label='')
+        self.reply_status.SetName('Destino da resposta')
+        sizer.Add(self.reply_status, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        self._reply_target = None
         sizer.Add(wx.StaticText(page, label='Ctrl+Enter publica. Esc volta ao player.'), 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Comentários')
+
+    def _render_comments(self):
+        self.comments_list_sizer.Clear(delete_windows=True)
+        self.comment_buttons = []
+        comments = self.platform_data.get(self._active_name, {}).get('comments', [])
+        if not comments:
+            self.comments_list_sizer.Add(wx.StaticText(self.comments_list, label='Nenhum comentário encontrado.'), 0, wx.ALL, 5)
+        for index, comment in enumerate(comments, start=1):
+            item = comment if isinstance(comment, dict) else {'id': str(index), 'text': str(comment)}
+            row = wx.Panel(self.comments_list)
+            row_sizer = wx.BoxSizer(wx.VERTICAL)
+            text = wx.StaticText(row, label=f'Comentário {index}: {item.get("text", "")}')
+            text.Wrap(290)
+            row_sizer.Add(text, 0, wx.EXPAND | wx.ALL, 5)
+            button = wx.Button(row, label='Responder comentário')
+            button.SetName(f'Responder comentário {index}: {item.get("text", "")}')
+            button.Bind(wx.EVT_BUTTON, lambda event, value=item: self.reply_to_comment(value))
+            button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+            row_sizer.Add(button, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+            row.SetSizer(row_sizer)
+            self.comments_list_sizer.Add(row, 0, wx.EXPAND | wx.ALL, 2)
+            self.comment_buttons.append(button)
+        self.comments_list.Layout()
+        self.comments_list.FitInside()
 
     def _build_search(self):
         page = wx.Panel(self.activities)
@@ -345,11 +386,13 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self.query_field = wx.TextCtrl(page, style=wx.TE_PROCESS_ENTER)
         self.query_field.SetName('Termo da pesquisa')
         self.query_field.Bind(wx.EVT_TEXT_ENTER, self.search)
+        self.query_field.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         sizer.Add(self.query_field, 0, wx.EXPAND | wx.ALL, 5)
         self.results_list = wx.ListBox(page)
         self.results_list.SetName('Resultados da pesquisa')
         self.results_list.Bind(wx.EVT_LISTBOX_DCLICK, self.open_result)
         self.results_list.Bind(wx.EVT_KEY_DOWN, self._results_key_down)
+        self.results_list.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         sizer.Add(self.results_list, 1, wx.EXPAND | wx.ALL, 5)
         sizer.Add(wx.StaticText(page, label='Enter abre o resultado. Esc volta ao player.'), 0, wx.ALL, 5)
         page.SetSizer(sizer)
@@ -415,6 +458,24 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             event.Skip()
             return
         event.Skip()
+
+    def _keep_tab_in_app(self, event):
+        if (event.GetKeyCode() != wx.WXK_TAB or event.ControlDown() or event.AltDown()):
+            event.Skip()
+            return
+        controls = (
+            (self.details_field,),
+            tuple(getattr(self, 'comment_buttons', ())) + (self.comment_input, self.publish_button),
+            (self.query_field, self.results_list),
+        )[self.activities.GetSelection()]
+        source = event.GetEventObject()
+        try:
+            index = controls.index(source)
+        except ValueError:
+            event.Skip()
+            return
+        offset = -1 if event.ShiftDown() else 1
+        controls[(index + offset) % len(controls)].SetFocus()
 
     def _comment_key_down(self, event):
         if event.ControlDown() and event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
@@ -502,6 +563,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
                 client.close()
                 del self.views[name], self.clients[name], self.platform_data[name]
                 return
+            view.SetCanFocus(False)
             client.initialize()
             self.content.Add(view, 1, wx.EXPAND)
         elif url:
@@ -538,7 +600,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         data = self.platform_data.get(self._active_name, {})
         self.details_field.ChangeValue(video_details_text(data.get('author'), data.get('description')))
         self.comment_input.ChangeValue(data.get('draft', ''))
-        self.comments_field.ChangeValue('\n\n'.join(data.get('comments', [])))
+        self._render_comments()
         self._results = data.get('results', ())
         self.results_list.Set([item.label for item in self._results])
         if self._results:
@@ -647,6 +709,9 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             message = 'Vídeo pausado.' if result.get('paused') else 'Reproduzindo vídeo.'
         elif action in ('volume_up', 'volume_down'):
             message = f"Volume: {round(result.get('volume', 0) * 100)}%."
+        elif action in ('speed_up', 'speed_down'):
+            rate = f"{result.get('playbackRate', 1):g}".replace('.', ',')
+            message = f"Velocidade: {rate}x."
         elif action == 'toggle_mute':
             message = 'Som desativado.' if result.get('muted') else 'Som ativado.'
         elif action == 'toggle_like':
@@ -655,16 +720,23 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             message = 'Vídeo salvo.' if result.get('state') else 'Vídeo removido dos salvos.'
         elif action == 'open_comments' and active:
             self.activities.SetSelection(1)
-            self.comments_field.SetInsertionPoint(0)
-            self.comments_field.SetFocus()
+            (self.comment_buttons[0] if self.comment_buttons else self.comment_input).SetFocus()
             message = f"{len(data.get('comments', []))} comentários carregados."
+        elif action == 'reply_comment' and active:
+            self._reply_target = {'id': argument, 'text': result.get('replyTo', '')}
+            self.reply_status.SetLabel('Respondendo ao comentário selecionado.')
+            self.comment_input.SetFocus()
+            message = 'Resposta selecionada. Digite o texto e escolha Publicar.'
         elif action == 'close_comments' and active:
             self.focus_controls()
             return
         elif action == 'post_comment':
-            if active and self.comment_input.GetValue().strip() == argument:
+            text = argument.get('text') if isinstance(argument, dict) else argument
+            if active and self.comment_input.GetValue().strip() == text:
                 self.comment_input.ChangeValue('')
                 data['draft'] = ''
+            self._reply_target = None
+            self.reply_status.SetLabel('')
             message = 'Comentário publicado e confirmado na página.'
         elif action == 'collect_search_results' and active:
             self.activities.SetSelection(2)
@@ -689,7 +761,15 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         if not text:
             self.status('Digite um comentário antes de publicar.')
             return
-        self.dispatch('post_comment', text)
+        argument = {'text': text, 'replyTo': self._reply_target['id']} if self._reply_target else text
+        self.dispatch('post_comment', argument)
+
+    def reply_to_comment(self, comment):
+        identifier = str(comment.get('id', '')).strip()
+        if not identifier:
+            self.status('Não foi possível identificar o comentário para responder.')
+            return
+        self.dispatch('reply_comment', identifier)
 
     def search(self, event=None):
         query = self.query_field.GetValue().strip()

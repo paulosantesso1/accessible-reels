@@ -54,6 +54,8 @@ def test_required_accelerators_are_preserved():
     assert shortcuts["previous_video"] == (wx.ACCEL_ALT, wx.WXK_UP)
     assert shortcuts["volume_up"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_UP)
     assert shortcuts["volume_down"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_DOWN)
+    assert shortcuts["speed_down"] == (wx.ACCEL_SHIFT, ord(","))
+    assert shortcuts["speed_up"] == (wx.ACCEL_SHIFT, ord("."))
     assert shortcuts["open_comments"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C"))
     assert shortcuts["toggle_like"] == (wx.ACCEL_ALT, ord("L"))
     assert shortcuts["toggle_favorite"] == (wx.ACCEL_ALT, ord("F"))
@@ -61,9 +63,9 @@ def test_required_accelerators_are_preserved():
 
 def test_accelerators_dispatch_the_current_window_actions():
     harness = AcceleratorHarness()
-    for action in ("toggle_playback", "next_video", "previous_video", "copy_link", "volume_up"):
+    for action in ("toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up"):
         harness.trigger(action)
-    assert harness.actions == ["toggle_playback", "next_video", "previous_video", "copy_link", "volume_up"]
+    assert harness.actions == ["toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up"]
 
 
 def test_seek_accelerators_dispatch_their_actions():
@@ -79,6 +81,28 @@ def test_f6_shortcut_toggles_between_page_and_controls():
     assert harness.page_focuses == 1
 
 
+def test_tab_cycle_stays_within_the_active_app_controls():
+    detail, reply, draft = Mock(), Mock(), Mock()
+    frame = type('Frame', (), {})()
+    frame.details_field = detail
+    frame.comment_buttons = [reply]
+    frame.comment_input = draft
+    frame.publish_button = Mock()
+    frame.query_field = Mock()
+    frame.results_list = Mock()
+    frame.activities = Mock()
+    frame.activities.GetSelection.return_value = 1
+    event = Mock()
+    event.GetKeyCode.return_value = wx.WXK_TAB
+    event.ControlDown.return_value = False
+    event.AltDown.return_value = False
+    event.ShiftDown.return_value = False
+    event.GetEventObject.return_value = reply
+    MainFrame._keep_tab_in_app(frame, event)
+    draft.SetFocus.assert_called_once()
+    event.Skip.assert_not_called()
+
+
 def test_session_summary_describes_open_platforms_without_claiming_login():
     assert session_summary(()) == 'TikTok: não aberto | Instagram: não aberto'
     assert session_summary(('TikTok',)) == 'TikTok: aberto | Instagram: não aberto'
@@ -86,6 +110,7 @@ def test_session_summary_describes_open_platforms_without_claiming_login():
 
 def test_f1_help_lists_focus_and_player_shortcuts():
     help_text = keyboard_help_text()
+    assert 'Shift+< / Shift+> - Diminuir ou aumentar a velocidade' in help_text
     assert 'F6 — Alternar entre a página' in help_text
     assert 'Alt+P — Reproduzir ou pausar' in help_text
     assert 'Ctrl+1 / Ctrl+2' in help_text

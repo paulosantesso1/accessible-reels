@@ -15,8 +15,8 @@ from ui.video_link import parse_video_link
 
 PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/'}
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
-           'refresh_info', 'volume_up', 'volume_down', 'toggle_mute', 'comments',
-           'post_comment', 'close_comments', 'toggle_like', 'toggle_favorite',
+           'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
+           'post_comment', 'reply_comment', 'close_comments', 'toggle_like', 'toggle_favorite',
            'collect_search_results', 'diagnostics'}
 
 
@@ -95,7 +95,7 @@ class WebViewClient:
                     self.on_loaded()
                 if self.after_load:
                     callback, self.after_load = self.after_load, None
-                    wx.CallLater(1200, lambda: callback() if self.alive and generation == self.generation else None)
+                    wx.CallAfter(lambda: callback() if self.alive and generation == self.generation else None)
         webview_native.evaluate(self.view, self._prepare_script() +
                                 "Boolean(window.__accessibleIsReady?.())", checked)
 

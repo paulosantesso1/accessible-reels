@@ -14,6 +14,8 @@ SHORTCUT_MESSAGES = {
     "exit": "Comando recebido: sair.",
     "volume_up": "Comando recebido: aumentar volume.",
     "volume_down": "Comando recebido: diminuir volume.",
+    "speed_up": "Comando recebido: aumentar velocidade.",
+    "speed_down": "Comando recebido: diminuir velocidade.",
     "toggle_mute": "Comando recebido: alternar mudo.",
     "diagnostics": "Comando recebido: diagnóstico.",
     "open_comments": "Carregando comentários...",

@@ -266,6 +266,8 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+Shift+M`: ativar ou desativar o mudo;
 - `Alt+F12`: anunciar diagnóstico seguro da página e do último comando;
 - `Alt+F`: fechar navegador/conexão da plataforma;
+- `Shift+<`: diminuir a velocidade do video;
+- `Shift+>`: aumentar a velocidade do video;
 - `Alt+S`: Sair;
 - `Tab` e `Shift+Tab`: percorrer os controles em ordem.
 

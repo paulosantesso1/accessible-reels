@@ -59,6 +59,31 @@
     candidates.sort((a, b) => b.area - a.area);
     return candidates[0]?.video || null;
   }
+  let initialPlaybackReleased = false;
+  function startInitialPlaybackWhenReady() {
+    const deadline = Date.now() + 12000;
+    const probe = () => {
+      if (initialPlaybackReleased) return;
+      const video = activeVideo();
+      if (!video || !video.currentSrc || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+        if (Date.now() < deadline) setTimeout(probe, 150);
+        return;
+      }
+      const source = video.currentSrc;
+      video.pause();
+      setTimeout(() => {
+        const current = activeVideo();
+        if (current === video && current.currentSrc === source &&
+            current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          initialPlaybackReleased = true;
+          applyAudio(video);
+          video.play().catch(() => {});
+        } else if (Date.now() < deadline) probe();
+      }, 750);
+    };
+    probe();
+  }
+  setTimeout(startInitialPlaybackWhenReady, 0);
   function reelRoot(video = activeVideo()) {
     let root = video;
     for (let p = video?.parentElement; p && p !== document.body; p = p.parentElement) {
@@ -147,7 +172,11 @@
         row = p;
       }
       const text = clean(row.innerText);
-      if (text && !rows.includes(text)) rows.push(text);
+      if (text && !rows.some(item => item.text === text)) {
+        const id = row.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${rows.length + 1}`;
+        row.setAttribute("data-accessible-reels-comment-id", id);
+        rows.push({id, text});
+      }
       if (rows.length >= 200) break;
     }
     return rows;
@@ -251,6 +280,7 @@
       return snapshot();
     }
     if (action === "toggle" || action === "play") {
+      initialPlaybackReleased = true;
       if (video.paused) {
         applyAudio(video);
         await Promise.race([video.play(), sleep(3000).then(() => { throw new Error("Reprodução não confirmada. Interaja uma vez com o Reel no navegador."); })]);
@@ -275,6 +305,16 @@
       await transport.storage.local.set({[audioKeys.volume]: preferredVolume, [audioKeys.muted]: preferredMuted});
       return {volume: preferredVolume, muted: preferredMuted};
     }
+    if (action === "speed_up" || action === "speed_down") {
+      const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+      const current = Number.isFinite(video.playbackRate) ? video.playbackRate : 1;
+      const index = speeds.findIndex(speed => speed >= current - 0.001);
+      const base = index === -1 ? speeds.length - 1 : index;
+      const next = Math.max(0, Math.min(speeds.length - 1,
+        base + (action === "speed_up" ? (speeds[base] <= current + 0.001 ? 1 : 0) : -1)));
+      video.playbackRate = speeds[next];
+      return {playbackRate: video.playbackRate};
+    }
     if (action === "toggle_like") return toggleSocial(/^(curtir|descurtir|like|unlike)$/i, /^(descurtir|unlike)$/i, "a curtida");
     if (action === "toggle_favorite") return toggleSocial(/^(salvar|remover|remover dos salvos|save|unsave|remove)$/i, /^(remover|remover dos salvos|unsave|remove)$/i, "Salvar");
     if (action === "comments") {
@@ -290,8 +330,16 @@
         "Os comentários ainda estão carregando. Tente novamente.", 5000);
       return {comments: commentRows(dialog)};
     }
+    if (action === "reply_comment") {
+      const target = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(String(argument || ""))}"]`);
+      if (!target || !commentDialog()?.contains(target)) throw new Error("O comentário selecionado não está mais disponível.");
+      const reply = buttonNamed(target, /^(responder|reply)$/i);
+      if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+      await click(reply);
+      return {replyTo: clean(target.innerText)};
+    }
     if (action === "post_comment") {
-      const text = String(argument || "").trim();
+      const text = String(typeof argument === "object" ? argument.text : argument || "").trim();
       if (!text) throw new Error("Digite um comentário antes de publicar.");
       const dialog = commentDialog();
       const sameReel = () => commentsVideo && commentsVideo.video === activeVideo() &&
@@ -309,7 +357,7 @@
       if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
       await click(post);
       await waitFor(() => sameReel() && editor.isConnected && editor.value === "" &&
-        commentRows(dialog).some(row => row.includes(clean(text))),
+        commentRows(dialog).some(row => row.text.includes(clean(text))),
         "O envio não foi confirmado. Confira no Instagram antes de tentar novamente.", 4000);
       return {};
     }
