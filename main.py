@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import wx
 
-from ui.main_frame import MainFrame
+from ui.app_frame import MainFrame
 
 
 def main() -> None:

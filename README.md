@@ -1,5 +1,43 @@
 # Accessible Reels — segunda etapa
 
+## Protótipo com navegador dentro do aplicativo
+
+Durante um vídeo, **Alt+Shift+Esquerda/Direita** volta/avança 15 segundos;
+**Alt+Esquerda/Direita** volta/avança 30 segundos. Os mesmos controles estão
+na guia Vídeo. A posição fica limitada ao início e ao fim do vídeo, e o
+aplicativo anuncia a nova posição. Funciona no TikTok e no Instagram.
+
+Execute `.\.venv\Scripts\python.exe main.py --webview` para testar TikTok e
+Instagram em WebView2, sem extensão e sem janela externa de navegador.
+Requer Microsoft Edge WebView2 Runtime e wxPython com backend Edge disponível.
+O app inicia sem abrir nenhuma rede. Escolha TikTok ou Instagram e pressione
+**Logar / abrir rede selecionada**. Use **F6** para acessar a página e
+fazer login; **Shift+F6** retorna ao botão Reproduzir ou pausar, mesmo com o foco
+na página. Use Tab ou Shift+Tab para os demais controles e o seletor de rede.
+F6 não abre redes: após o botão de login, aguarda o carregamento quando necessário
+antes de focar um elemento da página. Shift+F6 cancela essa
+entrada pendente. Os dois atalhos são reservados no Windows somente enquanto o
+protótipo está ativo.
+
+O perfil persistente fica em `data/webview_profile/`, ignorado pelo Git.
+Na guia **Vídeo**, use **Abrir link a partir de uma URL...**, cole o link e
+pressione **Abrir vídeo**. A rede é selecionada automaticamente e o vídeo abre
+no mesmo perfil, aproveitando o login salvo. Links curtos `vm.tiktok.com`,
+`vt.tiktok.com` e `tiktok.com/t/` também são aceitos. Após carregar, o aplicativo
+inicia a reprodução; os controles de próximo e anterior continuam disponíveis
+quando a página da rede oferece navegação. Se o site pedir login, use F6.
+
+Ele é independente dos perfis existentes. Não é necessário importar cookies.
+Feche e reabra o protótipo para conferir se cada site manteve a sessão.
+O site ainda pode pedir novo login. Este teste usa Microsoft Edge WebView2 SDK/runtime.
+
+Reprodução, pausa e volume têm botões nativos. Navegação entre vídeos, curtidas,
+salvos e comentários ainda usam os controles da própria página. A troca de rede
+solicita pausa na anterior. Janelas HTTPS solicitadas pela página abrem na mesma
+área; logins que exigem popups separados podem não funcionar neste protótipo.
+Valide login nas duas redes, áudio/vídeo, retorno do foco com NVDA, troca de rede
+e persistência após reiniciar. A execução sem `--webview` também usa a janela incorporada.
+
 Aplicativo desktop para Windows com interface nativa wxPython acessível ao NVDA. Ele controla uma janela real do Chromium pelo Playwright, usando o perfil persistente `data/browser_profile`.
 
 O aplicativo abre o TikTok, importa cookies JSON, navega pelos vídeos, controla a reprodução, apresenta autor, descrição e comentários, permite curtir e favoritar e copia o link atual. A guia Instagram controla os Reels pela extensão do Chrome ou Brave, com os mesmos atalhos. A publicação de comentários exige confirmação explícita no botão Publicar.
@@ -44,7 +82,21 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 python main.py
 ```
 
-## Usar a sessão do Chrome ou Brave
+## Modo atual: janela única, sem extensão
+
+O aplicativo agora abre TikTok e Instagram dentro da própria janela usando
+Microsoft Edge WebView2. A extensão do navegador e as pontes locais não são mais
+necessárias. Execute `python main.py`, escolha a rede e aguarde o carregamento.
+Faça login uma vez na página incorporada; a sessão fica em `data/webview_profile/`.
+Use F6 para entrar na página e Shift+F6 para retornar aos controles acessíveis.
+Os controles nativos cobrem reprodução, volume, navegação, informações, curtida,
+salvos, comentários e pesquisa. A rede ainda pode pedir login novamente quando
+invalidar a sessão.
+
+## Compatibilidade histórica da extensão
+
+As instruções abaixo descrevem a arquitetura anterior e não fazem parte do fluxo
+atual. A pasta da extensão foi removida do aplicativo.
 
 1. Abra `chrome://extensions` no Chrome ou `brave://extensions` no Brave.
 2. Ative o **Modo do desenvolvedor**.

@@ -2,17 +2,13 @@
   if (globalThis.__accessibleReelsInstalled) return;
   globalThis.__accessibleReelsInstalled = true;
 
-  const wakeBridge = () => {
-    try {
-      chrome.runtime.sendMessage({type: "accessible-reels-wake"}).catch(() => {});
-    } catch (_error) {}
-  };
-  setInterval(wakeBridge, 1000);
-  wakeBridge();
-
+  const transport = globalThis.__accessibleTransport;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   let preferredVolume = null;
   let preferredMuted = null;
+  let commentsVideo = null;
+  let lastActiveVideo = null;
+  let lastActiveSource = "";
   const applyingAudio = new WeakSet();
   const watchedVideos = new WeakSet();
   const audioScheduleGeneration = new WeakMap();
@@ -25,7 +21,7 @@
 
   async function restoreAudioPreference() {
     try {
-      const stored = await chrome.storage.local.get([
+      const stored = await transport.storage.local.get([
         "accessibleReelsVolume", "accessibleReelsMuted"
       ]);
       if (Number.isFinite(stored.accessibleReelsVolume)) {
@@ -138,12 +134,12 @@
       Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
   };
 
-  async function trustedClick(element) {
+  async function trustedClick(element, scroll = true) {
     if (!element || !element.isConnected) throw new Error("O controle desapareceu da página.");
-    element.scrollIntoView({block: "center", inline: "center"});
+    if (scroll) element.scrollIntoView({block: "center", inline: "center"});
     await sleep(80);
     const rect = element.getBoundingClientRect();
-    const response = await chrome.runtime.sendMessage({
+    const response = await transport.runtime.sendMessage({
       type: "accessible-reels-trusted-click",
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2
@@ -156,7 +152,8 @@
   function activeVideo() {
     const width = Math.max(document.documentElement.clientWidth, innerWidth || 0);
     const height = Math.max(document.documentElement.clientHeight, innerHeight || 0);
-    const candidates = [...document.querySelectorAll("video")].filter(visible).map((video, index) => {
+    const videos = [...document.querySelectorAll("video")];
+    const candidates = videos.filter(visible).map((video, index) => {
       const rect = video.getBoundingClientRect();
       const intersectionWidth = Math.max(0, Math.min(rect.right, width) - Math.max(rect.left, 0));
       const intersectionHeight = Math.max(0, Math.min(rect.bottom, height) - Math.max(rect.top, 0));
@@ -168,10 +165,20 @@
         distance: Math.hypot(rect.left + rect.width / 2 - width / 2,
           rect.top + rect.height / 2 - height / 2)
       };
-    });
+    }).filter(candidate => candidate.area > 0);
     candidates.sort((a, b) => b.area - a.area || b.playing - a.playing ||
       a.distance - b.distance || a.index - b.index);
-    return candidates[0] ? candidates[0].video : null;
+    // Some players render through a canvas while the media element itself has
+    // no visible box. Keep controls connected to that media, including after
+    // pause, but never fall back to an arbitrary preloaded video.
+    const playing = videos.filter(video => !video.paused && !video.ended);
+    const remembered = lastActiveVideo && lastActiveVideo.isConnected &&
+      lastActiveVideo.currentSrc === lastActiveSource ? lastActiveVideo : null;
+    const selected = candidates[0]?.video ||
+      playing.find(video => !video.muted && video.volume > 0) || playing[0] || remembered;
+    lastActiveVideo = selected || null;
+    lastActiveSource = selected?.currentSrc || "";
+    return lastActiveVideo;
   }
 
   function ancestorsFor(video) {
@@ -390,37 +397,80 @@
   ];
 
   async function execute(action, argument) {
+    if (action === "play") {
+      const deadline = Date.now() + 8000;
+      while (!activeVideo() && Date.now() < deadline) await sleep(150);
+    }
     const video = activeVideo();
-    if (!["diagnostics", "collect_search_results"].includes(action) && !video) {
+    if (!["diagnostics", "collect_search_results", "close_comments"].includes(action) && !video) {
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") return collectSearchResults();
+    if (action === "seek") {
+      if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        throw new Error("Este vídeo ainda não permite avançar ou voltar no tempo.");
+      }
+      video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + argument));
+      return {position: video.currentTime};
+    }
     if (["author", "description", "copy_link", "refresh_info"].includes(action)) {
       return snapshot();
     }
     if (action === "next" || action === "previous") {
       stabilizeAudio();
+      const source = video.currentSrc || video.getAttribute("src");
+      const link = snapshot().link;
       const selectors = action === "next" ?
         ["button[data-e2e=feed-navigation-next]", "button[data-e2e=arrow-down]"] :
         ["button[data-e2e=feed-navigation-prev]", "button[data-e2e=arrow-up]"];
       // O TikTok mantém controles de vários itens no DOM. Escolher o primeiro
       // botão visível globalmente pode acionar o item errado (e fazer “anterior”
       // parecer outro “próximo”). Primeiro restringimos ao vídeo ativo.
-      const button = findNearVideo(selectors) ||
-        [...document.querySelectorAll(selectors.join(","))].find(visible);
-      if (button) await trustedClick(button);
-      else window.scrollBy({top: (action === "next" ? 1 : -1) * innerHeight * 0.9, behavior: "smooth"});
-      stabilizeAudio();
-      await sleep(1400);
-      stabilizeAudio();
-      return snapshot();
+      const onScreen = element => {
+        if (!visible(element)) return false;
+        const rect = element.getBoundingClientRect();
+        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        const target = document.elementFromPoint(x, y);
+        return target && element.contains(target);
+      };
+      const nearby = findNearVideo(selectors);
+      const button = (onScreen(nearby) && nearby) ||
+        [...document.querySelectorAll(selectors.join(","))].find(onScreen);
+      // Scrolling a navigation button into the center can move a scroll-snap
+      // feed back onto the current item before the click even reaches TikTok.
+      if (button) await trustedClick(button, false);
+      else {
+        let scroller = video.parentElement;
+        while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
+            /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+          scroller = scroller.parentElement;
+        }
+        scroller = scroller || document.scrollingElement;
+        if (scroller) scroller.scrollBy({
+          top: (action === "next" ? 1 : -1) * scroller.clientHeight,
+          behavior: "smooth"
+        });
+      }
+      const deadline = Date.now() + 4500;
+      while (Date.now() < deadline) {
+        await sleep(150);
+        stabilizeAudio();
+        const current = activeVideo();
+        if (current && (current !== video ||
+            (current.currentSrc || current.getAttribute("src")) !== source ||
+            snapshot().link !== link)) return snapshot();
+      }
+      throw new Error("O TikTok não mudou de vídeo. Tente novamente ou use F6 para acessar a página.");
     }
-    if (action === "toggle") {
+    if (action === "toggle" || action === "play") {
       if (video.paused) {
         applyAudioPreference(video);
-        await video.play();
+        await Promise.race([video.play(), sleep(5000).then(() => {
+          throw new Error("A reprodução não foi confirmada. Use Reproduzir ou pausar, ou F6 para verificar a página.");
+        })]);
         scheduleAudioPreference(video);
-      } else video.pause();
+      } else if (action === "toggle") video.pause();
       return {paused: video.paused};
     }
     if (action === "volume_up" || action === "volume_down") {
@@ -431,7 +481,7 @@
       publishAudioPreference();
       watchVideo(video);
       stabilizeAudio();
-      await chrome.storage.local.set({
+      await transport.storage.local.set({
         accessibleReelsVolume: preferredVolume,
         accessibleReelsMuted: preferredMuted
       });
@@ -447,7 +497,7 @@
       publishAudioPreference();
       watchVideo(video);
       stabilizeAudio();
-      await chrome.storage.local.set({
+      await transport.storage.local.set({
         accessibleReelsVolume: preferredVolume,
         accessibleReelsMuted: preferredMuted
       });
@@ -469,6 +519,7 @@
       if (!button) throw new Error("Não foi possível localizar o botão de comentários.");
       await trustedClick(button);
       await sleep(1200);
+      commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
       const items = [...document.querySelectorAll(
         "[data-e2e=comment-item], [data-e2e=comment-level-1], [class*='CommentItem']"
       )].filter(visible).map(item => normalizedText(item.innerText)).filter(Boolean);
@@ -477,10 +528,14 @@
     if (action === "post_comment") {
       const text = normalizedText(String(argument || ""));
       if (!text) throw new Error("Digite um comentário antes de publicar.");
+      const sameVideo = () => commentsVideo && commentsVideo.video === activeVideo() &&
+        commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
+      if (!sameVideo()) throw new Error("Abra novamente os comentários do vídeo antes de publicar.");
       const editor = [...document.querySelectorAll(
         "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
       )].find(visible);
       if (!editor) throw new Error("Abra os comentários antes de escrever.");
+      if (normalizedText(editor.textContent)) throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
       editor.focus();
       editor.textContent = text;
       editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
@@ -489,9 +544,16 @@
         "button[data-e2e=comment-post], [data-e2e=comment-post], button"
       )].find(element => visible(element) && /publicar|post/i.test(normalizedText(element.textContent)));
       if (!post) throw new Error("Não foi possível localizar o botão Publicar comentário.");
+      if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
       await trustedClick(post);
-      await sleep(900);
-      return {};
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        await sleep(200);
+        const rows = [...document.querySelectorAll('[data-e2e=comment-item], [data-e2e=comment-level-1], [class*="CommentItem"]')];
+        if (sameVideo() && editor.isConnected && !normalizedText(editor.textContent) &&
+            rows.some(row => normalizedText(row.innerText).includes(text))) return {};
+      }
+      throw new Error("O envio não foi confirmado. Confira os comentários antes de tentar novamente.");
     }
     if (action === "close_comments") {
       const close = [...document.querySelectorAll(
@@ -509,30 +571,7 @@
     throw new Error("Comando desconhecido recebido pela extensão.");
   }
 
-  document.addEventListener("keydown", event => {
-    const action = shortcutAction(event);
-    if (!action) return;
-    if (editableTarget(event.target) && !event.altKey) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    execute(action)
-      .then(async result => {
-        if (action === "author") announceShortcut(`Autor: ${result.author}.`);
-        else if (action === "description") announceShortcut(`Descrição: ${result.description}`);
-        else if (action === "copy_link") {
-          if (!result.link) throw new Error("Não foi possível identificar o link do vídeo atual.");
-          await navigator.clipboard.writeText(result.link);
-          announceShortcut("Link copiado.");
-        }
-        else if (action === "diagnostics") announceShortcut(result.message);
-        else announceShortcut("Comando executado.");
-      })
-      .catch(error => announceShortcut(
-        `Erro: ${error && error.message ? error.message : String(error)}`
-      ));
-  }, true);
-
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type !== "accessible-reels-command") return false;
     execute(message.action, message.argument)
       .then(result => sendResponse({ok: true, ...result}))

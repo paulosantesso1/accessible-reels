@@ -1,12 +1,9 @@
 (() => {
   if (globalThis.__accessibleInstagramInstalled) return;
   globalThis.__accessibleInstagramInstalled = true;
-  const transport = globalThis.__accessibleInstagramTransport || chrome;
+  const transport = globalThis.__accessibleTransport;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const clean = value => String(value || "").replace(/\s+/g, " ").trim();
-  const wake = () => transport.runtime.sendMessage({type: "accessible-reels-wake"}).catch(() => {});
-  setInterval(wake, 1000);
-  wake();
   let queue = Promise.resolve();
   let commentsVideo = null;
   let preferredVolume = null;
@@ -211,6 +208,14 @@
     }
     if (action === "close_comments") { await closeComments(); return {}; }
     const video = await waitFor(activeVideo, "Abra os Reels e faça login no Instagram pelo navegador.");
+    if (action === "seek") {
+      if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        throw new Error("Este vídeo ainda não permite avançar ou voltar no tempo.");
+      }
+      video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + argument));
+      return {position: video.currentTime};
+    }
     if (["author", "description", "refresh_info", "copy_link"].includes(action)) {
       const info = snapshot();
       if (action === "copy_link" && !info.link) throw new Error("Não foi possível identificar o link do Reel atual.");
@@ -230,11 +235,11 @@
       stabilizeAudio();
       return snapshot();
     }
-    if (action === "toggle") {
+    if (action === "toggle" || action === "play") {
       if (video.paused) {
         applyAudio(video);
         await Promise.race([video.play(), sleep(3000).then(() => { throw new Error("Reprodução não confirmada. Interaja uma vez com o Reel no navegador."); })]);
-      } else video.pause();
+      } else if (action === "toggle") video.pause();
       return {paused: video.paused};
     }
     if (["volume_up", "volume_down", "toggle_mute"].includes(action)) {
@@ -322,25 +327,6 @@
     if (event.shiftKey) return null;
     return ({f5: "refresh_info", c: "comments", l: "toggle_like", f: "toggle_favorite"})[key];
   }
-  document.addEventListener("keydown", event => {
-    const action = shortcutAction(event);
-    if (!action || event.target.closest?.('input,textarea,select,[contenteditable=true],[role=textbox]')) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    if (action === "search_page") {
-      const link = document.querySelector('a[href="/explore/"]');
-      if (link) link.click();
-      return;
-    }
-    enqueue(action).then(async result => {
-      if (action === "copy_link") { await navigator.clipboard.writeText(result.link); announce("Link copiado."); }
-      else if (action === "author") announce(`Autor: ${result.author}`);
-      else if (action === "description") announce(`Descrição: ${result.description}`);
-      else if (action === "comments") announce(result.comments.join(". ") || "Nenhum comentário carregado.");
-      else if (action === "diagnostics") announce(result.message);
-      else announce("Comando executado no Instagram.");
-    }).catch(error => announce(error.message));
-  }, true);
   transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "accessible-reels-command" || message.platform !== "instagram") return false;
     enqueue(message.action, message.argument).then(result => sendResponse({ok: true, ...result}))

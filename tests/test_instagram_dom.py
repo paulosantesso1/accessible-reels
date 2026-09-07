@@ -46,7 +46,7 @@ def page(browser, request):
     page.evaluate('''() => {
       window.igStorage = {};
       window.igClicks = [];
-      window.chrome = {
+      window.__accessibleTransport = {
         storage: {local: {
           get: async () => window.igStorage,
           set: async values => Object.assign(window.igStorage, values)
@@ -72,8 +72,8 @@ def page(browser, request):
       video.volume = config.volume ?? 1;
       video.muted = config.muted ?? false;
     }''', getattr(request, "param", {}))
-    page.evaluate(Path("browser_extension/audio_guard.js").read_text(encoding="utf-8"))
-    source = Path("browser_extension/instagram.js").read_text(encoding="utf-8")
+    page.evaluate(Path("ui/web_scripts/audio_guard.js").read_text(encoding="utf-8"))
+    source = Path("ui/web_scripts/instagram.js").read_text(encoding="utf-8")
     page.evaluate(source)
     yield page
     page.close()
@@ -81,6 +81,18 @@ def page(browser, request):
 
 def command(page, action, argument=None):
     return page.evaluate("([action, argument]) => window.igCommand(action, argument)", [action, argument])
+
+
+def test_instagram_play_starts_without_toggling_back_to_pause(page):
+    page.evaluate('''() => {
+      const v = document.querySelector('#v1');
+      v.testPaused = true;
+      Object.defineProperty(v, 'paused', {get: () => v.testPaused});
+      v.play = async () => { v.testPaused = false; };
+      v.pause = () => { v.testPaused = true; };
+    }''')
+    assert command(page, 'play') == {'ok': True, 'paused': False}
+    assert command(page, 'play') == {'ok': True, 'paused': False}
 
 
 def test_instagram_reads_only_active_reel_metadata(page):

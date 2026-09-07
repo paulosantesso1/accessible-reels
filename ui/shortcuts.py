@@ -2,6 +2,15 @@
 
 import wx
 
+SEEK_SECONDS = {'seek_back_15': -15, 'seek_forward_15': 15,
+                'seek_back_30': -30, 'seek_forward_30': 30}
+SEEK_ACCELERATOR_SPECS = (
+    ('seek_back_15', wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_LEFT),
+    ('seek_forward_15', wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_RIGHT),
+    ('seek_back_30', wx.ACCEL_ALT, wx.WXK_LEFT),
+    ('seek_forward_30', wx.ACCEL_ALT, wx.WXK_RIGHT),
+)
+
 
 ACCELERATOR_SPECS = (
     ("next_video", wx.ACCEL_ALT, wx.WXK_DOWN),
@@ -24,13 +33,14 @@ ACCELERATOR_SPECS = (
 
 
 def action_shortcut(action: str) -> str:
-    _, modifiers, key = next(spec for spec in ACCELERATOR_SPECS if spec[0] == action)
+    _, modifiers, key = next(spec for spec in ACCELERATOR_SPECS + SEEK_ACCELERATOR_SPECS if spec[0] == action)
     parts = []
     if modifiers & wx.ACCEL_ALT:
         parts.append("Alt")
     if modifiers & wx.ACCEL_SHIFT:
         parts.append("Shift")
     names = {wx.WXK_UP: "Seta para cima", wx.WXK_DOWN: "Seta para baixo",
+             wx.WXK_LEFT: "Seta para esquerda", wx.WXK_RIGHT: "Seta para direita",
              wx.WXK_F5: "F5", wx.WXK_F12: "F12"}
     parts.append(names.get(key, chr(key)))
     return "+".join(parts)

@@ -25,6 +25,110 @@ def page(browser):
     page.close()
 
 
+def install_embedded_tiktok(page):
+    page.evaluate("""() => {
+      window.__accessibleTransport = {
+        storage: {local: {get: async () => ({}), set: async () => {}}},
+        runtime: {
+          onMessage: {addListener: fn => { window.commandListener = fn; }},
+          sendMessage: async ({x, y}) => {
+            document.elementFromPoint(x, y).click();
+            return {ok: true};
+          }
+        }
+      };
+      window.command = action => new Promise(resolve =>
+        window.commandListener({type: 'accessible-reels-command', action}, {}, resolve));
+      for (const video of document.querySelectorAll('video')) {
+        video.testPaused = video.id !== 'active';
+        Object.defineProperty(video, 'paused', {get: () => video.testPaused});
+        video.pause = () => { video.testPaused = true; };
+        video.play = async () => { video.testPaused = false; };
+      }
+    }""")
+    page.add_script_tag(content=(
+        Path(__file__).resolve().parents[1] / "ui/web_scripts/tiktok.js"
+    ).read_text(encoding="utf-8"))
+
+
+def test_embedded_play_starts_paused_video_and_keeps_playing_video(page):
+    page.set_content('<video id="active" style="width:300px;height:300px"></video>')
+    install_embedded_tiktok(page)
+    page.eval_on_selector('video', 'v => v.pause()')
+    assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
+    assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
+
+
+@pytest.mark.parametrize("style", ["display:none", "opacity:0", "width:0;height:0"])
+def test_embedded_controls_pause_and_resume_invisible_playing_video(page, style):
+    page.set_content(f"""
+      <video id="preload" style="position:absolute;top:900px"></video>
+      <article><video id="active" style="{style}"></video></article>
+    """)
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('toggle')") == {"ok": True, "paused": True}
+    assert page.evaluate("command('toggle')") == {"ok": True, "paused": False}
+    assert page.eval_on_selector("#preload", "v => v.paused") is True
+    page.eval_on_selector("#active", "v => v.remove()")
+    assert page.evaluate("command('toggle')")['ok'] is False
+
+
+@pytest.mark.parametrize("action, selector", [
+    ("next", "feed-navigation-next"), ("previous", "feed-navigation-prev")
+])
+def test_embedded_navigation_with_invisible_playing_video(page, action, selector):
+    page.set_content(f"""
+      <article><video id="active" style="display:none"></video>
+      <button data-e2e="{selector}" onclick="window.navigated=true; document.querySelector('video').setAttribute('src', 'next.mp4')">Navigate</button>
+      </article>
+    """)
+    install_embedded_tiktok(page)
+    page.evaluate("() => { document.querySelector('button').scrollIntoView = () => { throw new Error('Must not scroll navigation'); }; }")
+    assert page.evaluate("action => command(action)", action)['ok'] is True
+    assert page.evaluate("window.navigated") is True
+
+
+@pytest.mark.parametrize("action, start, end", [("next", 0, 400), ("previous", 400, 0)])
+def test_embedded_navigation_scrolls_feed_container(page, action, start, end):
+    page.set_content('''
+      <style>
+        #feed {height:400px;overflow-y:scroll;scroll-snap-type:y mandatory}
+        article {height:400px;scroll-snap-align:start}
+        video {width:300px;height:350px}
+      </style>
+      <div id="feed"><article><video id="active"></video></article>
+      <article><video></video></article></div>
+    ''')
+    install_embedded_tiktok(page)
+    page.eval_on_selector("#feed", "(el, top) => el.scrollTop = top", start)
+    assert page.evaluate("action => command(action)", action)['ok'] is True
+    page.wait_for_function("top => Math.abs(document.querySelector('#feed').scrollTop - top) < 2", arg=end)
+    assert page.evaluate("window.scrollY") == 0
+
+
+def test_embedded_navigation_does_not_report_replay_as_next_video(page):
+    page.set_content('''<video id="active"></video>
+      <button data-e2e="feed-navigation-next"
+        onclick="document.querySelector('video').currentTime = 0">Next</button>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('next')")
+    assert result['ok'] is False
+    assert 'não mudou de vídeo' in result['error']
+
+
+def test_embedded_controls_follow_new_playing_video_after_pause(page):
+    page.set_content('''
+      <video id="active" style="display:none"></video>
+      <video id="next" style="display:none"></video>
+    ''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('toggle')") == {"ok": True, "paused": True}
+    page.eval_on_selector("#next", "v => v.play()")
+    assert page.evaluate("command('toggle')") == {"ok": True, "paused": True}
+    assert page.eval_on_selector("#next", "v => v.paused") is True
+    assert page.eval_on_selector("#active", "v => v.paused") is True
+
+
 def test_real_dom_chooses_visible_video_and_scoped_metadata(page):
     page.set_content(
         """
@@ -373,7 +477,7 @@ def test_extension_audio_guard_blocks_volume_spike_before_playback(page):
         }"""
     )
     guard = (
-        Path(__file__).resolve().parents[1] / "browser_extension" / "audio_guard.js"
+        Path(__file__).resolve().parents[1] / "ui" / "web_scripts" / "audio_guard.js"
     ).read_text(encoding="utf-8")
     page.add_script_tag(content=guard)
     page.evaluate(
