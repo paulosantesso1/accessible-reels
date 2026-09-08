@@ -11,7 +11,7 @@ if (Test-Path -LiteralPath $PythonExe) {
 
 & $PythonExe -m pip install --upgrade pip pyinstaller
 & $PythonExe -m pip install -r requirements.txt
-& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 main.py
+& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --add-data "ui\web_scripts;ui\web_scripts" main.py
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
 
 $webViewBootstrapper = "dist\MicrosoftEdgeWebView2Setup.exe"
