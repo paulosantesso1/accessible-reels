@@ -1,4 +1,4 @@
-﻿param([string]$PythonExe = ".\.venv\Scripts\python.exe", [string]$AppVersion = "1.0.6")
+﻿param([string]$PythonExe = ".\.venv\Scripts\python.exe", [string]$AppVersion = "1.0.7")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

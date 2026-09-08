@@ -206,11 +206,11 @@ que chegam após uma troca de guia aguardam o retorno à guia correspondente.
 Os atalhos de vídeo também funcionam na página do Instagram e não interceptam
 a digitação nos campos de comentário ou pesquisa.
 
-No Instagram, aumentar ou diminuir volume usa passos de **5 pontos percentuais**.
-Se o Reel estiver silenciado ou com volume zero, o primeiro aumento define **5%**
+No TikTok e no Instagram, aumentar ou diminuir volume usa passos de **5 pontos percentuais**.
+Se o vídeo estiver silenciado ou com volume zero, o primeiro aumento define **5%**
 e desativa o mudo; os seguintes passam para 10%, 15% e assim por diante. Diminuir
 partindo do silêncio mantém o volume em zero. A preferência continua sendo salva
-e aplicada aos próximos Reels.
+e aplicada aos próximos vídeos.
 
 `Alt+E` na interface abre a pesquisa acessível do Instagram, com até 50 Reels ou
 posts carregados. Quando o Instagram não oferece uma descrição na miniatura,
@@ -280,8 +280,8 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
 - `Esc`: voltar dos comentários ao player;
 - `F5`: atualizar autor e descrição;
-- `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos no Instagram e 10 no TikTok;
-- `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos no Instagram e 10 no TikTok;
+- `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos percentuais;
+- `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos percentuais;
 - `Alt+E`: abrir a pesquisa de vídeos;
 - `Alt+Shift+M`: ativar ou desativar o mudo;
 - `Alt+F12`: anunciar diagnóstico seguro da página e do último comando;
@@ -332,7 +332,7 @@ node --test tests/test_extension_routing.cjs
 7. Com o foco em diferentes controles da janela wxPython, use `Alt+Seta para baixo` e `Alt+Seta para cima`. Primeiro deve ser anunciado “Comando recebido”; depois, a conclusão da troca do vídeo.
 8. Ainda sem focar o Chromium, use `Alt+P` duas vezes e confirme os anúncios de vídeo pausado e reproduzindo. Se o Chromium bloquear o primeiro `play()`, o status deve pedir uma interação inicial explicitamente.
 9. Use `Alt+C`, cole em um editor de texto e confirme que foi copiado um endereço no formato `https://www.tiktok.com/@usuario/video/ID`, sem parâmetros. Se o vídeo não puder ser identificado, confirme que a área de transferência anterior foi preservada.
-10. Use `Alt+Shift+Seta para cima` e `Alt+Shift+Seta para baixo`, conferindo anúncios em passos de 10% e os limites de 0% e 100%. Troque de vídeo e confirme que o volume foi reaplicado. Use `Alt+Shift+M` duas vezes e confira “Som desativado” e “Som ativado”.
+10. Use `Alt+Shift+Seta para cima` e `Alt+Shift+Seta para baixo`, conferindo anúncios em passos de 5% e os limites de 0% e 100%. Troque de vídeo e confirme que o volume foi reaplicado. Use `Alt+Shift+M` duas vezes e confira “Som desativado” e “Som ativado”.
 11. Use `Alt+F12` e confira página conectada, URL sem parâmetros, quantidade de vídeos, vídeo ativo, reprodução, volume e os últimos comandos/falha. O diagnóstico não deve conter cookies ou tokens.
 12. Feche o navegador e abra-o novamente. Por fim, use `Alt+S` e depois teste o X em outra execução, verificando no Gerenciador de Tarefas que não restou processo Chromium iniciado pelo aplicativo.
 

@@ -67,6 +67,99 @@ def test_embedded_speed_commands_use_quarter_step_presets(page):
     assert page.evaluate("command('speed_up')") == {'ok': True, 'playbackRate': 1.25}
 
 
+def test_embedded_volume_moves_by_five_percent_with_exact_bounds(page):
+    page.set_content('<video id="active" style="width:300px;height:300px"></video>')
+    page.eval_on_selector('video', 'video => video.volume = 0')
+    install_embedded_tiktok(page)
+    for step in range(1, 23):
+        result = page.evaluate("command('volume_up')")
+        assert result['ok'] is True
+        assert result['volume'] == pytest.approx(min(step * 5, 100) / 100)
+    for step in range(1, 23):
+        result = page.evaluate("command('volume_down')")
+        assert result['ok'] is True
+        assert result['volume'] == pytest.approx(max(100 - step * 5, 0) / 100)
+
+
+def test_embedded_copy_link_uses_active_author_and_video_id_without_anchors(page):
+    page.set_content('''
+      <article data-video-id="222">
+        <span data-e2e="video-author-uniqueid">correto</span>
+        <video id="active" style="width:300px;height:300px"></video>
+      </article>
+    ''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('copy_link')")
+    assert result['ok'] is True
+    assert result['link'] == 'https://www.tiktok.com/@correto/video/222'
+
+
+def test_embedded_copy_link_uses_current_tiktok_feed_wrapper_id(page):
+    page.set_content('''
+      <article>
+        <a href="/@correto">correto</a>
+        <div id="xgwrapper-0-7667796792532094209">
+          <div><video id="active" style="width:300px;height:300px"></video></div>
+        </div>
+      </article>
+    ''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('copy_link')")
+    assert result['ok'] is True
+    assert result['link'] == 'https://www.tiktok.com/@correto/video/7667796792532094209'
+
+
+def test_embedded_copy_link_uses_matching_tiktok_page_state(page):
+    page.set_content('''
+      <script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">
+        {"feed":{"id":"333","desc":"descrição atual","author":{"uniqueId":"correto"}}}
+      </script>
+      <article>
+        <span data-e2e="video-author-uniqueid">@correto</span>
+        <div data-e2e="video-desc">descrição atual</div>
+        <video id="active" style="width:300px;height:300px"></video>
+      </article>
+    ''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('copy_link')")
+    assert result['ok'] is True
+    assert result['link'] == 'https://www.tiktok.com/@correto/video/333'
+
+
+def test_embedded_copy_link_uses_tiktok_share_when_no_canonical_link_is_available(page):
+    page.set_content('''
+      <article>
+        <video id="active" style="width:300px;height:300px"></video>
+        <button data-e2e="share-button" style="width:40px;height:40px"
+          onclick="document.querySelector('#copy').style.display='block'">Compartilhar</button>
+      </article>
+      <div id="copy" style="display:none;width:80px;height:40px"
+        onclick="window.tiktokCopied=true">Copiar link</div>
+    ''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('copy_link')") == {'ok': True, 'nativeCopied': True}
+    assert page.evaluate('window.tiktokCopied') is True
+
+
+def test_embedded_copy_link_accepts_unlabeled_tiktok_copy_icon(page):
+    page.set_content('''
+      <article>
+        <video id="active" style="width:300px;height:300px"></video>
+        <button data-e2e="share-button" style="width:40px;height:40px"
+          onclick="document.querySelector('#panel').style.display='block'">Compartilhar</button>
+      </article>
+      <div id="panel" style="display:none">
+        <div data-e2e="share-group">Destinatários</div>
+        <button id="more" style="width:40px;height:40px"
+          onclick="window.tiktokCopied=true; document.querySelector('[data-e2e=share-group]').remove()"></button>
+        <button aria-label="close" style="width:40px;height:40px"></button>
+      </div>
+    ''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('copy_link')") == {'ok': True, 'nativeCopied': True}
+    assert page.evaluate('window.tiktokCopied') is True
+
+
 @pytest.mark.parametrize("style", ["display:none", "opacity:0", "width:0;height:0"])
 def test_embedded_controls_pause_and_resume_invisible_playing_video(page, style):
     page.set_content(f"""

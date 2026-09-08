@@ -780,6 +780,9 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         elif action == 'read_description':
             message = 'Descrição: ' + data.get('description', 'Não encontrada')
         elif action == 'copy_link' and active:
+            if result.get('nativeCopied'):
+                self.status('Link copiado.')
+                return
             self._copy_link(name, result.get('link'))
             return
         elif action in ('toggle_playback', 'play'):

@@ -234,6 +234,200 @@
     return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
   }
 
+  async function copyLinkFromTikTok(video) {
+    const share = findNearVideo([
+      "[data-e2e=share-button]", "[data-e2e=browse-share-icon]", "[data-e2e*=share-icon i]",
+      "[role=button][aria-label*='compartilhar' i]", "[role=button][aria-label*='share' i]"
+    ]);
+    if (!share) throw new Error("O TikTok não disponibilizou o botão Compartilhar deste vídeo.");
+    await trustedClick(share);
+    const copySelectors = [
+      "[data-e2e=copy-link]", "[data-e2e*=copy-link i]",
+      "[data-testid*=copy-link i]", "[title*='copiar' i][title*='link' i]",
+      "[title*='copy' i][title*='link' i]", "[aria-label*='copiar' i][aria-label*='link' i]",
+      "[aria-label*='copy' i][aria-label*='link' i]"
+    ];
+    const labelsCopyLink = value => /\b(copiar|copy)\b[\s\S]*\b(link|ligação)\b/i.test(normalizedText(value));
+    const isCopyText = value => /^(copiar|copy)(?:\s+(?:o|the))?\s+(?:video\s+)?(link|ligação)(?:\s+.*)?$/i
+      .test(normalizedText(value));
+    const interactive = "button, [role=button], [role=menuitem], a[href], [tabindex]";
+    const allElements = () => {
+      const result = [];
+      const collect = root => {
+        for (const element of root.querySelectorAll("*")) {
+          result.push(element);
+          if (element.shadowRoot) collect(element.shadowRoot);
+        }
+      };
+      collect(document);
+      return result;
+    };
+    const itemLabel = element => normalizedText([
+      element.getAttribute("aria-label"), element.getAttribute("title"),
+      element.getAttribute("data-e2e"), element.getAttribute("data-testid"),
+      element.innerText, element.textContent
+    ].filter(Boolean).join(" "));
+    const findCopy = () => allElements().find(element => visible(element) &&
+      (element.matches(copySelectors.join(",")) ||
+       (element.matches(interactive) && labelsCopyLink(itemLabel(element))))) || (() => {
+        const textItem = allElements().find(element => visible(element) &&
+          isCopyText(element.innerText || element.textContent));
+        return textItem && (textItem.closest(interactive) || textItem);
+      })();
+    const scrollSharePanel = () => {
+      let changed = false;
+      const roots = [...document.querySelectorAll("[role=dialog], [role=menu], [data-e2e=share-group]")]
+        .filter(visible);
+      for (const root of roots) {
+        for (const element of [root, ...root.querySelectorAll("*")]) {
+          if (!visible(element) ||
+            element.scrollHeight <= element.clientHeight + 4) continue;
+          const next = Math.min(element.scrollTop + Math.max(120, element.clientHeight * 0.8),
+            element.scrollHeight - element.clientHeight);
+          if (next > element.scrollTop) {
+            element.scrollTop = next;
+            changed = true;
+          }
+        }
+      }
+      return changed;
+    };
+    const expandShareOptions = async () => {
+      const group = [...document.querySelectorAll("[data-e2e=share-group]")].find(visible);
+      if (!group) return false;
+      let root = group.parentElement;
+      for (let depth = 0; root && root !== document.body && depth < 8; depth++, root = root.parentElement) {
+        if (root.querySelector("button[aria-label=close i]")) break;
+      }
+      if (!root || root === document.body) return false;
+      const more = [...root.querySelectorAll("button")].find(button => visible(button) &&
+        !/^close$/i.test(normalizedText(button.getAttribute("aria-label"))) &&
+        !normalizedText(button.getAttribute("title")) && !normalizedText(button.getAttribute("data-testid")) &&
+        !normalizedText(button.innerText || button.textContent));
+      if (!more) return false;
+      await trustedClick(more, false);
+      await sleep(250);
+      return [...document.querySelectorAll("[data-e2e=share-group]")].some(visible) ? "expanded" : "copied";
+    };
+    const deadline = Date.now() + 6000;
+    let copy;
+    let shareOptionsExpanded = false;
+    while (Date.now() < deadline) {
+      copy = findCopy();
+      if (copy) break;
+      if (!shareOptionsExpanded) {
+        shareOptionsExpanded = true;
+        const expansion = await expandShareOptions();
+        if (expansion === "copied") return {nativeCopied: true};
+        if (expansion === "expanded") {
+          await sleep(150);
+          continue;
+        }
+      }
+      scrollSharePanel();
+      await sleep(100);
+    }
+    if (!copy) throw new Error("O TikTok não mostrou a opção Copiar link.");
+    await trustedClick(copy);
+    // TikTok writes the address to the system clipboard itself. Do not read it
+    // back: browser clipboard permissions are not consistently available here.
+    return {nativeCopied: true};
+  }
+
+  function sharePanelDiagnostics() {
+    const panels = [...document.querySelectorAll("[role=dialog], [role=menu], [data-e2e*=share i]")]
+      .filter(visible);
+    const controls = panels.flatMap(panel => [...panel.querySelectorAll(
+      "button, [role=button], [role=menuitem], [data-e2e], [data-testid]"
+    )]).filter(visible).slice(0, 20).map(element => {
+      const role = element.getAttribute("role");
+      const e2e = element.getAttribute("data-e2e");
+      const testId = element.getAttribute("data-testid");
+      return element.tagName.toLowerCase() + (role ? `[role=${role}]` : "") +
+        (e2e ? `[data-e2e=${/^share-(?!group|avatar$)/.test(e2e) ? "recipient" : e2e}]` : "") +
+        (testId ? `[data-testid=${testId}]` : "");
+    });
+    const buttons = panels.flatMap(panel => [...panel.querySelectorAll("button")]).filter(visible)
+      .slice(0, 8).map(button => {
+        const aria = normalizedText(button.getAttribute("aria-label"));
+        const title = normalizedText(button.getAttribute("title"));
+        const testId = normalizedText(button.getAttribute("data-testid"));
+        return `button[aria=${aria || "vazio"}; title=${title || "vazio"}; data-testid=${testId || "vazio"}]`;
+      });
+    return `painel de compartilhamento ${panels.length ? "visível" : "não visível"}; ` +
+      `${controls.length} controle(s) estrutural(is): ${controls.join(", ") || "nenhum"}; ` +
+      `botões: ${buttons.join(", ") || "nenhum"}.`;
+  }
+
+  function canonicalLink(value) {
+    try {
+      const url = new URL(value, location.href);
+      const match = url.pathname.match(/^\/@[^/?#]+\/video\/(\d+)\/?$/);
+      if (url.protocol !== "https:" || !["www.tiktok.com", "tiktok.com"].includes(url.hostname) ||
+          url.username || url.password || url.port || !match) return "";
+      return `https://www.tiktok.com${url.pathname}`;
+    } catch (_error) { return ""; }
+  }
+
+  function videoIdFromActiveCard(video, ancestors) {
+    const dataValues = [
+      video?.dataset?.videoId,
+      ...ancestors.flatMap(root => [
+        root.dataset.videoId,
+        root.getAttribute("data-video-id")
+      ])
+    ];
+    for (const value of dataValues) {
+      if (/^\d+$/.test(value || "")) return value;
+    }
+    for (const root of ancestors) {
+      const value = root.id;
+      // O feed atual envolve o vídeo em, por exemplo,
+      // #xgwrapper-0-7667796792532094209. Esse é o ID público do vídeo,
+      // embora o card não exponha data-video-id nem uma âncora /video/.
+      const match = String(value || "").match(/^xgwrapper-\d+-(\d{15,22})$/i);
+      if (match) return match[1];
+    }
+    return "";
+  }
+
+  function stateVideoLink(author, description) {
+    const handle = normalizedText(author).match(/@([A-Za-z0-9._-]{1,24})/)?.[1] ||
+      normalizedText(author).match(/^([A-Za-z0-9._-]{1,24})$/)?.[1] || "";
+    const expectedDescription = normalizedText(description);
+    if (!handle || !expectedDescription || /^descrição não encontrada$/i.test(expectedDescription)) return "";
+    const scripts = [...document.querySelectorAll(
+      "script#__UNIVERSAL_DATA_FOR_REHYDRATION__, script#SIGI_STATE, script[type='application/json']"
+    )];
+    for (const script of scripts) {
+      let root;
+      try { root = JSON.parse(script.textContent || ""); } catch (_error) { continue; }
+      const pending = [root];
+      const visited = new WeakSet();
+      while (pending.length) {
+        const value = pending.pop();
+        if (!value || typeof value !== "object" || visited.has(value)) continue;
+        visited.add(value);
+        if (Array.isArray(value)) {
+          pending.push(...value);
+          continue;
+        }
+        const videoId = String(value.id || value.itemId || value.aweme_id || "");
+        const authorHandle = normalizedText(
+          value.author?.uniqueId || value.author?.unique_id || value.authorUniqueId || ""
+        ).replace(/^@/, "");
+        const candidateDescription = normalizedText(value.desc || value.description || "");
+        if (/^\d+$/.test(videoId) && authorHandle === handle && candidateDescription &&
+            (candidateDescription === expectedDescription || candidateDescription.includes(expectedDescription) ||
+             expectedDescription.includes(candidateDescription))) {
+          return canonicalLink(`https://www.tiktok.com/@${authorHandle}/video/${videoId}`);
+        }
+        pending.push(...Object.values(value));
+      }
+    }
+    return "";
+  }
+
   function shortcutAction(event) {
     if (event.repeat || event.ctrlKey || event.metaKey || event.altGraphKey) return null;
     const key = event.key.toLowerCase();
@@ -314,19 +508,26 @@
     let link = "";
     for (const root of ancestors) {
       const anchor = root.querySelector("a[href*='/video/']");
-      if (anchor) {
-        try {
-          const url = new URL(anchor.href, location.href);
-          url.search = "";
-          url.hash = "";
-          link = url.href;
-          break;
-        } catch (_error) {}
-      }
+      link = anchor ? canonicalLink(anchor.href) : "";
+      if (link) break;
     }
-    if (!link && location.pathname.includes("/video/")) {
-      link = `${location.origin}${location.pathname}`;
+    link ||= canonicalLink(location.href);
+    if (!link) {
+      const profile = ancestors.map(root => root.querySelector("a[href^='/@'], a[href*='tiktok.com/@']"))
+        .find(Boolean);
+      let handle = "";
+      try {
+        const profilePath = profile && new URL(profile.href, location.href).pathname;
+        handle = profilePath?.match(/^\/@([A-Za-z0-9._-]+)\/?$/)?.[1] || "";
+      } catch (_error) {}
+      // O feed atual pode expor o @autor em texto acessível, sem um link de
+      // perfil ao redor. Ele ainda pertence ao mesmo vídeo já selecionado.
+      handle ||= author.match(/@([A-Za-z0-9._-]{1,24})/)?.[1] ||
+        author.match(/^([A-Za-z0-9._-]{1,24})$/)?.[1] || "";
+      const videoId = videoIdFromActiveCard(video, ancestors);
+      if (handle && videoId) link = `https://www.tiktok.com/@${handle}/video/${videoId}`;
     }
+    link ||= stateVideoLink(author, description);
     return {
       author: author || "Autor não encontrado",
       description: description || "Descrição não encontrada",
@@ -482,7 +683,9 @@
       return {position: video.currentTime};
     }
     if (["author", "description", "copy_link", "refresh_info"].includes(action)) {
-      return snapshot();
+      const info = snapshot();
+      if (action === "copy_link" && !info.link) return copyLinkFromTikTok(video);
+      return info;
     }
     if (action === "next" || action === "previous") {
       stabilizeAudio();
@@ -544,7 +747,7 @@
     if (action === "volume_up" || action === "volume_down") {
       if (preferredVolume === null) preferredVolume = video.volume;
       preferredVolume = Math.max(0, Math.min(1,
-        preferredVolume + (action === "volume_up" ? 0.1 : -0.1)));
+        preferredVolume + (action === "volume_up" ? 0.05 : -0.05)));
       preferredMuted = false;
       publishAudioPreference();
       watchVideo(video);
@@ -571,7 +774,7 @@
       const effectivelyMuted = preferredMuted === null ?
         (video.muted || video.volume === 0) : preferredMuted;
       preferredMuted = !effectivelyMuted;
-      if (effectivelyMuted && preferredVolume === 0) preferredVolume = 0.1;
+      if (effectivelyMuted && preferredVolume === 0) preferredVolume = 0.05;
       publishAudioPreference();
       watchVideo(video);
       stabilizeAudio();
@@ -648,7 +851,7 @@
     if (action === "diagnostics") {
       return {message: `Extensão conectada; página ${location.hostname}; ` +
         `${document.querySelectorAll("video").length} vídeo(s); ` +
-        `vídeo ativo ${activeVideo() ? "sim" : "não"}.`};
+        `vídeo ativo ${activeVideo() ? "sim" : "não"}; ${sharePanelDiagnostics()}`};
     }
     throw new Error("Comando desconhecido recebido pela extensão.");
   }
