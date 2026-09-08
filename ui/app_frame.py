@@ -628,6 +628,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
                 client.after_load = after_load
             self.clients[name] = client
             view.Bind(html2.EVT_WEBVIEW_NEWWINDOW, self.new_window)
+            view.Bind(html2.EVT_WEBVIEW_LOADED, self._page_document_loaded)
             if not view.Create(self.panel):
                 logger.error('WebView2 Create failed: platform=%s', name)
                 self.status('Não foi possível criar a página incorporada.')

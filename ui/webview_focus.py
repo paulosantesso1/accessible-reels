@@ -9,6 +9,9 @@ import wx
 import wx.html2 as html2
 
 from ui.nvda_announcer import speak_with_accessible_output
+from app_logging import get_logger
+
+logger = get_logger()
 
 
 # RegisterHotKey takes Windows virtual-key codes, NOT wx.WXK_* codes.
@@ -68,10 +71,22 @@ class EmbeddedFocusMixin:
             return
         view.SetCanFocus(True)
         self._pending_page_focus = view
-        if view.IsBusy() or view.GetCurrentURL() in ("", "about:blank"):
+        # IsBusy includes subresources and may stay true on an interactive login
+        # page. Only wait while there is no platform document to focus.
+        logger.info('Page focus requested: platform=%s busy=%s',
+                    self.network.GetStringSelection(), view.IsBusy())
+        if view.GetCurrentURL() in ("", "about:blank"):
             self.status("Carregando a rede selecionada. O foco entrará na página quando ela estiver pronta.")
             return
         self._enter_page(view)
+
+    def _page_document_loaded(self, event):
+        view = event.GetEventObject()
+        # Login documents must be reachable even when the video bridge isn't ready.
+        if (self._pending_page_focus is view and self.current() is view
+                and view.GetCurrentURL() not in ('', 'about:blank')):
+            wx.CallAfter(self._enter_page, view)
+        event.Skip()
 
     def toggle_page_controls(self, event=None):
         view = self.current()
@@ -88,5 +103,6 @@ class EmbeddedFocusMixin:
         # SetFocus alone can stop at the WebView2 host pane, outside RootWebArea.
         # Explicit DOM focus gives NVDA a real page element and tab position.
         view.RunScriptAsync(PAGE_FOCUS_SCRIPT)
+        logger.info('Page focus entered: platform=%s', self.network.GetStringSelection())
         self.status(f"Página do {self.network.GetStringSelection()}. F6 retorna aos controles do aplicativo.")
 

@@ -1,6 +1,6 @@
 """Regression tests for native hotkeys and delayed embedded-page focus."""
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import wx
 
@@ -35,8 +35,9 @@ def test_f6_does_not_open_a_network_implicitly():
 def test_f6_waits_for_explicitly_opened_network():
     view = Mock()
     view.IsBusy.return_value = True
+    view.GetCurrentURL.return_value = 'about:blank'
     frame = SimpleNamespace(current=Mock(return_value=view), open_network=Mock(),
-                            status=Mock(), _enter_page=Mock())
+                            status=Mock(), _enter_page=Mock(), network=Mock())
     WebViewFrame.focus_page(frame)
     frame.open_network.assert_not_called()
     assert frame._pending_page_focus is view
@@ -69,7 +70,45 @@ def test_f6_restores_webview_focus_before_entering_page():
     view = Mock()
     view.IsBusy.return_value = False
     view.GetCurrentURL.return_value = 'https://www.tiktok.com/'
-    frame = SimpleNamespace(current=Mock(return_value=view), status=Mock(), _enter_page=Mock())
+    frame = SimpleNamespace(current=Mock(return_value=view), status=Mock(), _enter_page=Mock(), network=Mock())
     WebViewFrame.focus_page(frame)
     view.SetCanFocus.assert_called_once_with(True)
     frame._enter_page.assert_called_once_with(view)
+
+
+def test_f6_enters_login_document_while_subresources_are_loading():
+    view = Mock()
+    view.IsBusy.return_value = True
+    view.GetCurrentURL.return_value = 'https://www.instagram.com/accounts/login/'
+    frame = SimpleNamespace(current=Mock(return_value=view), status=Mock(),
+                            _enter_page=Mock(), network=Mock())
+    WebViewFrame.focus_page(frame)
+    frame._enter_page.assert_called_once_with(view)
+    frame.status.assert_not_called()
+
+
+def test_document_load_resumes_pending_focus_without_video_bridge():
+    view = Mock()
+    view.GetCurrentURL.return_value = 'https://www.tiktok.com/login'
+    frame = SimpleNamespace(current=Mock(return_value=view), _pending_page_focus=view,
+                            _enter_page=Mock())
+    event = Mock()
+    event.GetEventObject.return_value = view
+    with patch('ui.webview_focus.wx.CallAfter', side_effect=lambda fn, *args: fn(*args)):
+        WebViewFrame._page_document_loaded(frame, event)
+    frame._enter_page.assert_called_once_with(view)
+    event.Skip.assert_called_once()
+
+
+def test_document_load_does_not_steal_focus_after_cancel_or_platform_switch():
+    view = Mock()
+    event = Mock()
+    event.GetEventObject.return_value = view
+    frame = SimpleNamespace(current=Mock(return_value=view), _pending_page_focus=None,
+                            _enter_page=Mock())
+    with patch('ui.webview_focus.wx.CallAfter') as schedule:
+        WebViewFrame._page_document_loaded(frame, event)
+        frame._pending_page_focus = view
+        frame.current.return_value = Mock()
+        WebViewFrame._page_document_loaded(frame, event)
+    schedule.assert_not_called()
