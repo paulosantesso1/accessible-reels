@@ -1,5 +1,20 @@
 # Accessible Reels — segunda etapa
 
+## Pesquisa e retorno ao feed
+
+Use **Alt+E**, digite o termo e pressione **Enter**. Os resultados aparecem numa
+lista nativa: **Seta para baixo** no campo de pesquisa leva à lista, sem precisar
+de Tab. Navegue com as setas e pressione **Enter** para abrir o selecionado
+na guia Player. **Ctrl+R** volta à lista, preservando a seleção e pausando a página;
+**Ctrl+Home** volta ao feed da plataforma. Essas opções também estão no menu Plataforma.
+Os resultados ficam guardados separadamente para cada plataforma durante a sessão.
+A coleta aguarda os cartões carregarem, e não disputa o comando inicial com a
+atualização automática dos detalhes do vídeo.
+
+Validação local: `python -m tests.search_navigation_smoke` testa a lista, Enter,
+foco no player e retorno usando controles wx reais e comandos de rede simulados,
+sem acessar contas. Os testes de DOM verificam resultados carregados com atraso.
+
 ## Protótipo com navegador dentro do aplicativo
 
 Durante um vídeo, **Alt+Shift+Esquerda/Direita** volta/avança 15 segundos;

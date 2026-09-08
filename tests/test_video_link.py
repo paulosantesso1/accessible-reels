@@ -74,6 +74,7 @@ def test_delayed_play_is_skipped_after_switching_network():
 def test_first_loaded_video_refreshes_its_details_automatically():
     current = Mock()
     frame = SimpleNamespace(_active_name='TikTok', _closing_app=False,
+                            clients={'TikTok': Mock(after_load=None)},
                             _pending_page_focus=None, current=Mock(return_value=current),
                             status=Mock(), dispatch=Mock())
     MainFrame.loaded(frame, 'TikTok')

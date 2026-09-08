@@ -673,7 +673,16 @@
     if (!["diagnostics", "collect_search_results", "close_comments"].includes(action) && !video) {
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
-    if (action === "collect_search_results") return collectSearchResults();
+    if (action === "collect_search_results") {
+      const deadline = Date.now() + 6000;
+      do {
+        const result = collectSearchResults();
+        if (result.results.length) return result;
+        if (/\/login/.test(location.pathname)) throw new Error("Faça login no TikTok pela página (F6).");
+        await sleep(200);
+      } while (Date.now() < deadline);
+      return {results: []};
+    }
     if (action === "seek") {
       if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
       if (!Number.isFinite(video.duration) || video.duration <= 0) {

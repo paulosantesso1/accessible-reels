@@ -51,6 +51,19 @@ def install_embedded_tiktok(page):
     ).read_text(encoding="utf-8"))
 
 
+def test_search_waits_for_delayed_cards_without_needing_a_video(page):
+    page.set_content('<main id="results"></main>')
+    install_embedded_tiktok(page)
+    page.evaluate('''() => setTimeout(() => {
+      document.getElementById('results').innerHTML =
+        '<a href="https://www.tiktok.com/@ana/video/123"><img alt="Resultado tardio"></a>';
+    }, 350)''')
+    result = page.evaluate("command('collect_search_results')")
+    assert result['ok'] is True
+    assert result['results'] == [{'url': 'https://www.tiktok.com/@ana/video/123',
+                                  'author': '@ana', 'description': 'Resultado tardio'}]
+
+
 def test_embedded_play_starts_paused_video_and_keeps_playing_video(page):
     page.set_content('<video id="active" style="width:300px;height:300px"></video>')
     install_embedded_tiktok(page)

@@ -119,6 +119,10 @@ class WebViewClient:
             platform, url = parse_video_link(url)
             if platform != self.platform:
                 raise ValueError('Destino não pertence à rede selecionada.')
+        # Invalidate old callbacks immediately, before the native navigation event.
+        self.generation += 1
+        self.ready = False
+        self._cancel('Navegação solicitada; o comando anterior foi encerrado.')
         self.after_load = after_load
         self.view.LoadURL(url)
 

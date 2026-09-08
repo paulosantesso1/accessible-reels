@@ -83,6 +83,18 @@ def command(page, action, argument=None):
     return page.evaluate("([action, argument]) => window.igCommand(action, argument)", [action, argument])
 
 
+def test_instagram_search_collects_delayed_results_without_video(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = '<main id="search-results"></main>';
+      setTimeout(() => { document.getElementById('search-results').innerHTML =
+        '<a href="https://www.instagram.com/reel/TEST123/"><img alt="Reel encontrado"></a>'; }, 350);
+    }''')
+    result = page.evaluate("igCommand('collect_search_results')")
+    assert result['ok'] is True
+    assert result['results'][0]['url'] == 'https://www.instagram.com/reel/TEST123/'
+    assert result['results'][0]['description'] == 'Reel encontrado'
+
+
 def test_instagram_play_starts_without_toggling_back_to_pause(page):
     page.evaluate('''() => {
       const v = document.querySelector('#v1');

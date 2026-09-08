@@ -133,6 +133,8 @@ def keyboard_help_text():
         'L — Curtir ou descurtir\n'
         'F — Salvar ou remover dos salvos\n'
         'Alt+E — Pesquisar vídeos\n'
+        'Ctrl+R — Voltar aos resultados da pesquisa\n'
+        'Ctrl+Home — Voltar ao feed\n'
         'Alt+S — Sair\n'
         + speed_help
     )
@@ -224,7 +226,8 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'))
         platform.AppendSeparator()
         self._append_menu_item(platform, 'Abrir link...', self.open_link, 'Ctrl+O')
-        self._append_menu_item(platform, 'Voltar ao feed', self.home)
+        self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, 'Ctrl+R')
+        self._append_menu_item(platform, 'Voltar ao feed', self.home, 'Ctrl+Home')
         self._append_menu_item(platform, 'Recarregar página', self.reload)
         bar.Append(platform, '&Plataforma')
 
@@ -442,15 +445,21 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self.query_field = wx.TextCtrl(page, style=wx.TE_PROCESS_ENTER)
         self.query_field.SetName('Termo da pesquisa')
         self.query_field.Bind(wx.EVT_TEXT_ENTER, self.search)
-        self.query_field.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        self.query_field.Bind(wx.EVT_KEY_DOWN, self._query_key_down)
         sizer.Add(self.query_field, 0, wx.EXPAND | wx.ALL, 5)
         self.results_list = wx.ListBox(page)
         self.results_list.SetName('Resultados da pesquisa')
         self.results_list.Bind(wx.EVT_LISTBOX_DCLICK, self.open_result)
+        self.results_list.Bind(wx.EVT_LISTBOX, self._result_selected)
         self.results_list.Bind(wx.EVT_KEY_DOWN, self._results_key_down)
-        self.results_list.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         sizer.Add(self.results_list, 1, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(wx.StaticText(page, label='Enter abre o resultado. Esc volta ao player.'), 0, wx.ALL, 5)
+        sizer.Add(wx.StaticText(page, label='Seta para baixo entra nos resultados. Use as setas para escolher e Enter para abrir. Ctrl+R volta à lista. Ctrl+Home volta ao feed.'), 0, wx.ALL, 5)
+        open_button = wx.Button(page, label='Abrir resultado')
+        open_button.Bind(wx.EVT_BUTTON, self.open_result)
+        sizer.Add(open_button, 0, wx.ALL, 5)
+        feed_button = wx.Button(page, label='Voltar ao feed')
+        feed_button.Bind(wx.EVT_BUTTON, self.home)
+        sizer.Add(feed_button, 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Pesquisa')
 
@@ -474,6 +483,8 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             ('select_instagram', ord('2'), lambda event: self._open_platform('Instagram')),
             ('open_selected_platform', wx.WXK_RETURN, lambda event: self.open_network()),
             ('open_link', ord('O'), lambda event: self.open_link()),
+            ('return_results', ord('R'), lambda event: self.return_to_results()),
+            ('home', wx.WXK_HOME, lambda event: self.home()),
         ]:
             identifier = wx.NewIdRef()
             self._accelerator_ids[action] = identifier
@@ -553,11 +564,23 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         offset = -1 if backwards else 1
         controls[(index + offset) % len(controls)].SetFocus()
 
+    def _query_key_down(self, event):
+        if event.GetKeyCode() == wx.WXK_DOWN and not event.HasAnyModifiers() and self._results:
+            if self.results_list.GetSelection() == wx.NOT_FOUND:
+                self.results_list.SetSelection(0)
+            self.platform_data[self._active_name]['result_index'] = self.results_list.GetSelection()
+            self.results_list.SetFocus()
+            return
+        self._keep_tab_in_app(event)
+
     def _results_key_down(self, event):
-        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not event.HasAnyModifiers():
             self.open_result()
             return
-        event.Skip()
+        self._keep_tab_in_app(event)
+
+    def _result_selected(self, event):
+        self.platform_data[self._active_name]['result_index'] = self.results_list.GetSelection()
 
     def status(self, message):
         if self._closing_app:
@@ -672,10 +695,12 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         data = self.platform_data.get(self._active_name, {})
         self.details_field.ChangeValue(video_details_text(data.get('author'), data.get('description')))
         self._render_comments()
-        self._results = data.get('results', ())
-        self.results_list.Set([item.label for item in self._results])
+        results = data.get('results', ())
+        if results != self._results:
+            self._results = results
+            self.results_list.Set([item.label for item in self._results])
         if self._results:
-            self.results_list.SetSelection(0)
+            self.results_list.SetSelection(max(0, min(data.get('result_index', 0), len(self._results) - 1)))
 
     def _platform_error(self, platform, message):
         logger.warning('Platform error: platform=%s message=%s', platform, message)
@@ -685,21 +710,46 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
     def loaded(self, platform):
         if platform != self._active_name or self._closing_app:
             return
+        if not self.clients[platform].active:
+            return
         if self._pending_page_focus is self.current():
             wx.CallAfter(self._enter_page, self.current())
         else:
             self.status(f'{platform} carregado. F6 alterna entre a página e os controles.')
         # The page bridge is ready at this point. Refreshing here, rather than
         # waiting for F5, populates details on the first video that is opened.
-        self.dispatch('refresh_info')
+        # Search collection and explicit playback own the next command. Starting
+        # refresh_info here would make dispatch silently discard that command.
+        if not self.clients[platform].after_load:
+            self.dispatch('refresh_info')
 
     def home(self, event=None):
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
-        elif not self.clients[self._active_name].pending:
-            self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
         else:
-            self.status('Aguarde o comando anterior.')
+            self.clients[self._active_name].set_active(True)
+            self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
+            self.activities.SetSelection(0)
+            self.focus_controls()
+            self.status('Voltando ao feed do ' + self._active_name + '...')
+
+    def return_to_results(self, event=None):
+        if not self.platform_data.get(self._active_name, {}).get('results'):
+            self.activities.SetSelection(2)
+            self.query_field.SetFocus()
+            self.status('Faça uma pesquisa para carregar a lista de resultados.')
+            return
+        client = self.clients[self._active_name]
+        if client.pending:
+            self.status('Aguarde o comando anterior ou use Ctrl+Home para voltar ao feed.')
+            return
+        client.set_active(False)
+        self._pending_page_focus = None
+        self.current().SetCanFocus(False)
+        self._restore_fields()
+        self.activities.SetSelection(2)
+        self.results_list.SetFocus()
+        self.status(f'{len(self._results)} resultados. Enter abre; Ctrl+Home volta ao feed.')
 
     def reload(self, event=None):
         if self.current():
@@ -767,6 +817,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         if 'results' in result:
             normalize = normalize_search_results if name == 'TikTok' else normalize_reel_results
             data['results'] = normalize(result['results'])
+            data['result_index'] = 0
         if active:
             self._restore_fields()
         message = 'Comando concluído.'
@@ -807,9 +858,14 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.focus_controls()
             return
         elif action == 'collect_search_results' and active:
+            self.clients[name].set_active(False)
             self.activities.SetSelection(2)
-            self.results_list.SetFocus()
-            message = f'{len(self._results)} resultados. Selecione um e pressione Enter para abrir.'
+            if self._results:
+                self.results_list.SetFocus()
+                message = f'{len(self._results)} resultados. Selecione um e pressione Enter para abrir.'
+            else:
+                self.query_field.SetFocus()
+                message = 'Nenhum vídeo encontrado. Tente outro termo ou use F6 para verificar se a plataforma pede login.'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
         if active and message:
@@ -837,6 +893,10 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.status('Aguarde o comando anterior.')
             return
         url = search_url(query) if name == 'TikTok' else 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
+        self.platform_data[name]['results'] = ()
+        self.platform_data[name]['result_index'] = 0
+        self._restore_fields()
+        self.clients[name].set_active(True)
         self.clients[name].navigate(url, lambda: self.dispatch('collect_search_results') if name == self._active_name else None)
         self.status('Carregando pesquisa no ' + name + '...')
 
@@ -848,8 +908,14 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         if self.clients[self._active_name].pending:
             self.status('Aguarde o comando anterior.')
             return
-        self.clients[self._active_name].navigate(self._results[index].url)
+        name = self._active_name
+        self.platform_data[name]['result_index'] = index
+        self.clients[name].set_active(True)
+        self.clients[name].navigate(self._results[index].url,
+                                    lambda: self.dispatch('play') if name == self._active_name else None)
+        self.activities.SetSelection(0)
         self.focus_controls()
+        self.status('Abrindo vídeo. Ctrl+R volta aos resultados; Ctrl+Home volta ao feed.')
 
     def _closing(self, event):
         self._closing_app = True
