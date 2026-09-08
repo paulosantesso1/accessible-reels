@@ -12,12 +12,14 @@ import wx.html2 as html2
 
 from ui import webview_native
 from ui.video_link import parse_video_link
+from app_logging import get_logger
 
 PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/'}
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite',
            'collect_search_results', 'diagnostics'}
+logger = get_logger()
 
 
 def belongs_to_platform(url, platform):
@@ -109,6 +111,7 @@ class WebViewClient:
         if event.GetTarget() not in ('', '_self', '_top'):
             return
         self._cancel('Falha ao carregar a página. Tente recarregar.')
+        logger.warning('WebView load error: platform=%s target=%s', self.platform, event.GetTarget())
         self.on_error('Falha ao carregar a página. Tente recarregar.')
 
     def navigate(self, url, after_load=None):
@@ -159,6 +162,7 @@ class WebViewClient:
 
     def _timeout(self, token):
         if self.pending and self.pending['token'] == token:
+            logger.warning('WebView command timed out: platform=%s action=%s', self.platform, self.pending['action'])
             self.ready = False
             # Destroy the document's promise chain to prevent a late social action.
             self.view.LoadURL(self.view.GetCurrentURL())

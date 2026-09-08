@@ -271,6 +271,10 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+S`: Sair;
 - `Tab` e `Shift+Tab`: percorrer os controles em ordem.
 
+## Logs para suporte
+
+O aplicativo registra localmente inicialização, comandos, falhas de carregamento e erros inesperados em `%LOCALAPPDATA%\\Accessible Reels\\logs\\accessible-reels.log`. No menu **Ajuda**, escolha **Abrir pasta de logs para suporte** e envie esse arquivo ao suporte quando solicitado. Os arquivos são rotativos (até quatro arquivos de 1 MB) e não registram cookies, tokens, parâmetros de URL, descrições nem comentários.
+
 Os comentários são carregados da plataforma e o painel web é fechado em seguida. A tela nativa é somente leitura: use as setas para escolher um comentário e `Tab` para acessar seus detalhes completos. A publicação e as respostas estão temporariamente desativadas.
 
 O foco inicial fica no seletor de guias, com TikTok selecionado. Use as setas no seletor ou Ctrl+Tab (Ctrl+Shift+Tab para voltar) para trocar de plataforma. Tab acessa Abrir/Conectar e percorre as opções da guia selecionada; Shift+Tab retorna pelos controles. Enter no seletor também acessa Abrir/Conectar. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.

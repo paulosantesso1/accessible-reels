@@ -14,6 +14,7 @@ from urllib.parse import quote_plus, urlsplit
 import wx
 import wx.html2 as html2
 
+from app_logging import get_logger, log_directory
 from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
 from ui.webview_client import WebViewClient, PLATFORM_URLS
 from ui.video_link import parse_video_link
@@ -28,6 +29,7 @@ COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':
             'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
 WEBVIEW2_BOOTSTRAPPER_NAME = 'MicrosoftEdgeWebView2Setup.exe'
 WEBVIEW2_BOOTSTRAPPER_URL = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+logger = get_logger()
 
 
 def bundled_webview2_bootstrapper_path():
@@ -258,6 +260,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         help_menu = wx.Menu()
         self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, 'F1')
         self._append_menu_item(help_menu, 'Verificar atualizações', self.on_check_for_updates)
+        self._append_menu_item(help_menu, 'Abrir pasta de logs para suporte', self.open_log_folder)
         help_menu.AppendSeparator()
         self._append_menu_item(help_menu, 'Instalar Microsoft Edge WebView2 Runtime...', self.install_webview2_runtime)
         self._append_menu_item(help_menu, 'Baixar Microsoft Edge WebView2 Runtime', self.open_webview2_download)
@@ -265,6 +268,21 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), 'Alt+S')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
+
+    def open_log_folder(self, event=None):
+        """Open the local, user-controlled diagnostic files for sharing."""
+        folder = log_directory()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if sys.platform == 'win32':
+                os.startfile(str(folder))
+            else:
+                wx.LaunchDefaultBrowser(folder.as_uri())
+        except OSError:
+            self.status('Não foi possível abrir a pasta de logs.')
+            logger.exception('Could not open support log folder')
+            return
+        self.status('Pasta de logs aberta. Envie o arquivo accessible-reels.log ao suporte.')
 
     def _append_menu_item(self, menu, label, handler, shortcut=''):
         item = menu.Append(wx.ID_ANY, label + (f'\t{shortcut}' if shortcut else ''))
@@ -682,6 +700,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.results_list.SetSelection(0)
 
     def _platform_error(self, platform, message):
+        logger.warning('Platform error: platform=%s message=%s', platform, message)
         if platform == self._active_name:
             self.status(message)
 
@@ -734,6 +753,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         client = self.clients[name]
         if client.pending:
             return
+        logger.info('Command requested: platform=%s action=%s', name, action)
         focused = wx.Window.FindFocus()
         restore_focus = focused if focused and focused is not self.current() else None
         def completed(result):
@@ -757,8 +777,10 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         if result.get('ignored'):
             return
         if result.get('ok') is not True:
+            logger.warning('Command failed: platform=%s action=%s message=%s', name, action, result.get('error'))
             self._platform_error(name, result.get('error') or 'A rede não confirmou o comando.')
             return
+        logger.info('Command completed: platform=%s action=%s', name, action)
         data = self.platform_data[name]
         for field in ('author', 'description', 'link', 'comments'):
             if field in result:
