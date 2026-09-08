@@ -130,7 +130,7 @@ def keyboard_help_text():
         'L — Curtir ou descurtir\n'
         'F — Salvar ou remover dos salvos\n'
         'Alt+E — Pesquisar vídeos\n'
-        'Alt+S — Sair'
+        'Alt+S — Sair\n'
         + speed_help
     )
 

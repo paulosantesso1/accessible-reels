@@ -137,6 +137,7 @@ def test_session_summary_describes_open_platforms_without_claiming_login():
 def test_f1_help_lists_focus_and_player_shortcuts():
     help_text = keyboard_help_text()
     assert 'Shift+< / Shift+> - Diminuir ou aumentar a velocidade' in help_text
+    assert 'Alt+S — Sair\nShift+< / Shift+>' in help_text
     assert 'F6 — Alternar entre a página' in help_text
     assert 'Alt+P — Reproduzir ou pausar' in help_text
     assert 'Ctrl+1 / Ctrl+2' in help_text
