@@ -269,8 +269,9 @@
       video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + argument));
       return {position: video.currentTime};
     }
-    if (["author", "description", "refresh_info", "copy_link"].includes(action)) {
+    if (["author", "description", "refresh_info", "copy_link", "download_link"].includes(action)) {
       const info = snapshot();
+      if (action === "download_link") return {...info, media_url: video.currentSrc || video.src || ""};
       if (action === "copy_link" && !info.link) throw new Error("Não foi possível identificar o link do Reel atual.");
       return info;
     }

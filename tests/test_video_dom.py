@@ -51,6 +51,58 @@ def install_embedded_tiktok(page):
     ).read_text(encoding="utf-8"))
 
 
+def test_download_identifies_active_feed_media_without_search(page):
+    page.set_content('<video id="active" style="width:600px;height:400px"></video>')
+    page.evaluate("Object.defineProperty(document.querySelector('video'), 'currentSrc', {value: 'https://v.tiktokcdn.com/current.mp4'})")
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('download_link')")
+    assert result['ok'] is True
+    assert result['media_url'] == 'https://v.tiktokcdn.com/current.mp4'
+
+
+@pytest.mark.parametrize('state_kind', ['hydration', 'react', 'react_array'])
+def test_download_resolves_blob_from_matching_feed_item(page, state_kind):
+    page.set_content('''<div data-video-id="7682105671503990037">
+      <video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana/video/7682105671503990037">ana</a></div>''')
+    page.evaluate('''kind => {
+      const video = document.querySelector('video');
+      Object.defineProperty(video, 'currentSrc', {value: 'blob:https://www.tiktok.com/local'});
+      const data = {items: [
+        {id: '111', video: {playAddr: 'https://v.tiktokcdn.com/wrong.mp4'}},
+        {id: '7682105671503990037', video: {playAddr: 'https://v.tiktokcdn.com/correct.mp4?sign=test'}}
+      ]};
+      if (kind === 'react_array') data.items[1].video.playAddr = [{src: data.items[1].video.playAddr}];
+      if (kind.startsWith('react')) {
+        video.parentElement.__reactProps$test = {children: {props: data}};
+      } else {
+        const script = document.createElement('script');
+        script.type = 'application/json'; script.id = 'SIGI_STATE';
+        script.textContent = JSON.stringify(data); document.body.append(script);
+      }
+    }''', state_kind)
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('download_link')")
+    assert result['ok'] is True
+    assert result['media_url'] == 'https://v.tiktokcdn.com/correct.mp4?sign=test'
+
+
+def test_download_captures_dynamic_feed_response(page):
+    page.set_content('''<div data-video-id="7682105671503990037"><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana/video/7682105671503990037">ana</a></div>''')
+    page.evaluate('''() => {
+      window.fetch = async () => new Response(JSON.stringify({itemList: [
+        {id: '7682105671503990037', video: {playAddr: 'https://v.tiktokcdn.com/live.mp4'}}
+      ]}), {headers: {'content-type': 'application/json'}});
+    }''')
+    page.evaluate(Path('ui/web_scripts/media_capture.js').read_text(encoding='utf-8'))
+    install_embedded_tiktok(page)
+    page.evaluate("fetch('https://www.tiktok.com/api/recommend/item_list/')")
+    page.wait_for_function('window.__accessibleMediaItems.size === 1')
+    result = page.evaluate("command('download_link')")
+    assert result['media_url'] == 'https://v.tiktokcdn.com/live.mp4'
+
+
 def test_search_waits_for_delayed_cards_without_needing_a_video(page):
     page.set_content('<main id="results"></main>')
     install_embedded_tiktok(page)

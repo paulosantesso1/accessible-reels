@@ -2,3 +2,4 @@ playwright>=1.45,<2
 wxPython==4.3.1
 pytest>=8,<9
 accessible-output2==0.17
+yt-dlp==2026.8.19

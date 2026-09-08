@@ -258,6 +258,29 @@ Arquivos `.txt` no formato Netscape `cookies.txt` também são aceitos diretamen
 
 Se nenhum cookie TikTok for encontrado, nenhum cookie aparecer no contexto ou os cookies desaparecerem após a navegação, a importação falhará sem anunciar valores ou nomes. Cookies expirados, revogados pelo logout ou invalidados pelo TikTok precisam ser exportados novamente a partir de uma sessão ativa.
 
+## Downloads de vídeos
+
+Pressione **Ctrl+B** para baixar o vídeo ativo, inclusive no feed de TikTok ou
+Instagram. Na lista de pesquisa, o atalho baixa o resultado selecionado.
+Em cada download, a janela padrão **Salvar como** permite escolher o nome do
+arquivo MP4 e a pasta de destino. A última pasta usada aparece como sugestão.
+O Windows pede confirmação ao substituir um arquivo existente; o arquivo anterior
+é preservado até o novo download terminar. O menu **Downloads** permite trocar ou abrir essa pasta.
+
+O download tenta primeiro transferir o MP4 pelo WebView2, usando a sessão aberta,
+sem depender do yt-dlp. O motor faz parte do runtime já incluído no instalador.
+Arquivos incompletos são descartados; a transferência pela sessão tem limite
+de 512 MB e é interrompida se a página navegar. Quando necessário, o yt-dlp
+é usado como alternativa em segundo plano. O aplicativo anuncia início, conclusão ou erro;
+os percentuais são mostrados na barra de status sem anúncios de voz
+no status acessível. Mantenha o aplicativo aberto até concluir. A identificação
+consulta o vídeo ativo na página e prioriza o endereço do arquivo em reprodução
+quando disponível, antes de tentar extrair novamente a página. Vídeos que exigem autenticação ou
+têm restrições de acesso podem falhar; a sessão do WebView não é transferida
+automaticamente ao yt-dlp. A versão do yt-dlp está fixada nas dependências e
+incluída pelo script de build. O formato escolhido contém áudio e vídeo juntos,
+sem exigir uma instalação separada do FFmpeg.
+
 ## Atalhos e acessibilidade
 
 O aplicativo possui as guias **TikTok** e **Instagram**. A guia TikTok contém os

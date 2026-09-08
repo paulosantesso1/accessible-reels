@@ -17,7 +17,7 @@ $architecture = & $PythonExe -c "import platform; print(platform.machine())"
 if ($architecture -ne "AMD64") { throw "O build requer Python x64." }
 $loader = & $PythonExe -c "import wx; from pathlib import Path; print(Path(wx.__file__).parent / 'WebView2Loader.dll')"
 if (!(Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll ausente no wxPython." }
-& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --add-binary "$loader;." --add-data "ui\web_scripts;ui\web_scripts" main.py
+& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --collect-all yt_dlp --add-binary "$loader;." --add-data "ui\web_scripts;ui\web_scripts" main.py
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
 
 & "$PSScriptRoot\prepare_webview2.ps1" -Destination "dist\Accessible Reels"

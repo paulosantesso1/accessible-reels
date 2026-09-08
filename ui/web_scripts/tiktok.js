@@ -428,6 +428,56 @@
     return "";
   }
 
+  function downloadMedia(video, link) {
+    const isHttp = value => typeof value === "string" && value.startsWith("https://");
+    const current = video.currentSrc || video.src;
+    if (isHttp(current)) return current;
+    const id = link.match(/\/video\/(\d+)/)?.[1] ||
+      videoIdFromActiveCard(video, ancestorsFor(video));
+    if (!id) return "";
+    const roots = [window.__accessibleMediaItems?.get(id)];
+    for (const script of document.querySelectorAll(
+      "script#__UNIVERSAL_DATA_FOR_REHYDRATION__, script#SIGI_STATE, script[type='application/json']"
+    )) {
+      try { roots.push(JSON.parse(script.textContent || "")); } catch (_) {}
+    }
+    // Feed cards loaded after navigation often keep their item data in React
+    // props instead of the initial hydration script. Match the active ID only.
+    for (const element of [video, ...ancestorsFor(video)]) {
+      for (const key of Object.keys(element)) {
+        if (key.startsWith("__reactProps$")) roots.push(element[key]);
+      }
+    }
+    const seen = new WeakSet();
+    const pending = roots.map(value => [value, 0]);
+    let budget = 12000;
+    const address = (value, depth = 0) => {
+      if (depth > 3) return "";
+      if (isHttp(value)) return value;
+      if (!value || typeof value !== "object") return "";
+      if (Array.isArray(value)) return value.map(item => address(item, depth + 1)).find(Boolean) || "";
+      return [value.src, ...(value.UrlList || value.url_list || [])].find(isHttp) || "";
+    };
+    while (pending.length && budget-- > 0) {
+      const [value, depth] = pending.pop();
+      if (!value || typeof value !== "object" || value instanceof Node || seen.has(value) || depth > 18) continue;
+      seen.add(value);
+      if (String(value.id || value.itemId || value.aweme_id || "") === id) {
+        const data = value.video || {};
+        const candidate = address(data.playAddr) || address(data.play_addr) ||
+          address(data.downloadAddr) || address(data.download_addr);
+        if (candidate) return candidate;
+      }
+      for (const key of Object.keys(value)) {
+        // Avoid invoking getters or walking React owners and browser objects.
+        if (["_owner", "return", "stateNode"].includes(key)) continue;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (descriptor && "value" in descriptor) pending.push([descriptor.value, depth + 1]);
+      }
+    }
+    return "";
+  }
+
   function shortcutAction(event) {
     if (event.repeat || event.ctrlKey || event.metaKey || event.altGraphKey) return null;
     const key = event.key.toLowerCase();
@@ -691,8 +741,9 @@
       video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + argument));
       return {position: video.currentTime};
     }
-    if (["author", "description", "copy_link", "refresh_info"].includes(action)) {
+    if (["author", "description", "copy_link", "refresh_info", "download_link"].includes(action)) {
       const info = snapshot();
+      if (action === "download_link") return {...info, media_url: downloadMedia(video, info.link || "")};
       if (action === "copy_link" && !info.link) return copyLinkFromTikTok(video);
       return info;
     }

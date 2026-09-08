@@ -16,6 +16,7 @@ import wx.html2 as html2
 from app_logging import get_logger, log_directory
 from webview_runtime import backend_version
 from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
+from ui.download_controls import DownloadControlsMixin
 from ui.webview_client import WebViewClient, PLATFORM_URLS
 from ui.video_link import parse_video_link
 from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
@@ -127,6 +128,7 @@ def keyboard_help_text():
         'F5 — Atualizar autor e descrição\n'
         'Alt+A / Alt+D — Ler autor / descrição\n'
         'Alt+C — Copiar link\n'
+        'Ctrl+B — Baixar vídeo atual na pasta de downloads\n'
         'Alt+Shift+C — Comentários\n'
         'Alt+L — Curtir ou descurtir\n'
         'Alt+F — Salvar ou remover dos salvos\n'
@@ -159,7 +161,7 @@ def webview_profile_path(*, local_app_data=None, frozen=None, source_root=None):
     return profile
 
 
-class MainFrame(EmbeddedFocusMixin, wx.Frame):
+class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def __init__(self, *, auto_open=False):
         super().__init__(None, title='Accessible Reels', size=(1180, 850))
         os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(webview_profile_path())
@@ -167,6 +169,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self._active_name = 'TikTok'
         self._pending_page_focus = None
         self._closing_app = False
+        self.initialize_downloads()
         self._update_checking = False
         self._registered_hotkeys = set()
         self._accelerator_ids = {}
@@ -260,6 +263,11 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
 
         help_menu.AppendSeparator()
         self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), 'Alt+S')
+        downloads = wx.Menu()
+        self._append_menu_item(downloads, 'Baixar vídeo atual', self.start_video_download, 'Ctrl+B')
+        self._append_menu_item(downloads, 'Escolher pasta de downloads...', self.choose_download_folder)
+        self._append_menu_item(downloads, 'Abrir pasta de downloads', self.open_download_folder)
+        bar.Append(downloads, '&Downloads')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
 
@@ -483,6 +491,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             ('select_instagram', ord('2'), lambda event: self._open_platform('Instagram')),
             ('open_selected_platform', wx.WXK_RETURN, lambda event: self.open_network()),
             ('open_link', ord('O'), lambda event: self.open_link()),
+            ('download_video', ord('B'), lambda event: self.start_video_download()),
             ('return_results', ord('R'), lambda event: self.return_to_results()),
             ('home', wx.WXK_HOME, lambda event: self.home()),
         ]:
@@ -919,6 +928,9 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
 
     def _closing(self, event):
         self._closing_app = True
+        transfer = getattr(self, '_browser_download', None)
+        if transfer:
+            transfer.finish(None, 'Aplicativo fechado.')
         self._release_hotkey()
         for client in self.clients.values():
             client.close()

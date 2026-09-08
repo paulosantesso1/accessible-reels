@@ -18,7 +18,7 @@ PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite',
-           'collect_search_results', 'diagnostics'}
+           'collect_search_results', 'download_link', 'diagnostics'}
 logger = get_logger()
 
 
@@ -36,7 +36,7 @@ def scripts_for(platform):
     root = Path(__file__).with_name('web_scripts')
     domain = 'tiktok.com' if platform == 'TikTok' else 'instagram.com'
     source = '\n'.join((root / name).read_text(encoding='utf-8') for name in
-                       ('transport.js', 'audio_guard.js', platform.lower() + '.js'))
+                       ('transport.js', 'audio_guard.js', 'media_capture.js', platform.lower() + '.js'))
     return f"if (window === top && ['{domain}', 'www.{domain}'].includes(location.hostname)) {{\n{source}\n}}"
 
 

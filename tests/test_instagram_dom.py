@@ -83,6 +83,14 @@ def command(page, action, argument=None):
     return page.evaluate("([action, argument]) => window.igCommand(action, argument)", [action, argument])
 
 
+def test_download_uses_active_feed_video(page):
+    page.evaluate("Object.defineProperty(document.querySelector('#v1'), 'currentSrc', {value: 'https://s.cdninstagram.com/current.mp4'})")
+    result = command(page, 'download_link')
+    assert result['ok'] is True
+    assert result['link'] == 'https://www.instagram.com/reel/ABC_123/'
+    assert result['media_url'] == 'https://s.cdninstagram.com/current.mp4'
+
+
 def test_instagram_search_collects_delayed_results_without_video(page):
     page.evaluate('''() => {
       document.body.innerHTML = '<main id="search-results"></main>';
