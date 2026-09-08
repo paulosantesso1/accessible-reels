@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import wx
 from unittest.mock import Mock, patch
+from pathlib import Path
 
 from ui.app_frame import (
     MainFrame,
+    WEBVIEW2_BOOTSTRAPPER_NAME,
+    WEBVIEW2_BOOTSTRAPPER_URL,
+    bundled_webview2_bootstrapper_path,
     comment_details_text,
     comment_list_label,
     keyboard_help_text,
@@ -174,3 +178,23 @@ def test_platform_menu_action_selects_and_opens_the_requested_platform():
     MainFrame._open_platform(frame, 'Instagram')
     frame._select_platform.assert_called_once_with('Instagram')
     frame.open_network.assert_called_once_with()
+
+
+def test_webview2_recovery_uses_the_official_bootstrapper_link():
+    assert WEBVIEW2_BOOTSTRAPPER_URL == 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+    assert bundled_webview2_bootstrapper_path().name == WEBVIEW2_BOOTSTRAPPER_NAME
+
+
+def test_webview2_recovery_starts_the_packaged_bootstrapper_after_confirmation():
+    frame = type('Frame', (), {})()
+    frame.status = Mock()
+    frame.open_webview2_download = Mock()
+    bootstrapper = Path('C:/temporary/MicrosoftEdgeWebView2Setup.exe')
+    with patch('ui.app_frame.html2.WebView.IsBackendAvailable', return_value=False), \
+            patch('ui.app_frame.bundled_webview2_bootstrapper_path', return_value=bootstrapper), \
+            patch.object(Path, 'is_file', return_value=True), \
+            patch('ui.app_frame.wx.MessageBox', return_value=wx.YES), \
+            patch('ui.app_frame.subprocess.Popen') as launch:
+        MainFrame.install_webview2_runtime(frame)
+    launch.assert_called_once_with([str(bootstrapper), '/install'], close_fds=True)
+    frame.status.assert_called_once()

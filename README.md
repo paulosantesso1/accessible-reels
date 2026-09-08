@@ -11,6 +11,7 @@ Execute `.\.venv\Scripts\python.exe main.py --webview` para testar TikTok e
 Instagram em WebView2, sem extensão e sem janela externa de navegador.
 Requer Microsoft Edge WebView2 Runtime e wxPython com backend Edge disponível.
 O instalador do Windows inclui o bootstrapper oficial e instala o runtime automaticamente quando ele ainda não existe no computador; para isso, a instalação inicial precisa de conexão com a internet.
+Se o runtime estiver indisponível depois da instalação, abra **Alt+J, Instalar Microsoft Edge WebView2 Runtime...**. O aplicativo detecta se ele já está disponível e, caso contrário, abre o bootstrapper oficial incluído; a opção seguinte no mesmo menu abre o [link direto oficial](https://go.microsoft.com/fwlink/p/?LinkId=2124703).
 O app inicia sem abrir nenhuma plataforma. Ele segue o modelo de player por atalhos:
 **Ctrl+1** abre TikTok e **Ctrl+2** abre Instagram. Use **F6** para alternar entre
 a página e o painel do player; faça login quando necessário. **F1** abre a ajuda rápida.

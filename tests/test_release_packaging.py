@@ -12,5 +12,6 @@ def test_windows_release_packages_the_signed_webview2_bootstrapper():
     assert 'Get-AuthenticodeSignature' in build_script
     assert '--add-data "ui\\web_scripts;ui\\web_scripts"' in build_script
     assert 'MicrosoftEdgeWebView2Setup.exe' in installer
+    assert 'DestDir: "{app}"; Flags: ignoreversion' in installer
     assert 'Parameters: "/silent /install"' in installer
     assert 'function NeedsWebView2Runtime()' in installer

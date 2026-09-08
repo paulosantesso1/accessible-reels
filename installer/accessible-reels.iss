@@ -29,7 +29,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "..\dist\Accessible Reels\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "..\dist\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion; Check: NeedsWebView2Runtime
+Source: "..\dist\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
@@ -39,7 +39,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; Flags: unchecked
 
 [Run]
-Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; Flags: waituntilterminated; Check: NeedsWebView2Runtime
+Filename: "{app}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; Flags: waituntilterminated; Check: NeedsWebView2Runtime
 Filename: "{app}\{#AppExeName}"; Description: "Iniciar o {#AppName}"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\{#AppExeName}"; Flags: nowait skipifnotsilent
 
