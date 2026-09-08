@@ -1,17 +1,17 @@
+import json
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_windows_release_packages_the_signed_webview2_bootstrapper():
-    build_script = (ROOT / 'scripts' / 'build_windows_release.ps1').read_text(encoding='utf-8')
-    installer = (ROOT / 'installer' / 'accessible-reels.iss').read_text(encoding='utf-8')
+def test_runtime_lock_is_consistent():
+    lock = json.loads((ROOT / 'webview2-runtime.json').read_text())
+    assert f".{lock['version']}.{lock['architecture']}.cab" in lock['url']
+    assert len(bytes.fromhex(lock['sha256'])) == 32
 
-    assert 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' in build_script
-    assert 'Get-AuthenticodeSignature' in build_script
-    assert '--add-data "ui\\web_scripts;ui\\web_scripts"' in build_script
-    assert 'MicrosoftEdgeWebView2Setup.exe' in installer
-    assert 'DestDir: "{app}"; Flags: ignoreversion' in installer
-    assert 'Parameters: "/silent /install"' in installer
-    assert 'function NeedsWebView2Runtime()' in installer
+
+def test_installer_does_not_launch_an_online_runtime_installer():
+    installer = (ROOT / 'installer/accessible-reels.iss').read_text(encoding='utf-8')
+    assert 'MicrosoftEdgeWebView2Setup' not in installer
+    assert 'S-1-15-2-2' in installer
+    assert 'S-1-15-2-1' in installer

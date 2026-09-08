@@ -13,3 +13,5 @@ pytest-cache-files-*/
 venv/
 build/
 dist/
+.runtime-cache/
+*.spec

@@ -9,9 +9,29 @@ aplicativo anuncia a nova posição. Funciona no TikTok e no Instagram.
 
 Execute `.\.venv\Scripts\python.exe main.py --webview` para testar TikTok e
 Instagram em WebView2, sem extensão e sem janela externa de navegador.
-Requer Microsoft Edge WebView2 Runtime e wxPython com backend Edge disponível.
-O instalador do Windows inclui o bootstrapper oficial e instala o runtime automaticamente quando ele ainda não existe no computador; para isso, a instalação inicial precisa de conexão com a internet.
-Se o runtime estiver indisponível depois da instalação, abra **Alt+J, Instalar Microsoft Edge WebView2 Runtime...**. O aplicativo detecta se ele já está disponível e, caso contrário, abre o bootstrapper oficial incluído; a opção seguinte no mesmo menu abre o [link direto oficial](https://go.microsoft.com/fwlink/p/?LinkId=2124703).
+O instalador Windows x64 inclui o WebView2 Fixed Version **152.0.4191.62** completo.
+A instalação do runtime funciona offline e não altera o WebView2 do Windows.
+O aplicativo usa `runtime/152.0.4191.62` ao lado do executável, configurado antes do wxPython.
+Se houver falha, use **Alt+J, Verificar runtime incluído...** e consulte os logs.
+Ao executar pelo código sem a pasta `runtime`, continua sendo usado o runtime do sistema.
+
+### Atualização do runtime e build
+
+`webview2-runtime.json` fixa versão, arquitetura x64, URL oficial e SHA256 do CAB.
+Para atualizar, baixe o pacote Fixed Version oficial, confira sua assinatura e atualize esses campos juntos.
+O build verifica hash, assinatura Microsoft, versão e arquitetura; uma divergência interrompe a geração.
+Mantenha uma cópia do CAB: a Microsoft pode retirar versões antigas do download.
+O cache local fica em `.runtime-cache/webview2.cab` (não versionado).
+Execute `scripts/build_windows_release.ps1`; o resultado é `dist/Accessible-Reels-Setup.exe`.
+A primeira geração precisa de internet; a instalação do pacote pronto não precisa.
+O wxPython também está fixado em `4.3.1` para manter o loader testado. Atualizações de segurança do runtime
+precisam ser incorporadas nas próximas releases do aplicativo.
+O instalador configura as permissões de leitura/execução exigidas pelo runtime no Windows 10.
+O build executa `"Accessible Reels.exe" --check-runtime` antes de compilar o instalador.
+Esse teste usa um perfil temporário, carrega uma página local e executa JavaScript; retorna 0 no sucesso.
+Os resultados ficam em `%LOCALAPPDATA%\Accessible Reels\logs\accessible-reels.log`.
+Antes de publicar, valide em Windows 10/11 sem WebView2 global, offline, além de login e navegação.
+
 O app inicia sem abrir nenhuma plataforma. Ele segue o modelo de player por atalhos:
 **Ctrl+1** abre TikTok e **Ctrl+2** abre Instagram. Use **F6** para alternar entre
 a página e o painel do player; faça login quando necessário. **F1** abre a ajuda rápida.

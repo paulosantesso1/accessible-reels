@@ -6,7 +6,6 @@ import shutil
 import sys
 import threading
 import ctypes
-import subprocess
 from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
@@ -15,6 +14,7 @@ import wx
 import wx.html2 as html2
 
 from app_logging import get_logger, log_directory
+from webview_runtime import backend_version
 from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
 from ui.webview_client import WebViewClient, PLATFORM_URLS
 from ui.video_link import parse_video_link
@@ -27,16 +27,7 @@ from updater import UpdateError, can_self_update, check_for_update, download_upd
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
-WEBVIEW2_BOOTSTRAPPER_NAME = 'MicrosoftEdgeWebView2Setup.exe'
-WEBVIEW2_BOOTSTRAPPER_URL = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
 logger = get_logger()
-
-
-def bundled_webview2_bootstrapper_path():
-    """Return the Microsoft bootstrapper retained by the Windows installer."""
-    if getattr(sys, 'frozen', False):
-        return Path(sys.executable).resolve().parent / WEBVIEW2_BOOTSTRAPPER_NAME
-    return Path(__file__).resolve().parents[1] / 'dist' / WEBVIEW2_BOOTSTRAPPER_NAME
 
 
 def _copy_text_to_clipboard(text):
@@ -262,8 +253,8 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(help_menu, 'Verificar atualizações', self.on_check_for_updates)
         self._append_menu_item(help_menu, 'Abrir pasta de logs para suporte', self.open_log_folder)
         help_menu.AppendSeparator()
-        self._append_menu_item(help_menu, 'Instalar Microsoft Edge WebView2 Runtime...', self.install_webview2_runtime)
-        self._append_menu_item(help_menu, 'Baixar Microsoft Edge WebView2 Runtime', self.open_webview2_download)
+        self._append_menu_item(help_menu, 'Verificar runtime incluído...', self.install_webview2_runtime)
+
         help_menu.AppendSeparator()
         self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), 'Alt+S')
         bar.Append(help_menu, 'A&juda')
@@ -375,31 +366,12 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             wx.MessageBox('O Microsoft Edge WebView2 Runtime já está disponível neste computador.',
                           'WebView2 Runtime', wx.OK | wx.ICON_INFORMATION, self)
             return
-        bootstrapper = bundled_webview2_bootstrapper_path()
-        if not bootstrapper.is_file():
-            self.open_webview2_download()
-            return
-        message = (
-            'O WebView2 Runtime não está disponível. O instalador oficial da Microsoft '
-            'será aberto e precisa de conexão com a internet.\n\nDeseja continuar?'
-        )
-        if wx.MessageBox(message, 'Instalar WebView2 Runtime', wx.YES_NO | wx.ICON_QUESTION, self) != wx.YES:
-            return
-        try:
-            subprocess.Popen([str(bootstrapper), '/install'], close_fds=True)
-        except OSError:
-            wx.MessageBox('Não foi possível iniciar o instalador do WebView2. Use a opção de download para instalá-lo manualmente.',
-                          'WebView2 Runtime', wx.OK | wx.ICON_ERROR, self)
-            return
-        self.status('O instalador do WebView2 foi aberto. Conclua a instalação e reabra o Accessible Reels.')
+        logger.error('WebView2 backend unavailable: wx=%s folder=%s',
+                     wx.version(), os.environ.get('WEBVIEW2_BROWSER_EXECUTABLE_FOLDER'))
+        wx.MessageBox('Não foi possível carregar o runtime. Reinstale o Accessible Reels '
+                      'usando o instalador completo e envie os logs se o problema persistir.',
+                      'WebView2 Runtime', wx.OK | wx.ICON_ERROR, self)
 
-    def open_webview2_download(self, event=None):
-        if not wx.LaunchDefaultBrowser(WEBVIEW2_BOOTSTRAPPER_URL):
-            wx.MessageBox(
-                'Não foi possível abrir o navegador. Baixe o Microsoft Edge WebView2 Runtime em:\n'
-                + WEBVIEW2_BOOTSTRAPPER_URL,
-                'WebView2 Runtime', wx.OK | wx.ICON_INFORMATION, self
-            )
 
     def _build_comments(self):
         page = wx.Panel(self.activities)
@@ -634,8 +606,12 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.status('Aguarde a conclusão da ação antes de trocar de rede.')
             return
         if not html2.WebView.IsBackendAvailable(html2.WebViewBackendEdge):
-            self.status('Microsoft Edge WebView2 Runtime indisponível neste Windows.')
+            logger.error('WebView2 backend unavailable: wx=%s folder=%s', wx.version(), os.environ.get('WEBVIEW2_BROWSER_EXECUTABLE_FOLDER'))
+            self.status('Não foi possível carregar o runtime. Consulte Alt+J, Verificar runtime incluído.')
             return
+        logger.info('WebView2 backend ready: version=%s folder=%s',
+                    backend_version(),
+                    os.environ.get('WEBVIEW2_BROWSER_EXECUTABLE_FOLDER', 'system'))
         self._pending_page_focus = None
         self._active_name = name
         for platform, view in self.views.items():
@@ -653,6 +629,7 @@ class MainFrame(EmbeddedFocusMixin, wx.Frame):
             self.clients[name] = client
             view.Bind(html2.EVT_WEBVIEW_NEWWINDOW, self.new_window)
             if not view.Create(self.panel):
+                logger.error('WebView2 Create failed: platform=%s', name)
                 self.status('Não foi possível criar a página incorporada.')
                 client.close()
                 del self.views[name], self.clients[name], self.platform_data[name]
