@@ -19,6 +19,8 @@ $loader = & $PythonExe -c "import wx; from pathlib import Path; print(Path(wx.__
 if (!(Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll ausente no wxPython." }
 & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --collect-all yt_dlp --add-binary "$loader;." --add-data "ui\web_scripts;ui\web_scripts" main.py
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
+& $PythonExe scripts\verify_web_scripts.py
+if ($LASTEXITCODE -ne 0) { throw "Os scripts WebView não foram empacotados corretamente." }
 
 & "$PSScriptRoot\prepare_webview2.ps1" -Destination "dist\Accessible Reels"
 

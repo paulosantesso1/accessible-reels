@@ -15,3 +15,8 @@ def test_installer_does_not_launch_an_online_runtime_installer():
     assert 'MicrosoftEdgeWebView2Setup' not in installer
     assert 'S-1-15-2-2' in installer
     assert 'S-1-15-2-1' in installer
+
+
+def test_release_build_verifies_embedded_web_scripts():
+    build = (ROOT / 'scripts' / 'build_windows_release.ps1').read_text(encoding='utf-8')
+    assert 'scripts\\verify_web_scripts.py' in build
