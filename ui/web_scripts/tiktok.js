@@ -715,7 +715,11 @@
   }
 
   async function execute(action, argument) {
-    if (action === "play") {
+    // The top-level page can finish loading before TikTok mounts the first
+    // video. Both explicit playback and the automatic details refresh run at
+    // that boundary, so give the player time to appear instead of reporting a
+    // false failure while TikTok starts it in the background.
+    if (["play", "refresh_info"].includes(action)) {
       const deadline = Date.now() + 8000;
       while (!activeVideo() && Date.now() < deadline) await sleep(150);
     }
