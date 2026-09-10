@@ -10,6 +10,7 @@ from app_logging import get_logger, sanitize
 from instagram.search import validate_reel_url
 from tiktok.search import validate_search_result_url
 from tiktok.video_controls import VideoControlError
+from youtube.search import validate_youtube_url
 
 
 class VideoDownloadError(Exception):
@@ -46,12 +47,15 @@ def video_url(value, platform):
         return validate_search_result_url(value)
     if platform == 'Instagram':
         return validate_reel_url(value)
+    if platform == 'YouTube':
+        return validate_youtube_url(value)
     raise VideoDownloadError('Plataforma não suportada.')
 
 
 def media_url(value, platform):
     hosts = {'TikTok': ('tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokcdn-eu.com', 'byteoversea.com', 'ibytedtos.com', 'muscdn.com'),
-             'Instagram': ('cdninstagram.com', 'fbcdn.net')}.get(platform, ())
+             'Instagram': ('cdninstagram.com', 'fbcdn.net'),
+             'YouTube': ('googlevideo.com',)}.get(platform, ())
     try:
         parsed = urlsplit(value or '')
         tiktok_play = (platform == 'TikTok' and parsed.hostname in ('www.tiktok.com', 'tiktok.com')
@@ -136,6 +140,7 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
                     info = {'id': identifier, 'title': f'{platform} {identifier}',
                             'extractor_key': platform, 'url': source, 'ext': 'mp4',
                             'http_headers': {'Referer': 'https://www.tiktok.com/' if platform == 'TikTok'
+                                             else 'https://www.youtube.com/' if platform == 'YouTube'
                                              else 'https://www.instagram.com/'}}
                 else:
                     info = downloader.extract_info(source, download=False)

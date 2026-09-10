@@ -26,6 +26,9 @@ def parse_video_link(value):
         if url.hostname in ('vm.tiktok.com', 'vt.tiktok.com') and re.fullmatch(
                 r'/[A-Za-z0-9_-]+/?', url.path):
             return 'TikTok', f'https://{url.hostname}{url.path}'
+        if url.hostname in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'):
+            from youtube.search import validate_youtube_url
+            return 'YouTube', validate_youtube_url(value)
     except (ValueError, VideoControlError):
         pass
-    raise VideoControlError('Cole um link de vídeo do TikTok ou de Reel do Instagram.')
+    raise VideoControlError('Cole um link de vídeo do TikTok, Reel do Instagram ou Short do YouTube.')

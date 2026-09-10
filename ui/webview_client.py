@@ -14,7 +14,7 @@ from ui import webview_native
 from ui.video_link import parse_video_link
 from app_logging import get_logger
 
-PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/'}
+PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/', 'YouTube': 'https://www.youtube.com/shorts/'}
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite',
@@ -25,8 +25,13 @@ logger = get_logger()
 def belongs_to_platform(url, platform):
     try:
         parsed = urlsplit(url)
-        domain = 'tiktok.com' if platform == 'TikTok' else 'instagram.com'
-        return (parsed.scheme == 'https' and parsed.hostname in (domain, 'www.' + domain)
+        if platform == 'TikTok':
+            domain = 'tiktok.com'
+        elif platform == 'YouTube':
+            domain = 'youtube.com'
+        else:
+            domain = 'instagram.com'
+        return (parsed.scheme == 'https' and parsed.hostname in (domain, 'www.' + domain, 'm.' + domain)
                 and not parsed.username and not parsed.password and parsed.port in (None, 443))
     except ValueError:
         return False
@@ -34,10 +39,15 @@ def belongs_to_platform(url, platform):
 
 def scripts_for(platform):
     root = Path(__file__).with_name('web_scripts')
-    domain = 'tiktok.com' if platform == 'TikTok' else 'instagram.com'
+    if platform == 'TikTok':
+        domain = 'tiktok.com'
+    elif platform == 'YouTube':
+        domain = 'youtube.com'
+    else:
+        domain = 'instagram.com'
     source = '\n'.join((root / name).read_text(encoding='utf-8') for name in
                        ('transport.js', 'audio_guard.js', 'media_capture.js', platform.lower() + '.js'))
-    return f"if (window === top && ['{domain}', 'www.{domain}'].includes(location.hostname)) {{\n{source}\n}}"
+    return f"if (window === top && ['{domain}', 'www.{domain}', 'm.{domain}'].includes(location.hostname)) {{\n{source}\n}}"
 
 
 class WebViewClient:

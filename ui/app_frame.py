@@ -23,6 +23,7 @@ from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url
 from instagram.search import normalize_reel_results, validate_reel_url
+from youtube.search import validate_youtube_url
 from tiktok.video_controls import VideoControlError
 from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
 
@@ -89,7 +90,7 @@ def session_summary(opened_platforms):
     opened = set(opened_platforms)
     return ' | '.join(
         f'{name}: ' + ('aberto' if name in opened else 'não aberto')
-        for name in ('TikTok', 'Instagram')
+        for name in ('TikTok', 'Instagram', 'YouTube')
     )
 
 
@@ -117,7 +118,7 @@ def keyboard_help_text():
     return (
         'Ajuda rápida de atalhos\n\n'
         'F6 — Alternar entre a página da plataforma e os controles\n'
-        'Ctrl+1 / Ctrl+2 — Abrir TikTok / Instagram\n'
+        'Ctrl+1 / Ctrl+2 / Ctrl+3 — Abrir TikTok / Instagram / YouTube\n'
         'Ctrl+O — Abrir um link de vídeo\n'
         'Alt+Seta para cima / baixo — Vídeo anterior / próximo\n'
         'Alt+P — Reproduzir ou pausar\n'
@@ -178,7 +179,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._build_menu_bar()
         self.panel = wx.Panel(self)
         layout = wx.BoxSizer(wx.VERTICAL)
-        self.network = wx.RadioBox(self.panel, choices=['TikTok', 'Instagram'])
+        self.network = wx.RadioBox(self.panel, choices=['TikTok', 'Instagram', 'YouTube'])
         self.network.Hide()
         session_row = wx.BoxSizer(wx.VERTICAL)
         self.platform_field = wx.StaticText(self.panel, label='')
@@ -198,7 +199,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.activities.SetName('Painel atual: player, comentários ou pesquisa')
         row.Add(self.activities, 0, wx.EXPAND | wx.ALL, 5)
         self.content = wx.BoxSizer(wx.VERTICAL)
-        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram. A sessão salva será reutilizada quando disponível.')
+        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. A sessão salva será reutilizada quando disponível.')
         self.content.Add(self.hint, 0, wx.ALL, 8)
         row.Add(self.content, 1, wx.EXPAND | wx.ALL, 5)
         layout.Add(row, 1, wx.EXPAND)
@@ -215,7 +216,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
         self._refresh_session_controls()
-        self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram. F1 mostra os atalhos.')
+        self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. F1 mostra os atalhos.')
         self.details_field.SetFocus()
         if can_self_update():
             wx.CallLater(2000, self._check_for_updates)
@@ -227,6 +228,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         platform = wx.Menu()
         self._append_menu_item(platform, 'Abrir ou mostrar TikTok', lambda event: self._open_platform('TikTok'))
         self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'))
+        self._append_menu_item(platform, 'Abrir ou mostrar YouTube', lambda event: self._open_platform('YouTube'))
         platform.AppendSeparator()
         self._append_menu_item(platform, 'Abrir link...', self.open_link, 'Ctrl+O')
         self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, 'Ctrl+R')
@@ -489,6 +491,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         for action, key, handler in [
             ('select_tiktok', ord('1'), lambda event: self._open_platform('TikTok')),
             ('select_instagram', ord('2'), lambda event: self._open_platform('Instagram')),
+            ('select_youtube', ord('3'), lambda event: self._open_platform('YouTube')),
             ('open_selected_platform', wx.WXK_RETURN, lambda event: self.open_network()),
             ('open_link', ord('O'), lambda event: self.open_link()),
             ('download_video', ord('B'), lambda event: self.start_video_download()),
@@ -521,7 +524,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _refresh_session_controls(self):
         opened = self.views.keys()
         name = self.network.GetStringSelection()
-        self.platform_field.SetLabel(f'Plataforma ativa: {name}. Ctrl+1 abre TikTok; Ctrl+2 abre Instagram; F10 menus.')
+        self.platform_field.SetLabel(f'Plataforma ativa: {name}. Ctrl+1 abre TikTok; Ctrl+2 abre Instagram; Ctrl+3 abre YouTube; F10 menus.')
         self.session_field.SetLabel(session_summary(opened))
 
     def _plain_shortcuts(self, event):
@@ -625,7 +628,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._restore_fields()
         self._refresh_session_controls()
         self.panel.Layout()
-        self.status(f'{name} selecionado. Use Ctrl+1 para TikTok ou Ctrl+2 para Instagram.' if not self.current()
+        self.status(f'{name} selecionado. Use Ctrl+1 para TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.' if not self.current()
                     else f'{name} aberto. Use os controles ou F6 para entrar na página.')
 
     def open_network(self, event=None, *, url=None, after_load=None):
@@ -634,7 +637,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         name = self.network.GetStringSelection()
         old = self.clients.get(self._active_name)
         if old and old.pending and name != self._active_name:
-            self.network.SetSelection(0 if self._active_name == 'TikTok' else 1)
+            self.network.SetStringSelection(self._active_name)
             self.status('Aguarde a conclusão da ação antes de trocar de rede.')
             return
         if not html2.WebView.IsBackendAvailable(html2.WebViewBackendEdge):
@@ -734,7 +737,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def home(self, event=None):
         if not self.current():
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
         else:
             self.clients[self._active_name].set_active(True)
             self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
@@ -764,7 +767,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if self.current():
             self.current().Reload()
         else:
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
 
     def new_window(self, event):
         if urlsplit(event.GetURL()).scheme == 'https':
@@ -784,7 +787,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.query_field.SetFocus()
             return
         if not self.current():
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
             return
         name = self._active_name
         client = self.clients[name]
@@ -882,7 +885,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _copy_link(self, name, value):
         try:
-            link = (validate_search_result_url if name == 'TikTok' else validate_reel_url)(value)
+            if name == 'TikTok':
+                link = validate_search_result_url(value)
+            elif name == 'YouTube':
+                link = validate_youtube_url(value)
+            else:
+                link = validate_reel_url(value)
         except (ValueError, VideoControlError):
             self.status('Não foi possível identificar um link válido para o vídeo.')
             return
@@ -895,13 +903,18 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Digite o que deseja pesquisar.')
             return
         if not self.current():
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
             return
         name = self._active_name
         if self.clients[name].pending:
             self.status('Aguarde o comando anterior.')
             return
-        url = search_url(query) if name == 'TikTok' else 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
+        if name == 'TikTok':
+            url = search_url(query)
+        elif name == 'YouTube':
+            url = 'https://www.youtube.com/results?search_query=' + quote_plus(query)
+        else:
+            url = 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
         self.platform_data[name]['results'] = ()
         self.platform_data[name]['result_index'] = 0
         self._restore_fields()

@@ -1,17 +1,3 @@
-data/browser_profile/
-data/preferences.json
-data/instagram_profile/
-data/instagram_preferences.json
-data/webview_profile/
-cookies*.json
-cookies*.txt
-**/__pycache__/
-.pytest_cache/
-pytest-cache-files-*/
-*.log
-.venv/
-venv/
-build/
-dist/
-.runtime-cache/
-*.spec
+# Created by venv; see https://docs.python.org/3/library/venv.html
+*
+venv/ 
