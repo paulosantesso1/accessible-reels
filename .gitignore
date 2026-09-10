@@ -13,3 +13,12 @@ __pycache__/
 .env
 download-settings.json
 *.tmp
+
+# Arquivos do venv criados na raiz
+Lib/
+scripts/
+Include/
+pyvenv.cfg
+
+# Executaveis locais
+yt-dlp.exe
