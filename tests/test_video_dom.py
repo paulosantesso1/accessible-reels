@@ -116,6 +116,20 @@ def test_search_waits_for_delayed_cards_without_needing_a_video(page):
                                   'author': '@ana', 'description': 'Resultado tardio'}]
 
 
+def test_initial_details_refresh_waits_for_delayed_video(page):
+    page.set_content('<main id="player"></main>')
+    install_embedded_tiktok(page)
+    page.evaluate('''() => setTimeout(() => {
+      document.getElementById('player').innerHTML =
+        '<div><video style="width:600px;height:400px"></video>' +
+        '<a href="https://www.tiktok.com/@ana">@ana</a>' +
+        '<a href="https://www.tiktok.com/@ana/video/123">Vídeo</a></div>';
+    }, 350)''')
+    result = page.evaluate("command('refresh_info')")
+    assert result['ok'] is True
+    assert result['author'] == '@ana'
+
+
 def test_embedded_play_starts_paused_video_and_keeps_playing_video(page):
     page.set_content('<video id="active" style="width:300px;height:300px"></video>')
     install_embedded_tiktok(page)
