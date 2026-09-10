@@ -16,7 +16,8 @@ class DownloadControlsMixin:
         description = re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', str(result.get('description') or '')).strip(' .')
         suggestion = f'{name} - {description[:100]}' if description else f'{name} - vídeo'
         with wx.FileDialog(self, 'Salvar vídeo como', defaultDir=str(self._download_folder or ''),
-                           defaultFile=suggestion + '.mp4', wildcard='Vídeo MP4 (*.mp4)|*.mp4',
+                           defaultFile=suggestion + '.mp4',
+                           wildcard='Vídeos MP4 ou WebM (*.mp4;*.webm)|*.mp4;*.webm',
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dialog:
             if dialog.ShowModal() != wx.ID_OK:
                 return None
@@ -115,8 +116,9 @@ class DownloadControlsMixin:
             # Preserve an existing file until the new download has completed.
             with tempfile.TemporaryDirectory(prefix='reels-', dir=folder) as temporary:
                 downloaded = download_video(link, name, temporary, self._download_notify, direct_url=media)
-                downloaded.replace(destination)
-                path = Path(destination)
+                target = Path(destination).with_suffix(downloaded.suffix)
+                downloaded.replace(target)
+                path = target
         except Exception as exception:
             from app_logging import sanitize
             error = sanitize(str(exception))[:500]

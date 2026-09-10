@@ -1,4 +1,5 @@
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -107,6 +108,7 @@ def test_subprocess_parses_progress_and_returns_path(tmp_path):
     assert "--newline" in command
     assert "--print" in command
     assert "after_move:filepath" in command
+    assert "best[ext=mp4]/best" in command
 
     # Verifica se extraiu a porcentagem
     progress.assert_any_call("Baixando vídeo: 10%.")
@@ -123,6 +125,36 @@ def test_subprocess_fails_gracefully(tmp_path):
     mock_process.returncode = 1
 
     with patch("subprocess.Popen", return_value=mock_process):
-        with pytest.raises(VideoDownloadError, match="O download terminou sem gerar o arquivo esperado"):
+        with pytest.raises(VideoDownloadError, match="O yt-dlp não conseguiu baixar o vídeo.*Falha de rede"):
             download_video("https://www.tiktok.com/@user/video/123", "TikTok", tmp_path)
+
+
+def test_subprocess_finds_media_when_ytdlp_does_not_print_the_path(tmp_path):
+    output_file = tmp_path / "downloaded.mp4"
+    mock_process = Mock()
+    mock_process.stdout = ["[download] 100.0% of 1.00MiB\n"]
+    mock_process.returncode = 0
+    mock_process.wait.side_effect = output_file.touch
+
+    with patch("subprocess.Popen", return_value=mock_process):
+        result = download_video("https://www.youtube.com/shorts/AbCdEfGhI_j", "YouTube", tmp_path)
+
+    assert result == output_file
+
+
+def test_download_keeps_the_extension_of_the_downloaded_video(tmp_path):
+    frame = Mock(_closing_app=False)
+    destination = tmp_path / "Short escolhido.mp4"
+
+    def fake_download(_link, _name, folder, *_args, **_kwargs):
+        downloaded = Path(folder) / "Short.webm"
+        downloaded.touch()
+        return downloaded
+
+    with patch("ui.download_controls.download_video", side_effect=fake_download), \
+         patch("ui.download_controls.wx.CallAfter", side_effect=lambda callback, *args: callback(*args)):
+        DownloadControlsMixin._download_worker(frame, "YouTube", "https://www.youtube.com/shorts/AbCdEfGhI_j",
+                                               None, tmp_path, destination)
+
+    frame._download_finished.assert_called_once_with(tmp_path / "Short escolhido.webm", None)
 from unittest.mock import patch

@@ -20,3 +20,11 @@ def test_installer_does_not_launch_an_online_runtime_installer():
 def test_release_build_verifies_embedded_web_scripts():
     build = (ROOT / 'scripts' / 'build_windows_release.ps1').read_text(encoding='utf-8')
     assert 'scripts\\verify_web_scripts.py' in build
+
+
+def test_release_build_embeds_external_ytdlp_executable():
+    build = (ROOT / 'scripts' / 'build_windows_release.ps1').read_text(encoding='utf-8')
+    assert "Join-Path $root 'yt-dlp.exe'" in build
+    assert '--add-binary "$ytDlp;."' in build
+    assert "dist\\Accessible Reels\\yt-dlp.exe" in build
+    assert '--collect-all yt_dlp' not in build

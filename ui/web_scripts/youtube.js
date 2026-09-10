@@ -2,6 +2,15 @@
     // Evita carregar múltiplas vezes e travar a página
     if (globalThis.__accessibleReelsInstalled) return;
     globalThis.__accessibleReelsInstalled = true;
+    const transport = globalThis.__accessibleTransport;
+    let preferredVolume = null;
+    let preferredMuted = null;
+    const watchedVideos = new WeakSet();
+    const applyingAudio = new WeakSet();
+    const audioKeys = {
+        volume: "accessibleReelsYouTubeVolume",
+        muted: "accessibleReelsYouTubeMuted"
+    };
 
     // Helper para checar visibilidade (relaxado para não barrar botões ocultos do YT)
     const visible = (element) => {
@@ -32,6 +41,50 @@
         }
         return bestVideo;
     }
+
+    function publishAudio() {
+        document.dispatchEvent(new CustomEvent("accessible-reels-volume-preference", {
+            detail: JSON.stringify({volume: preferredVolume, muted: preferredMuted})
+        }));
+    }
+
+    function applyAudioPreference(video) {
+        if (!video || preferredVolume === null || applyingAudio.has(video)) return;
+        applyingAudio.add(video);
+        try {
+            if (Math.abs(video.volume - preferredVolume) > 0.005) video.volume = preferredVolume;
+            if (preferredMuted !== null && video.muted !== preferredMuted) video.muted = preferredMuted;
+        } finally {
+            applyingAudio.delete(video);
+        }
+    }
+
+    function stabilizeAudio() {
+        for (const video of document.querySelectorAll("video")) {
+            if (!watchedVideos.has(video)) {
+                watchedVideos.add(video);
+                for (const eventName of ["volumechange", "play", "playing", "loadedmetadata", "canplay"]) {
+                    video.addEventListener(eventName, () => applyAudioPreference(video));
+                }
+            }
+            applyAudioPreference(video);
+        }
+    }
+
+    const audioReady = transport.storage.local.get(Object.values(audioKeys))
+        .then(values => {
+            if (Number.isFinite(values[audioKeys.volume])) {
+                preferredVolume = Math.max(0, Math.min(1, values[audioKeys.volume]));
+            }
+            if (typeof values[audioKeys.muted] === "boolean") preferredMuted = values[audioKeys.muted];
+        })
+        .catch(() => {})
+        .finally(() => {
+            publishAudio();
+            stabilizeAudio();
+        });
+    new MutationObserver(stabilizeAudio).observe(document, {childList: true, subtree: true});
+    setInterval(stabilizeAudio, 250);
 
     function ancestorsFor(node) {
         const ancestors = [];
@@ -135,20 +188,39 @@
             return { position: video.currentTime };
         }
         else if (action === "volume_up" || action === "volume_down") {
+            await audioReady;
             const video = activeVideo();
             if (!video) throw new Error("Vídeo não encontrado.");
-            let volume = video.volume;
-            volume = Math.max(0, Math.min(1, volume + (action === "volume_up" ? 0.05 : -0.05)));
-            video.volume = volume;
-            video.muted = false;
-            return { volume: volume };
+            if (preferredVolume === null) preferredVolume = video.volume;
+            const silent = video.muted || preferredMuted === true || preferredVolume === 0;
+            const base = silent ? 0 : preferredVolume;
+            preferredVolume = Math.max(0, Math.min(100,
+                Math.round(base * 100) + (action === "volume_up" ? 5 : -5))) / 100;
+            preferredMuted = false;
+            applyAudioPreference(video);
+            publishAudio();
+            await transport.storage.local.set({
+                [audioKeys.volume]: preferredVolume,
+                [audioKeys.muted]: preferredMuted
+            });
+            return { volume: preferredVolume, muted: preferredMuted };
         }
         else if (action === "toggle_mute") {
+            await audioReady;
             const video = activeVideo();
             if (!video) throw new Error("Vídeo não encontrado.");
-            video.muted = !video.muted;
-            if (!video.muted && video.volume === 0) video.volume = 0.05;
-            return { muted: video.muted };
+            if (preferredVolume === null) preferredVolume = video.volume;
+            const effectivelyMuted = preferredMuted === null ?
+                (video.muted || video.volume === 0) : preferredMuted;
+            preferredMuted = !effectivelyMuted;
+            if (!preferredMuted && preferredVolume === 0) preferredVolume = 0.05;
+            applyAudioPreference(video);
+            publishAudio();
+            await transport.storage.local.set({
+                [audioKeys.volume]: preferredVolume,
+                [audioKeys.muted]: preferredMuted
+            });
+            return { muted: preferredMuted };
         }
         else if (action === "speed_up" || action === "speed_down") {
             const video = activeVideo();
@@ -301,7 +373,6 @@
         throw new Error('Ação ainda não implementada no YouTube.');
     }
 
-    const transport = globalThis.__accessibleTransport;
     transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         execute(message.action, message.argument)
             .then(result => sendResponse({ok: true, ...result}))

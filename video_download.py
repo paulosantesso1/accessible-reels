@@ -116,9 +116,15 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
 
     for index, source in enumerate(sources):
         try:
+            existing_media = {
+                path.resolve() for path in folder.iterdir()
+                if path.is_file() and path.suffix.lower() in {'.mp4', '.m4v', '.webm', '.mkv'}
+            }
             command = [
                 exe_path,
-                '-f', 'best[ext=mp4]',
+                # Some Shorts offer only WebM. Prefer MP4, but never reject a
+                # playable, audio-and-video format solely because of its container.
+                '-f', 'best[ext=mp4]/best',
                 '--no-playlist',
                 '-P', str(folder),
                 '-o', '%(extractor_key)s - %(title).120B [%(id)s].%(ext)s',
@@ -159,11 +165,14 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
             
             final_path = None
             last_percent = -10
+            output_lines = []
             
             for line in process.stdout:
                 line = line.strip()
                 if not line:
                     continue
+                output_lines.append(line)
+                output_lines = output_lines[-12:]
                 match = re.search(r'\[download\]\s+([\d\.]+)%', line)
                 if match:
                     percent = float(match.group(1))
@@ -178,8 +187,24 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
                         final_path = candidate
 
             process.wait()
-            if process.returncode != 0 or not final_path:
-                raise VideoDownloadError('O download terminou sem gerar o arquivo esperado.')
+            if process.returncode != 0:
+                detail = sanitize(' '.join(output_lines))[:450]
+                raise VideoDownloadError(
+                    'O yt-dlp não conseguiu baixar o vídeo.' + (f' {detail}' if detail else '')
+                )
+            if final_path is None:
+                created_media = [
+                    path for path in folder.iterdir()
+                    if (path.is_file() and path.resolve() not in existing_media
+                        and path.suffix.lower() in {'.mp4', '.m4v', '.webm', '.mkv'})
+                ]
+                if created_media:
+                    final_path = max(created_media, key=lambda path: path.stat().st_mtime)
+            if final_path is None:
+                detail = sanitize(' '.join(output_lines))[:450]
+                raise VideoDownloadError(
+                    'O download terminou sem gerar o arquivo esperado.' + (f' {detail}' if detail else '')
+                )
 
             get_logger().info('Video download completed: platform=%s', platform)
             return final_path

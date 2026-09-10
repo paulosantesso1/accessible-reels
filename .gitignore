@@ -19,6 +19,3 @@ Lib/
 scripts/
 Include/
 pyvenv.cfg
-
-# Executaveis locais
-yt-dlp.exe
