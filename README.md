@@ -23,7 +23,7 @@ na guia Vídeo. A posição fica limitada ao início e ao fim do vídeo, e o
 aplicativo anuncia a nova posição. Funciona no TikTok e no Instagram.
 
 Execute `.\.venv\Scripts\python.exe main.py --webview` para testar TikTok e
-Instagram em WebView2, sem extensão e sem janela externa de navegador.
+Instagram em WebView2, sem janela externa de navegador.
 O instalador Windows x64 inclui o WebView2 Fixed Version **152.0.4191.62** completo.
 A instalação do runtime funciona offline e não altera o WebView2 do Windows.
 O aplicativo usa `runtime/152.0.4191.62` ao lado do executável, configurado antes do wxPython.
@@ -122,7 +122,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\python.exe main.py
 ```
 
-## Modo atual: janela única, sem extensão
+## Funcionamento
 
 O aplicativo agora abre TikTok e Instagram dentro da própria janela usando
 Microsoft Edge WebView2. A extensão do navegador e as pontes locais não são mais
@@ -136,84 +136,6 @@ controlada pelos atalhos; comentários e pesquisa abrem como telas secundárias,
 abas permanentes. Os menus **Plataforma**, **Player** e **Ações** servem para
 descobrir os comandos e os atalhos continuam sendo o caminho rápido. A plataforma
 pode pedir login novamente quando invalidar a sessão.
-
-## Compatibilidade histórica da extensão
-
-As instruções abaixo descrevem a arquitetura anterior e não fazem parte do fluxo
-atual. A pasta da extensão foi removida do aplicativo.
-
-1. Abra `chrome://extensions` no Chrome ou `brave://extensions` no Brave.
-2. Ative o **Modo do desenvolvedor**.
-3. Escolha **Carregar sem compactação** e selecione a pasta
-   `browser_extension` deste projeto.
-4. Recarregue qualquer aba do TikTok ou Instagram que já estava aberta.
-5. No Accessible Reels, em **Modo do navegador**, escolha
-   **Chrome ou Brave com extensão** e pressione **Conectar à aba do TikTok**.
-6. Continue usando os botões e atalhos normalmente. Os atalhos de vídeo também
-   funcionam quando o foco está na página do TikTok no Chrome ou Brave.
-
-Com a opção de janela minimizada desmarcada, o modo local não abre outro navegador
-nem outra aba: ele mantém e controla a aba já autenticada. Depois de atualizar os
-arquivos da extensão, pressione
-**Recarregar** no cartão da extensão e recarregue também a aba do TikTok.
-Quando a comunicação estiver ativa, o ícone da extensão exibirá o indicador
-verde **ON** e o nome acessível informará “interface conectada”.
-
-Se a interface disser que a extensão não respondeu, pressione uma vez o ícone
-**Accessible Reels** na barra do navegador. Ele abre ou ativa uma aba do TikTok,
-o que também desperta a extensão; depois pressione **Conectar à aba do TikTok**
-novamente.
-
-Se **Abrir TikTok em janela minimizada exclusiva** estiver marcado, a extensão
-primeiro procura uma aba do TikTok que já esteja aberta e reutiliza a aba ativa ou
-acessada mais recentemente, minimizando sua janela. Uma nova janela só é criada
-quando não existe nenhuma aba do TikTok. A janela minimizada continua aparecendo
-na barra de tarefas, pois extensões não podem criar janelas de navegador
-completamente invisíveis.
-
-Ao usar **Desconectar navegador local**, a aba do TikTok permanece aberta. Ao
-fechar o Accessible Reels pelo botão Sair, pelo atalho ou pelo X, a extensão fecha
-somente a aba do TikTok que estava sendo controlada; as demais abas e o Chrome ou
-Brave permanecem abertos. As pontes aceitam conexões somente no endereço local `127.0.0.1`; a extensão
-tem permissão para páginas do TikTok e Instagram e para essas pontes locais. Se Chrome e
-Brave estiverem abertos ao mesmo tempo com a extensão instalada, use somente um
-deles durante a sessão para evitar que os dois tentem receber o mesmo comando.
-
-A extensão também solicita a permissão **Depurador**. Ela é usada apenas durante
-o instante de cada clique para o navegador produzir uma interação real, aceita
-pelo TikTok; a conexão é removida logo após o clique. O aplicativo não abre o
-DevTools, não lê cookies e não envia dados para servidores próprios.
-
-Para voltar ao comportamento original, desconecte o navegador local e selecione
-**Chromium integrado**. A importação de cookies permanece disponível apenas nesse
-modo.
-
-## Instagram pela extensão
-
-1. Atualize a extensão para a versão **1.3.1**: em `chrome://extensions` ou
-   `brave://extensions`, localize **Accessible Reels — ponte local** e pressione
-   **Recarregar**. Se solicitado, permita o acesso ao Instagram.
-2. Recarregue também a aba do Instagram. Abra os **Reels** e faça login no próprio
-   navegador, se necessário.
-3. Reinicie o aplicativo, selecione a guia **Instagram** e pressione Enter para
-   acessar **Conectar Instagram** (`Alt+I`). A conexão reutiliza uma aba existente;
-   se não encontrar nenhuma, abre o Instagram.
-4. Use `F5` para atualizar autor e descrição. Os atalhos de reprodução, volume,
-   navegação, comentários, curtida, copiar link e pesquisa são os mesmos do TikTok.
-   No Instagram, `F` salva ou remove o Reel dos salvos.
-
-O Instagram também oferece **Chromium integrado** no seletor de navegador da guia.
-Nesse modo, use **Abrir Instagram** (`Alt+G`) para fazer login ou **Importar cookies
-do Instagram** (`Alt+I`) para selecionar um arquivo JSON ou Netscape cookies.txt.
-Somente cookies do domínio Instagram são importados; o arquivo original não é alterado.
-O perfil persistente fica em `data/instagram_profile`, separado do TikTok, e o volume
-fica em `data/instagram_preferences.json`. A aceitação da sessão depende do Instagram;
-se solicitado, complete o login no navegador. Fechar navegador encerra esse Chromium.
-Os controles de Reels e os passos de volume de 5% funcionam nos dois modos.
-
-O modo Chrome ou Brave com extensão continua selecionado por padrão. A janela fica visível
-por padrão para permitir login; a opção de minimizá-la pode ser marcada antes
-de conectar. Ao reutilizar uma aba, essa opção minimiza a janela que a contém.
 
 Cada guia mantém seus próprios campos, conexão e preferências de volume. Os
 atalhos da interface são enviados apenas à plataforma selecionada. Resultados
@@ -284,7 +206,7 @@ sem exigir uma instalação separada do FFmpeg.
 ## Atalhos e acessibilidade
 
 O aplicativo possui as guias **TikTok** e **Instagram**. A guia TikTok contém os
-controles existentes; a guia Instagram contém os controles dos Reels, com Chromium integrado ou extensão.
+controles existentes; a guia Instagram contém os controles dos Reels.
 Trocar de guia mantém as sessões abertas.
 
 - Com o foco nos títulos das guias, as setas alternam entre elas;
@@ -337,7 +259,7 @@ Os comentários são carregados da plataforma e o painel web é fechado em segui
 
 O foco inicial fica no seletor de guias, com TikTok selecionado. Use as setas no seletor ou Ctrl+Tab (Ctrl+Shift+Tab para voltar) para trocar de plataforma. Tab acessa Abrir/Conectar e percorre as opções da guia selecionada; Shift+Tab retorna pelos controles. Enter no seletor também acessa Abrir/Conectar. Autor e descrição aparecem em campos nativos somente para leitura, sem receber foco automaticamente. Operações do Chromium são executadas fora da thread da interface, e mudanças importantes aparecem no texto de status acessível.
 
-O volume escolhido é mantido e salvo pela extensão: novos elementos `video`,
+O volume escolhido é mantido e salvo: novos elementos `video`,
 recargas da aba e redefinições feitas durante o carregamento recebem a preferência
 antes da reprodução. O estado de mudo continua independente do nível de volume.
 
@@ -356,7 +278,6 @@ Os testes usam cookies fictícios e páginas Playwright falsas; não acessam a i
 
 ```powershell
 python -m pytest tests -q -p no:cacheprovider
-node --test tests/test_extension_routing.cjs
 ```
 
 ## Teste manual com NVDA
@@ -383,8 +304,7 @@ node --test tests/test_extension_routing.cjs
 
 Os testes automatizados usam HTML fictício e mocks. Os seletores de leitura do
 Instagram foram também conferidos em uma sessão real, mas ações de publicação,
-curtida e salvar foram testadas apenas em páginas fictícias. A leitura pelo NVDA
-e o fluxo completo da extensão atualizada precisam de validação manual. Mudanças
+curtida e salvar foram testadas apenas em páginas fictícias. A leitura pelo NVDA precisa de validação manual. Mudanças
 na estrutura de qualquer plataforma podem exigir atualização dos seletores.
 
 ## Privacidade

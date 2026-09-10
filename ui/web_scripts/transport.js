@@ -51,3 +51,12 @@
     if (!globalThis.__accessibleNetworkActive && event.target instanceof HTMLMediaElement) event.target.pause();
   }, true);
 })();
+(() => {
+    // Prevent the web page from stealing our Alt shortcuts!
+    window.addEventListener('keydown', (e) => {
+        if (e.altKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'p', 'P', 'a', 'A', 'd', 'D', 'c', 'C', 'e', 'E', 'l', 'L', 'f', 'F', 's', 'S', 'm', 'M'].includes(e.key)) {
+            // Stop propagation so YouTube/TikTok don't receive it and play sounds/block it
+            e.stopImmediatePropagation();
+        }
+    }, true);
+})();
