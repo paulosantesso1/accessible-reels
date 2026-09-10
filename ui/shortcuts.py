@@ -20,6 +20,7 @@ ACCELERATOR_SPECS = (
     ("read_description", wx.ACCEL_ALT, ord("D")),
     ("copy_link", wx.ACCEL_ALT, ord("C")),
     ("refresh_info", wx.ACCEL_NORMAL, wx.WXK_F5),
+    ("open_settings", wx.ACCEL_NORMAL, wx.WXK_F2),
     ("search", wx.ACCEL_ALT, ord("E")),
     ("exit", wx.ACCEL_ALT, ord("S")),
     ("volume_up", wx.ACCEL_ALT | wx.ACCEL_SHIFT, wx.WXK_UP),
@@ -43,7 +44,7 @@ def action_shortcut(action: str) -> str:
         parts.append("Shift")
     names = {wx.WXK_UP: "Seta para cima", wx.WXK_DOWN: "Seta para baixo",
              wx.WXK_LEFT: "Seta para esquerda", wx.WXK_RIGHT: "Seta para direita",
-             wx.WXK_F5: "F5", wx.WXK_F12: "F12",
+             wx.WXK_F2: "F2", wx.WXK_F5: "F5", wx.WXK_F12: "F12",
              ord(","): "<", ord("."): ">"}
     parts.append(names.get(key, chr(key)))
     return "+".join(parts)

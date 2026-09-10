@@ -199,7 +199,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.activities.SetName('Painel atual: player, comentários ou pesquisa')
         row.Add(self.activities, 0, wx.EXPAND | wx.ALL, 5)
         self.content = wx.BoxSizer(wx.VERTICAL)
-        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. A sessão salva será reutilizada quando disponível.')
+        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. A sessão salva será reutilizada quando disponível. F2 abre as Configurações.')
         self.content.Add(self.hint, 0, wx.ALL, 8)
         row.Add(self.content, 1, wx.EXPAND | wx.ALL, 5)
         layout.Add(row, 1, wx.EXPAND)
@@ -216,10 +216,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
         self._refresh_session_controls()
-        self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. F1 mostra os atalhos.')
+        self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. F1 mostra os atalhos. F2 abre as Configurações.')
         self.details_field.SetFocus()
         if can_self_update():
             wx.CallLater(2000, self._check_for_updates)
+            
+        # Adiciona verificação de update do motor de downloads (yt-dlp)
+        from video_download import check_for_ytdlp_updates
+        wx.CallLater(3000, lambda: check_for_ytdlp_updates(self))
+        
         if auto_open:
             wx.CallAfter(self.open_network)
 
@@ -778,6 +783,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def dispatch(self, action, argument=None):
         if action == 'exit':
             self.Close()
+            return
+        if action == 'open_settings':
+            from ui.settings_dialog import SettingsDialog
+            dlg = SettingsDialog(self)
+            dlg.ShowModal()
             return
         if action in ('post_comment', 'reply_comment'):
             self.status('A publicação e as respostas a comentários estão desativadas temporariamente.')
