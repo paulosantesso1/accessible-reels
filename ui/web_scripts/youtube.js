@@ -92,8 +92,28 @@
                 description = "Descrição não encontrada";
             }
         }
+        const queryLink = (selectors) => {
+            for (const root of ancestors) {
+                for (const sel of selectors) {
+                    const elements = root.querySelectorAll(sel);
+                    for (const el of elements) {
+                        if (el.href) return el.href;
+                    }
+                }
+            }
+            return null;
+        };
         
-        return { author: author, description: description, link: location.href };
+        let profile_url = queryLink([
+            'ytd-channel-name a',
+            '[id="channel-name"] a',
+            'a[href^="/@"]'
+        ]);
+        if (profile_url && !profile_url.endsWith('/shorts')) {
+            profile_url = profile_url.replace(/\/$/, '') + '/shorts';
+        }
+
+        return { author: author, description: description, link: location.href, profile_url: profile_url };
     }
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -179,7 +199,8 @@
             return {};
         }
         else if (action === "collect_search_results") {
-            const deadline = Date.now() + 6000;
+            const deadline = Date.now() + 5000;
+            let finalResults = [];
             do {
                 const results = [];
                 const seen = new Set();
@@ -204,11 +225,14 @@
                         author: authorStr,
                         description: titleStr || descFallback || "Sem título"
                     });
+                    if (results.length >= 50) break;
                 }
-                if (results.length > 0) return { results: results };
-                await sleep(200);
+                finalResults = results;
+                if (finalResults.length >= 50) return { results: finalResults };
+                if (finalResults.length > 0) window.scrollBy(0, window.innerHeight);
+                await sleep(300);
             } while (Date.now() < deadline);
-            return { results: [] };
+            return { results: finalResults };
         }
         else if (action === "author" || action === "description" || action === "copy_link" || action === "refresh_info" || action === "download_link") {
             return snapshot();

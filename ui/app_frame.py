@@ -10,6 +10,8 @@ from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
+import winsound
+
 import wx
 import wx.html2 as html2
 
@@ -175,6 +177,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._registered_hotkeys = set()
         self._accelerator_ids = {}
         self._results = ()
+        self._search_beep_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self._on_search_beep, self._search_beep_timer)
         self.CreateStatusBar()
         self._build_menu_bar()
         self.panel = wx.Panel(self)
@@ -208,25 +212,36 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         outer.Add(self.panel, 1, wx.EXPAND)
         self.SetSizer(outer)
         self._build_video_controls()
-        self._build_comments()
-        self._build_search()
+        self._build_comment_controls()
+        self._build_search_controls()
         self._configure_accelerators()
+        self.activities.SetSelection(0)
         self.Bind(wx.EVT_HOTKEY, self.toggle_page_controls, id=FOCUS_PAGE_HOTKEY)
         self.Bind(wx.EVT_ACTIVATE, self._activation_changed)
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
+        self.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
         self._refresh_session_controls()
         self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. F1 mostra os atalhos. F2 abre as Configurações.')
         self.details_field.SetFocus()
+        
+        from updater import can_self_update
         if can_self_update():
             wx.CallLater(2000, self._check_for_updates)
-            
+
         # Adiciona verificação de update do motor de downloads (yt-dlp)
         from video_download import check_for_ytdlp_updates
         wx.CallLater(3000, lambda: check_for_ytdlp_updates(self))
         
         if auto_open:
+            self._select_platform('TikTok')
             wx.CallAfter(self.open_network)
+
+    def _on_search_beep(self, event):
+        try:
+            winsound.PlaySound("SystemDefault", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        except Exception:
+            pass
 
     def _build_menu_bar(self):
         bar = wx.MenuBar()
@@ -303,9 +318,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.select_network()
 
     def _open_platform(self, name):
+        was_active = (self._active_name == name and self.current() is not None)
         self._select_platform(name)
         if self.network.GetStringSelection() == name:
-            self.open_network()
+            if was_active:
+                self.platform_data[name]['is_list_mode'] = False
+                self.clients[name].navigate(PLATFORM_URLS[name])
+                self.status('Atualizando feed do ' + name + '...')
+            else:
+                self.open_network()
 
     def _build_video_controls(self):
         page = wx.Panel(self.activities)
@@ -533,9 +554,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.session_field.SetLabel(session_summary(opened))
 
     def _plain_shortcuts(self, event):
-        if event.GetKeyCode() == wx.WXK_ESCAPE and self.activities.GetSelection() != 0:
-            self.focus_controls()
-            return
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            if self.activities.GetSelection() == 2:
+                self._search_beep_timer.Stop()
+                self.home()
+                return
+            elif self.activities.GetSelection() != 0:
+                self.focus_controls()
+                return
         if (event.GetKeyCode() == wx.WXK_TAB and self.activities.GetSelection() == 1
                 and not event.ControlDown() and not event.AltDown()):
             self._cycle_comment_focus(wx.Window.FindFocus(), event.ShiftDown())
@@ -704,6 +730,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Aguarde o comando anterior.')
             return
         self.network.SetStringSelection(name)
+        if name in self.platform_data:
+            self.platform_data[name]['is_list_mode'] = False
         self.open_network(url=url, after_load=lambda: self.dispatch('play')
                           if self._active_name == name and not self._closing_app else None)
         self.focus_controls()
@@ -721,6 +749,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _platform_error(self, platform, message):
         logger.warning('Platform error: platform=%s message=%s', platform, message)
+        self._search_beep_timer.Stop()
         if platform == self._active_name:
             self.status(message)
 
@@ -744,6 +773,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
         else:
+            self.platform_data[self._active_name]['is_list_mode'] = False
             self.clients[self._active_name].set_active(True)
             self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
             self.activities.SetSelection(0)
@@ -801,6 +831,40 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         name = self._active_name
         client = self.clients[name]
+        
+        if action == 'open_profile':
+            profile_url = self.platform_data.get(name, {}).get('profile_url')
+            if not profile_url:
+                self.status('Perfil não encontrado para o vídeo atual.')
+                return
+            self.platform_data[name]['results'] = ()
+            self.platform_data[name]['result_index'] = 0
+            self._restore_fields()
+            client.set_active(True)
+            client.navigate(profile_url, lambda: self.dispatch('collect_search_results') if name == self._active_name else None)
+            self.status(f'Carregando perfil no {name}...')
+            self._search_beep_timer.Start(1000)
+            return
+            
+        is_list_mode = self.platform_data.get(name, {}).get('is_list_mode', False)
+        if is_list_mode:
+            if action == 'next_video':
+                current = self.results_list.GetSelection()
+                if current + 1 < len(self._results):
+                    self.results_list.SetSelection(current + 1)
+                    self.open_result()
+                else:
+                    self.status('Fim da lista de vídeos.')
+                return
+            elif action == 'previous_video':
+                current = self.results_list.GetSelection()
+                if current > 0:
+                    self.results_list.SetSelection(current - 1)
+                    self.open_result()
+                else:
+                    self.status('Início da lista de vídeos.')
+                return
+        
         if client.pending:
             return
         logger.info('Command requested: platform=%s action=%s', name, action)
@@ -832,7 +896,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         logger.info('Command completed: platform=%s action=%s', name, action)
         data = self.platform_data[name]
-        for field in ('author', 'description', 'link', 'comments'):
+        for field in ('author', 'description', 'link', 'comments', 'profile_url'):
             if field in result:
                 data[field] = result[field]
         active = name == self._active_name
@@ -880,14 +944,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.focus_controls()
             return
         elif action == 'collect_search_results' and active:
+            self._search_beep_timer.Stop()
             self.clients[name].set_active(False)
             self.activities.SetSelection(2)
             if self._results:
                 self.results_list.SetFocus()
-                message = f'{len(self._results)} resultados. Selecione um e pressione Enter para abrir.'
+                message = f'Carregamento concluído. {len(self._results)} vídeos na lista. Selecione um e pressione Enter para abrir.'
             else:
                 self.query_field.SetFocus()
-                message = 'Nenhum vídeo encontrado. Tente outro termo ou use F6 para verificar se a plataforma pede login.'
+                message = 'Nenhum vídeo encontrado. Verifique sua pesquisa ou se a plataforma pede login (F6).'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
         if active and message:
@@ -931,6 +996,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.clients[name].set_active(True)
         self.clients[name].navigate(url, lambda: self.dispatch('collect_search_results') if name == self._active_name else None)
         self.status('Carregando pesquisa no ' + name + '...')
+        self._search_beep_timer.Start(1000)
 
     def open_result(self, event=None):
         index = self.results_list.GetSelection()
@@ -942,6 +1008,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         name = self._active_name
         self.platform_data[name]['result_index'] = index
+        self.platform_data[name]['is_list_mode'] = True
         self.clients[name].set_active(True)
         self.clients[name].navigate(self._results[index].url,
                                     lambda: self.dispatch('play') if name == self._active_name else None)

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import wx
 
 from tiktok.search import SearchResult
 from ui.app_frame import MainFrame
@@ -89,3 +90,56 @@ def test_return_to_feed_invalidates_a_pending_command_and_late_response():
     callback.assert_called_once()
     assert callback.call_args.args[0]['ok'] is False
     view.LoadURL.assert_called_once_with(PLATFORM_URLS['TikTok'])
+
+
+def test_list_mode_navigation_intercepts_next_and_previous_video():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame._results = ['first', 'second', 'third']
+    frame.platform_data = {'TikTok': {'is_list_mode': True, 'result_index': 1}}
+    client = Mock(pending=False)
+    frame.clients = {'TikTok': client}
+    frame.results_list.GetSelection.return_value = 1
+    
+    # Test next_video
+    MainFrame.dispatch(frame, 'next_video')
+    frame.results_list.SetSelection.assert_called_once_with(2)
+    frame.open_result.assert_called_once()
+    client.execute.assert_not_called()
+    
+    # Reset mocks
+    frame.results_list.SetSelection.reset_mock()
+    frame.open_result.reset_mock()
+    frame.results_list.GetSelection.return_value = 1
+    
+    # Test previous_video
+    MainFrame.dispatch(frame, 'previous_video')
+    frame.results_list.SetSelection.assert_called_once_with(0)
+    frame.open_result.assert_called_once()
+    client.execute.assert_not_called()
+
+
+def test_escape_returns_to_feed_from_search_tab():
+    frame = Mock()
+    frame.activities.GetSelection.return_value = 2
+    event = Mock()
+    event.GetKeyCode.return_value = wx.WXK_ESCAPE
+    
+    MainFrame._plain_shortcuts(frame, event)
+    frame._search_beep_timer.Stop.assert_called_once()
+    frame.home.assert_called_once()
+
+
+def test_open_profile_navigates_and_triggers_collection():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {'profile_url': 'https://www.tiktok.com/@user'}}
+    client = Mock(pending=False)
+    frame.clients = {'TikTok': client}
+    frame.current.return_value = True
+    
+    MainFrame.dispatch(frame, 'open_profile')
+    client.navigate.assert_called_once()
+    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/@user'
+    frame._search_beep_timer.Start.assert_called_once_with(1000)
+

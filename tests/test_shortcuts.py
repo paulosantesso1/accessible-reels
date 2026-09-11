@@ -67,13 +67,14 @@ def test_required_accelerators_are_preserved():
     assert shortcuts["open_comments"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C"))
     assert shortcuts["toggle_like"] == (wx.ACCEL_ALT, ord("L"))
     assert shortcuts["toggle_favorite"] == (wx.ACCEL_ALT, ord("F"))
+    assert shortcuts["open_profile"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("P"))
 
 
 def test_accelerators_dispatch_the_current_window_actions():
     harness = AcceleratorHarness()
-    for action in ("toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up"):
+    for action in ("toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up", "open_profile"):
         harness.trigger(action)
-    assert harness.actions == ["toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up"]
+    assert harness.actions == ["toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up", "open_profile"]
 
 
 def test_seek_accelerators_dispatch_their_actions():
@@ -131,8 +132,8 @@ def test_global_tab_hook_keeps_comment_navigation_out_of_the_webview():
 
 
 def test_session_summary_describes_open_platforms_without_claiming_login():
-    assert session_summary(()) == 'TikTok: não aberto | Instagram: não aberto'
-    assert session_summary(('TikTok',)) == 'TikTok: aberto | Instagram: não aberto'
+    assert session_summary(()) == 'TikTok: não aberto | Instagram: não aberto | YouTube: não aberto'
+    assert session_summary(('TikTok',)) == 'TikTok: aberto | Instagram: não aberto | YouTube: não aberto'
 
 
 def test_f1_help_lists_focus_and_player_shortcuts():
@@ -168,6 +169,10 @@ def test_comments_use_a_short_list_label_and_full_read_only_details():
 
 def test_platform_menu_action_selects_and_opens_the_requested_platform():
     frame = type('Frame', (), {})()
+    frame._active_name = 'TikTok'
+    frame.current = Mock(return_value=False)
+    frame.platform_data = {'Instagram': {}}
+    frame.clients = {'Instagram': Mock()}
     frame._select_platform = Mock()
     frame.network = Mock()
     frame.network.GetStringSelection.return_value = 'Instagram'

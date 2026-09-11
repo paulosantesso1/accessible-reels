@@ -578,10 +578,22 @@
       if (handle && videoId) link = `https://www.tiktok.com/@${handle}/video/${videoId}`;
     }
     link ||= stateVideoLink(author, description);
+    
+    let profile_url = "";
+    const profileAnchor = ancestors.map(root => root.querySelector("a[href^='/@'], a[href*='tiktok.com/@']")).find(Boolean);
+    if (profileAnchor) {
+        try { profile_url = new URL(profileAnchor.href, location.href).href; } catch(e) {}
+    }
+    if (!profile_url) {
+        let handle = author.match(/@([A-Za-z0-9._-]{1,24})/)?.[1] || author.match(/^([A-Za-z0-9._-]{1,24})$/)?.[1] || "";
+        if (handle) profile_url = `https://www.tiktok.com/@${handle}`;
+    }
+
     return {
       author: author || "Autor não encontrado",
       description: description || "Descrição não encontrada",
-      link
+      link,
+      profile_url
     };
   }
 
@@ -724,14 +736,17 @@
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") {
-      const deadline = Date.now() + 6000;
+      const deadline = Date.now() + 5000;
+      let finalResults = [];
       do {
         const result = collectSearchResults();
-        if (result.results.length) return result;
+        finalResults = result.results;
+        if (finalResults.length >= 50) return {results: finalResults};
+        if (finalResults.length > 0) window.scrollBy(0, window.innerHeight);
         if (/\/login/.test(location.pathname)) throw new Error("Faça login no TikTok pela página (F6).");
-        await sleep(200);
+        await sleep(300);
       } while (Date.now() < deadline);
-      return {results: []};
+      return {results: finalResults};
     }
     if (action === "seek") {
       if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");

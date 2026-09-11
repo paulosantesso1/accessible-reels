@@ -157,7 +157,12 @@
     const description = clean(captions[0]?.textContent).replace(/\s*…?\s*(mais|more)$/i, "").replace(/\s*…$/, "") ||
       clean(root.querySelector("h1")?.textContent) || "Descrição não encontrada";
     const link = anchors.map(a => canonicalLink(a.href)).find(Boolean) || canonicalLink(location.href);
-    return {author, description, link};
+    let profile_url = "";
+    if (profile) {
+        let username = new URL(profile.href).pathname.split("/")[1];
+        if (username) profile_url = `https://www.instagram.com/${username}/reels/`;
+    }
+    return {author, description, link, profile_url};
   }
   function commentDialog() {
     return [...document.querySelectorAll('[role="dialog"]')].find(el => visible(el) &&
@@ -250,14 +255,17 @@
     await audioReady;
     if (action === "diagnostics") return {message: `Instagram conectado; ${document.querySelectorAll("video").length} vídeo(s); Reel ativo ${activeVideo() ? "sim" : "não"}.`};
     if (action === "collect_search_results") {
-      const deadline = Date.now() + 6000;
+      const deadline = Date.now() + 5000;
+      let finalResults = [];
       do {
         const result = collectSearchResults();
-        if (result.results.length) return result;
+        finalResults = result.results;
+        if (finalResults.length >= 50) return {results: finalResults};
+        if (finalResults.length > 0) window.scrollBy(0, window.innerHeight);
         if (/\/accounts\//.test(location.pathname)) throw new Error("Faça login no Instagram pelo navegador.");
-        await sleep(200);
+        await sleep(300);
       } while (Date.now() < deadline);
-      return {results: []};
+      return {results: finalResults};
     }
     if (action === "close_comments") { await closeComments(); return {}; }
     const video = await waitFor(activeVideo, "Abra os Reels e faça login no Instagram pelo navegador.");
