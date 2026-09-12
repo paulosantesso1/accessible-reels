@@ -794,7 +794,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.status(f'{name} na janela do aplicativo. Use os controles ou F6 para acessar a página.')
 
     def open_link(self, event=None):
-        with wx.TextEntryDialog(self, 'Cole a URL de um vídeo do TikTok ou de um Reel do Instagram:',
+        with wx.TextEntryDialog(self, 'Cole a URL de um vídeo do TikTok, Reel do Instagram ou Short do YouTube:',
                                 'Abrir link a partir de uma URL') as dialog:
             dialog.FindWindow(wx.ID_OK).SetLabel('Abrir vídeo')
             if dialog.ShowModal() != wx.ID_OK:
@@ -833,6 +833,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _platform_error(self, platform, message):
         logger.warning('Platform error: platform=%s message=%s', platform, message)
+        self.platform_data.get(platform, {}).pop('opening_profile', None)
         self._set_search_loading(False)
         if platform == self._active_name:
             self.status(message)
@@ -900,8 +901,13 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         if action == 'open_settings':
             from ui.settings_dialog import SettingsDialog
+            from video_download import load_download_folder
             dlg = SettingsDialog(self)
-            dlg.ShowModal()
+            try:
+                if dlg.ShowModal() == wx.ID_OK:
+                    self._download_folder = load_download_folder()
+            finally:
+                dlg.Destroy()
             return
         if action in ('post_comment', 'reply_comment'):
             self.status('A publicação e as respostas a comentários estão desativadas temporariamente.')
@@ -1108,6 +1114,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if self.clients[name].pending:
             self.status('Aguarde o comando anterior.')
             return
+        self.platform_data[name].pop('opening_profile', None)
         if name == 'TikTok':
             url = search_url(query)
         elif name == 'YouTube':

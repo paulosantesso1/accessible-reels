@@ -245,3 +245,25 @@ def test_youtube_search_uses_the_shorts_only_filter():
     url = frame.clients['YouTube'].navigate.call_args.args[0]
     assert url == 'https://www.youtube.com/results?search_query=curiosidade+hist%C3%B3rica&sp=EgIYAQ%253D%253D'
 
+
+def test_new_search_clears_a_stale_profile_opening_state():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame.query_field.GetValue.return_value = 'gatos'
+    frame.current.return_value = True
+    frame.clients = {'TikTok': Mock(pending=None)}
+    frame.platform_data = {'TikTok': {'opening_profile': True}}
+
+    MainFrame.search(frame)
+
+    assert 'opening_profile' not in frame.platform_data['TikTok']
+
+
+def test_platform_error_clears_profile_opening_state():
+    frame = Mock(_active_name='TikTok')
+    frame.platform_data = {'TikTok': {'opening_profile': True}}
+
+    MainFrame._platform_error(frame, 'TikTok', 'falhou')
+
+    assert 'opening_profile' not in frame.platform_data['TikTok']
+

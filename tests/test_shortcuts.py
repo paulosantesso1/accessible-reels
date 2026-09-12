@@ -188,3 +188,15 @@ def test_webview2_recovery_reports_reinstall_when_backend_fails():
             patch('ui.app_frame.wx.MessageBox') as message:
         MainFrame.install_webview2_runtime(frame)
     assert 'Reinstale o Accessible Reels' in message.call_args.args[0]
+
+
+def test_settings_result_refreshes_the_download_folder():
+    frame = Mock(_download_folder=None)
+    dialog = Mock()
+    dialog.ShowModal.return_value = wx.ID_OK
+    with patch('ui.settings_dialog.SettingsDialog', return_value=dialog), \
+            patch('video_download.load_download_folder', return_value=Path('D:/Videos')):
+        MainFrame.dispatch(frame, 'open_settings')
+
+    assert frame._download_folder == Path('D:/Videos')
+    dialog.Destroy.assert_called_once()

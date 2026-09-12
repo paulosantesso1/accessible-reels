@@ -33,7 +33,7 @@ def validate_youtube_url(value: Any) -> str:
                 if len(parts) < 2:
                     raise ValueError
                 video_id = parts[1]
-            elif url.path.startswith("/watch"):
+            elif url.path == "/watch":
                 from urllib.parse import parse_qs
                 qs = parse_qs(url.query)
                 if "v" not in qs or not qs["v"]:

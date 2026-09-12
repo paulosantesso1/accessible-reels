@@ -1,12 +1,12 @@
-import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import wx
 
-from video_download import settings_path
+from video_download import (
+    load_download_settings, save_download_settings, settings_path, update_ytdlp,
+)
 
 class SettingsDialog(wx.Dialog):
     def __init__(self, parent):
@@ -22,7 +22,7 @@ class SettingsDialog(wx.Dialog):
         
     def _load_settings(self):
         try:
-            value = json.loads(self.settings_file.read_text(encoding='utf-8'))
+            value = load_download_settings(path=self.settings_file)
             folder = value.get('folder')
             if folder and Path(folder).is_absolute():
                 self.current_folder = Path(folder)
@@ -32,11 +32,14 @@ class SettingsDialog(wx.Dialog):
 
     def _save_settings(self):
         try:
-            self.settings_file.parent.mkdir(parents=True, exist_ok=True)
-            data = {'folder': str(self.current_folder), 'check_ytdlp_updates': self.check_ytdlp}
-            self.settings_file.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+            save_download_settings({
+                'folder': str(self.current_folder),
+                'check_ytdlp_updates': self.check_ytdlp,
+            }, path=self.settings_file)
+            return True
         except Exception as e:
             wx.MessageBox(f"Não foi possível salvar as configurações: {e}", "Erro", wx.OK | wx.ICON_ERROR, self)
+            return False
 
     def _build_ui(self):
         panel = wx.Panel(self)
@@ -107,20 +110,17 @@ class SettingsDialog(wx.Dialog):
         
         def worker():
             try:
-                creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                process = subprocess.run([str(exe_path), "-U"], capture_output=True, text=True, creationflags=creationflags)
-                wx.CallAfter(finish, process.returncode, process.stdout + "\n" + process.stderr)
+                output = update_ytdlp(exe_path)
+                wx.CallAfter(finish, output)
             except Exception as e:
                 wx.CallAfter(finish_error, e)
 
-        def finish(returncode, output):
+        def finish(output):
             dlg.Destroy()
             if "up to date" in output or "up-to-date" in output:
                 wx.MessageBox("O motor de downloads já está na versão mais recente!", "Atualizado", wx.OK | wx.ICON_INFORMATION, self)
-            elif returncode == 0:
-                wx.MessageBox("Motor de download atualizado com sucesso!", "Atualização Concluída", wx.OK | wx.ICON_INFORMATION, self)
             else:
-                wx.MessageBox(f"Ocorreu um erro na atualização:\n{output}", "Erro", wx.OK | wx.ICON_ERROR, self)
+                wx.MessageBox("Motor de download atualizado com sucesso!", "Atualização Concluída", wx.OK | wx.ICON_INFORMATION, self)
 
         def finish_error(e):
             dlg.Destroy()
@@ -131,5 +131,5 @@ class SettingsDialog(wx.Dialog):
 
     def on_save(self, event):
         self.check_ytdlp = self.cb_auto_update.GetValue()
-        self._save_settings()
-        self.EndModal(wx.ID_OK)
+        if self._save_settings():
+            self.EndModal(wx.ID_OK)

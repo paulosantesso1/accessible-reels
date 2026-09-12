@@ -56,3 +56,30 @@ def test_settings_dialog_saves_values(mock_settings_file):
     
     dialog.Destroy()
     app.Destroy()
+
+
+def test_settings_dialog_preserves_unknown_settings(mock_settings_file):
+    mock_settings_file.write_text(json.dumps({'future_option': 'keep'}), encoding='utf-8')
+    app = wx.App(clearSigInt=False)
+    dialog = SettingsDialog(None)
+
+    with patch.object(dialog, 'EndModal'):
+        dialog.on_save(None)
+
+    assert json.loads(mock_settings_file.read_text(encoding='utf-8'))['future_option'] == 'keep'
+    dialog.Destroy()
+    app.Destroy()
+
+
+def test_settings_dialog_stays_open_when_save_fails(mock_settings_file):
+    app = wx.App(clearSigInt=False)
+    dialog = SettingsDialog(None)
+
+    with patch('ui.settings_dialog.save_download_settings', side_effect=OSError('negado')), \
+            patch('ui.settings_dialog.wx.MessageBox'), \
+            patch.object(dialog, 'EndModal') as end_modal:
+        dialog.on_save(None)
+
+    end_modal.assert_not_called()
+    dialog.Destroy()
+    app.Destroy()

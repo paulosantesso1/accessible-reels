@@ -1,21 +1,27 @@
-# Ambientes Virtuais (NUNCA DEVEM SUBIR PARA O GIT)
-venv/
+data/browser_profile/
+data/preferences.json
+data/instagram_profile/
+data/instagram_preferences.json
+data/webview_profile/
+cookies*.json
+cookies*.txt
+**/__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.py[cod]
+*.log
 .venv/
+venv/
 env/
-
-# Arquivos de cache do Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Arquivos temporários e de configuração
+build/
+dist/
+.runtime-cache/
+*.spec
 .env
 download-settings.json
 *.tmp
 
-# Arquivos do venv criados na raiz
+# Protect against a virtual environment accidentally created in the project root.
 Lib/
-scripts/
 Include/
 pyvenv.cfg

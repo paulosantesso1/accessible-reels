@@ -130,6 +130,20 @@ def test_initial_details_refresh_waits_for_delayed_video(page):
     assert result['author'] == '@ana'
 
 
+def test_profile_link_ignores_video_permalink_before_author_link(page):
+    page.set_content('''<div>
+      <video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana/video/7682105671503990037">Vídeo</a>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+    </div>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("command('refresh_info')")
+
+    assert result['ok'] is True
+    assert result['profile_url'] == 'https://www.tiktok.com/@ana'
+
+
 def test_search_keeps_cards_that_tiktok_virtualizes_during_collection(page):
     page.set_content('''<main id="results">
       <a href="https://www.tiktok.com/@ana/video/123"><img alt="Primeiro resultado"></a>

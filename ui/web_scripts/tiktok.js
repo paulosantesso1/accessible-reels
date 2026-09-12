@@ -546,10 +546,27 @@
       }
       return "";
     };
+    const profile = (() => {
+      for (const root of ancestors) {
+        for (const anchor of root.querySelectorAll("a[href^='/@'], a[href*='tiktok.com/@']")) {
+          try {
+            const raw = anchor.getAttribute("href") || "";
+            const candidate = raw.startsWith("/") ? null : new URL(anchor.href, location.href);
+            const pathname = candidate ? candidate.pathname : raw;
+            const trustedHost = !candidate || candidate.hostname === "tiktok.com" || candidate.hostname.endsWith(".tiktok.com");
+            const match = pathname.match(/^\/@([A-Za-z0-9._-]{1,24})\/?$/);
+            if (trustedHost && match) {
+              return {handle: match[1], url: `https://www.tiktok.com/@${match[1]}`};
+            }
+          } catch (_error) {}
+        }
+      }
+      return null;
+    })();
     let author = query([
       "[data-e2e=video-author-uniqueid]", "[data-e2e=browse-username]",
-      "a[href^='/@']", "a[href*='tiktok.com/@']"
     ]);
+    author ||= profile ? `@${profile.handle}` : "";
     if (author && !author.startsWith("@")) author = `@${author}`;
     const description = query([
       "[data-e2e=video-desc]", "[data-e2e=browse-video-desc]",
@@ -563,13 +580,7 @@
     }
     link ||= canonicalLink(location.href);
     if (!link) {
-      const profile = ancestors.map(root => root.querySelector("a[href^='/@'], a[href*='tiktok.com/@']"))
-        .find(Boolean);
-      let handle = "";
-      try {
-        const profilePath = profile && new URL(profile.href, location.href).pathname;
-        handle = profilePath?.match(/^\/@([A-Za-z0-9._-]+)\/?$/)?.[1] || "";
-      } catch (_error) {}
+      let handle = profile?.handle || "";
       // O feed atual pode expor o @autor em texto acessível, sem um link de
       // perfil ao redor. Ele ainda pertence ao mesmo vídeo já selecionado.
       handle ||= author.match(/@([A-Za-z0-9._-]{1,24})/)?.[1] ||
@@ -579,11 +590,7 @@
     }
     link ||= stateVideoLink(author, description);
     
-    let profile_url = "";
-    const profileAnchor = ancestors.map(root => root.querySelector("a[href^='/@'], a[href*='tiktok.com/@']")).find(Boolean);
-    if (profileAnchor) {
-        try { profile_url = new URL(profileAnchor.href, location.href).href; } catch(e) {}
-    }
+    let profile_url = profile?.url || "";
     if (!profile_url) {
         let handle = author.match(/@([A-Za-z0-9._-]{1,24})/)?.[1] || author.match(/^([A-Za-z0-9._-]{1,24})$/)?.[1] || "";
         if (handle) profile_url = `https://www.tiktok.com/@${handle}`;

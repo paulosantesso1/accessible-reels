@@ -1,16 +1,35 @@
+import json
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
+
+import wx
 
 import pytest
 
-from video_download import download_video, media_url, VideoDownloadError, save_download_folder, load_download_folder, download_error
+from video_download import (
+    VideoDownloadError, download_error, download_video, load_download_folder,
+    media_url, save_download_folder, update_ytdlp,
+)
 from ui.download_controls import DownloadControlsMixin
 
 
-def test_folder_persists(tmp_path):
+def test_folder_persists(tmp_path):
     folder = save_download_folder(tmp_path / 'videos', local_app_data=tmp_path)
     assert folder.is_dir()
-    assert load_download_folder(local_app_data=tmp_path) == folder
+    assert load_download_folder(local_app_data=tmp_path) == folder
+
+
+def test_saving_folder_preserves_update_preference(tmp_path):
+    settings = tmp_path / 'Accessible Reels' / 'download-settings.json'
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({'check_ytdlp_updates': False}), encoding='utf-8')
+
+    save_download_folder(tmp_path / 'videos', local_app_data=tmp_path)
+
+    assert json.loads(settings.read_text(encoding='utf-8')) == {
+        'check_ytdlp_updates': False,
+        'folder': str((tmp_path / 'videos').resolve()),
+    }
 
 
 @pytest.mark.parametrize('url', ['blob:https://www.instagram.com/123', 'file:///video.mp4',
@@ -129,6 +148,13 @@ def test_subprocess_fails_gracefully(tmp_path):
             download_video("https://www.tiktok.com/@user/video/123", "TikTok", tmp_path)
 
 
+def test_ytdlp_update_raises_when_process_returns_failure():
+    process = Mock(returncode=1, stdout='', stderr='arquivo sem permissão')
+    with patch('subprocess.run', return_value=process):
+        with pytest.raises(VideoDownloadError, match='arquivo sem permissão'):
+            update_ytdlp('yt-dlp.exe')
+
+
 def test_subprocess_finds_media_when_ytdlp_does_not_print_the_path(tmp_path):
     output_file = tmp_path / "downloaded.mp4"
     mock_process = Mock()
@@ -157,4 +183,25 @@ def test_download_keeps_the_extension_of_the_downloaded_video(tmp_path):
                                                None, tmp_path, destination)
 
     frame._download_finished.assert_called_once_with(tmp_path / "Short escolhido.webm", None)
+
+
+def test_changed_extension_requires_confirmation_before_overwrite(tmp_path):
+    frame = Mock(_closing_app=False)
+    downloaded = tmp_path / 'temporary.webm'
+    downloaded.write_text('new', encoding='utf-8')
+    destination = tmp_path / 'chosen.mp4'
+    existing = tmp_path / 'chosen.webm'
+    existing.write_text('existing', encoding='utf-8')
+    dialog = MagicMock()
+    dialog.__enter__.return_value.ShowModal.return_value = wx.ID_NO
+
+    with patch('ui.download_controls.wx.MessageDialog', return_value=dialog):
+        DownloadControlsMixin._finalize_download(frame, downloaded, destination)
+
+    assert existing.read_text(encoding='utf-8') == 'existing'
+    assert not downloaded.exists()
+    frame._download_finished.assert_called_once()
+    path, error = frame._download_finished.call_args.args
+    assert path is None
+    assert 'preservado' in error
 from unittest.mock import patch

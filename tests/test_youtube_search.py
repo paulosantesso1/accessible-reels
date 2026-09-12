@@ -1,4 +1,7 @@
-from youtube.search import normalize_youtube_results
+import pytest
+
+from tiktok.video_controls import VideoControlError
+from youtube.search import normalize_youtube_results, validate_youtube_url
 
 
 def test_youtube_search_results_keep_only_canonical_shorts():
@@ -25,3 +28,8 @@ def test_youtube_search_uses_platform_label_when_the_card_has_no_channel():
     ])
 
     assert results[0].author == 'YouTube'
+
+
+def test_youtube_validator_rejects_paths_that_only_start_with_watch():
+    with pytest.raises(VideoControlError):
+        validate_youtube_url('https://www.youtube.com/watchlater?v=AbCdEfGhI_j')

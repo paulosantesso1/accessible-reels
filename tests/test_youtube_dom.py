@@ -86,3 +86,18 @@ def test_youtube_automatic_play_does_not_pause_an_autoplaying_short(page):
     }''')
     assert command(page, 'play') == {'ok': True, 'paused': False}
     assert command(page, 'toggle') == {'ok': True, 'paused': True}
+
+
+def test_youtube_profile_is_canonicalized_from_channel_shorts_link(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = `
+        <div style="width:500px;height:650px">
+          <video id="active"></video>
+          <a href="/@canal/shorts">@canal</a>
+        </div>`;
+    }''')
+
+    result = command(page, 'refresh_info')
+
+    assert result['ok'] is True
+    assert result['profile_url'] == 'https://www.youtube.com/@canal/shorts'

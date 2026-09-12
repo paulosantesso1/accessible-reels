@@ -22,24 +22,51 @@ def settings_path(local_app_data=None):
     return root / 'Accessible Reels' / 'download-settings.json'
 
 
-def load_download_folder(*, local_app_data=None):
+def load_download_settings(*, local_app_data=None, path=None):
+    target = Path(path) if path is not None else settings_path(local_app_data)
     try:
-        value = json.loads(settings_path(local_app_data).read_text(encoding='utf-8'))
-        folder = value.get('folder')
-        return Path(folder) if isinstance(folder, str) and folder and Path(folder).is_absolute() else None
-    except (OSError, ValueError, AttributeError):
-        return None
+        value = json.loads(target.read_text(encoding='utf-8'))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def save_download_settings(values, *, local_app_data=None, path=None):
+    target = Path(path) if path is not None else settings_path(local_app_data)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    settings = load_download_settings(local_app_data=local_app_data, path=target)
+    settings.update(values)
+    temporary = target.with_suffix('.tmp')
+    temporary.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+    temporary.replace(target)
+    return settings
+
+
+def load_download_folder(*, local_app_data=None):
+    folder = load_download_settings(local_app_data=local_app_data).get('folder')
+    return Path(folder) if isinstance(folder, str) and folder and Path(folder).is_absolute() else None
 
 
 def save_download_folder(folder, *, local_app_data=None):
     folder = Path(folder).resolve()
     folder.mkdir(parents=True, exist_ok=True)
-    target = settings_path(local_app_data)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix('.tmp')
-    temporary.write_text(json.dumps({'folder': str(folder)}, ensure_ascii=False), encoding='utf-8')
-    temporary.replace(target)
+    save_download_settings({'folder': str(folder)}, local_app_data=local_app_data)
     return folder
+
+
+def update_ytdlp(exe_path):
+    import subprocess
+
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    process = subprocess.run(
+        [str(exe_path), '-U'], capture_output=True, text=True,
+        creationflags=creationflags,
+    )
+    output = '\n'.join(part.strip() for part in (process.stdout, process.stderr) if part.strip())
+    if process.returncode != 0:
+        detail = sanitize(output or 'Falha desconhecida.')[:500]
+        raise VideoDownloadError(detail)
+    return output
 
 
 def video_url(value, platform):
@@ -217,12 +244,11 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
 def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):
     import threading
     import wx
-    from urllib import request, error
+    from urllib import request
     
     # Lendo configuração
     try:
-        value = json.loads(settings_path(local_app_data).read_text(encoding='utf-8'))
-        check = value.get('check_ytdlp_updates', True) # Default True
+        check = load_download_settings(local_app_data=local_app_data).get('check_ytdlp_updates', True)
     except (OSError, ValueError, AttributeError):
         check = True
         
@@ -278,10 +304,18 @@ def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):
             if result == wx.ID_YES:
                 def run_update_subprocess():
                     try:
-                        subprocess.run([str(exe_path), "-U"], creationflags=creationflags)
-                        wx.CallAfter(lambda: wx.MessageBox("Motor de download atualizado com sucesso! Pode voltar a baixar seus vídeos.", "Atualização Concluída", wx.OK | wx.ICON_INFORMATION, parent_window))
+                        update_ytdlp(exe_path)
+                        wx.CallAfter(
+                            wx.MessageBox,
+                            "Motor de download atualizado com sucesso! Pode voltar a baixar seus vídeos.",
+                            "Atualização Concluída", wx.OK | wx.ICON_INFORMATION, parent_window
+                        )
                     except Exception as e:
-                        wx.CallAfter(lambda: wx.MessageBox(f"Erro ao tentar atualizar: {e}", "Erro", wx.OK | wx.ICON_ERROR, parent_window))
+                        message = sanitize(str(e))[:500]
+                        wx.CallAfter(
+                            wx.MessageBox, f"Não foi possível atualizar o motor de download:\n{message}", "Erro",
+                            wx.OK | wx.ICON_ERROR, parent_window
+                        )
                 
                 threading.Thread(target=run_update_subprocess, daemon=True).start()
 

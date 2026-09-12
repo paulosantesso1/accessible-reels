@@ -120,11 +120,9 @@
         let author = query([
             'ytd-channel-name a',
             '[id="channel-name"] a',
-            'a[href^="/@"]', // Tática matadora: qualquer link com /@ no container do vídeo
             'ytd-channel-name',
             '[id="channel-name"]'
         ]);
-        if (!author) author = "Autor não encontrado";
         
         let description = query([
             'ytd-reel-player-header-renderer h2.title',
@@ -145,26 +143,32 @@
                 description = "Descrição não encontrada";
             }
         }
-        const queryLink = (selectors) => {
+        const channelProfile = (() => {
             for (const root of ancestors) {
-                for (const sel of selectors) {
-                    const elements = root.querySelectorAll(sel);
-                    for (const el of elements) {
-                        if (el.href) return el.href;
+                for (const anchor of root.querySelectorAll(
+                    'ytd-channel-name a[href], [id="channel-name"] a[href], a[href^="/@"]'
+                )) {
+                    try {
+                        const raw = anchor.getAttribute('href') || '';
+                        const candidate = raw.startsWith('/') ? null : new URL(anchor.href, location.href);
+                        const pathname = candidate ? candidate.pathname : raw;
+                        const trustedHost = !candidate || candidate.hostname === 'youtube.com' ||
+                            candidate.hostname.endsWith('.youtube.com');
+                        const match = pathname.match(/^\/(\@[A-Za-z0-9._-]+)(?:\/shorts)?\/?$/);
+                        if (trustedHost && match) {
+                            return {
+                                handle: match[1],
+                                url: `https://www.youtube.com/${match[1]}/shorts`
+                            };
+                        }
+                    } catch (_error) {
                     }
                 }
             }
             return null;
-        };
-        
-        let profile_url = queryLink([
-            'ytd-channel-name a',
-            '[id="channel-name"] a',
-            'a[href^="/@"]'
-        ]);
-        if (profile_url && !profile_url.endsWith('/shorts')) {
-            profile_url = profile_url.replace(/\/$/, '') + '/shorts';
-        }
+        })();
+        if (!author) author = channelProfile?.handle || "Autor não encontrado";
+        const profile_url = channelProfile?.url || "";
 
         return { author: author, description: description, link: location.href, profile_url: profile_url };
     }
