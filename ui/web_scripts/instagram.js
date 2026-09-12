@@ -481,7 +481,7 @@
     if (event.altKey && event.shiftKey) return ({arrowup: "volume_up", arrowdown: "volume_down", m: "toggle_mute", c: "comments"})[key];
     if (event.altKey) return ({arrowdown: "next", arrowup: "previous", p: "toggle", a: "author", d: "description", c: "copy_link", f12: "diagnostics", e: "search_page"})[key];
     if (event.shiftKey) return null;
-    return ({f5: "refresh_info", l: "toggle_like", f: "toggle_favorite"})[key];
+    return ({f5: "refresh_info"})[key];
   }
   transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "accessible-reels-command" || message.platform !== "instagram") return false;

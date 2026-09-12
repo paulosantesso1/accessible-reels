@@ -156,10 +156,12 @@ def keyboard_help_text():
         'Ctrl+O — Abrir um link de vídeo\n'
         'Alt+Seta para cima / baixo — Vídeo anterior / próximo\n'
         'Alt+P — Reproduzir ou pausar\n'
+        'Alt+Shift+P — Abrir perfil\n'
         'Alt+Seta para esquerda / direita — Voltar ou avançar 30 segundos\n'
         'Alt+Shift+Seta para esquerda / direita — Voltar ou avançar 15 segundos\n'
         'Alt+Shift+Seta para cima / baixo — Aumentar ou diminuir o volume\n'
         'Alt+Shift+M — Ativar ou desativar o mudo\n'
+        'F2 — Abrir configurações\n'
         'F5 — Atualizar autor e descrição\n'
         'Alt+A / Alt+D — Ler autor / descrição\n'
         'Alt+C — Copiar link\n'
@@ -167,8 +169,6 @@ def keyboard_help_text():
         'Alt+Shift+C — Comentários\n'
         'Alt+L — Curtir ou descurtir\n'
         'Alt+F — Salvar ou remover dos salvos\n'
-        'L — Curtir ou descurtir\n'
-        'F — Salvar ou remover dos salvos\n'
         'Alt+E — Pesquisar vídeos\n'
         'Ctrl+R — Voltar aos resultados da pesquisa\n'
         'Ctrl+Home — Voltar ao feed\n'
@@ -539,17 +539,16 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.results_list.Bind(wx.EVT_KEY_DOWN, self._results_key_down)
         sizer.Add(self.results_list, 1, wx.EXPAND | wx.ALL, 5)
         sizer.Add(wx.StaticText(page, label='Seta para baixo entra nos resultados. Use as setas para escolher e Enter para abrir. Ctrl+R volta à lista. Ctrl+Home volta ao feed.'), 0, wx.ALL, 5)
-        open_button = wx.Button(page, label='Abrir resultado')
-        open_button.Bind(wx.EVT_BUTTON, self.open_result)
-        sizer.Add(open_button, 0, wx.ALL, 5)
         self.load_more_button = wx.Button(page, label='Carregar mais resultados')
         self.load_more_button.SetName('Carregar mais resultados da pesquisa')
         self.load_more_button.Bind(wx.EVT_BUTTON, self.load_more_results)
+        self.load_more_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         self.load_more_button.Disable()
         sizer.Add(self.load_more_button, 0, wx.ALL, 5)
-        feed_button = wx.Button(page, label='Voltar ao feed')
-        feed_button.Bind(wx.EVT_BUTTON, self.home)
-        sizer.Add(feed_button, 0, wx.ALL, 5)
+        self.feed_button = wx.Button(page, label='Voltar ao feed')
+        self.feed_button.Bind(wx.EVT_BUTTON, self.home)
+        self.feed_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        sizer.Add(self.feed_button, 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Pesquisa')
 
@@ -616,11 +615,31 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             elif self.activities.GetSelection() != 0:
                 self.focus_controls()
                 return
-        if (event.GetKeyCode() == wx.WXK_TAB and self.activities.GetSelection() == 1
-                and not event.ControlDown() and not event.AltDown()):
-            self._cycle_comment_focus(wx.Window.FindFocus(), event.ShiftDown())
-            return
         focused = wx.Window.FindFocus()
+        if event.GetKeyCode() == wx.WXK_TAB and not event.ControlDown() and not event.AltDown():
+            if self.activities.GetSelection() == 1:
+                self._cycle_comment_focus(focused, event.ShiftDown())
+                return
+            elif self.activities.GetSelection() == 2:
+                controls = (self.query_field, self.results_list, getattr(self, 'load_more_button', None), getattr(self, 'feed_button', None))
+                controls = tuple(c for c in controls if c is not None)
+                try:
+                    index = controls.index(focused)
+                except ValueError:
+                    if controls and controls[0].IsEnabled():
+                        controls[0].SetFocus()
+                    return
+                offset = -1 if event.ShiftDown() else 1
+                for i in range(1, len(controls) + 1):
+                    next_idx = (index + offset * i) % len(controls)
+                    if controls[next_idx].IsEnabled() and controls[next_idx].IsShown():
+                        controls[next_idx].SetFocus()
+                        break
+                return
+
+        if focused is getattr(self, 'results_list', None) and event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not event.HasAnyModifiers():
+            self.open_result()
+            return
         if (event.HasAnyModifiers() or isinstance(focused, wx.TextCtrl) and focused.IsEditable()
                 or focused is self.current()):
             event.Skip()
@@ -637,8 +656,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         controls = (
             (self.details_field,),
             (),
-            (self.query_field, self.results_list),
+            (self.query_field, self.results_list, self.load_more_button, getattr(self, 'feed_button', None)),
         )[self.activities.GetSelection()]
+        
+        # Filtra caso a aba ainda esteja sendo montada
+        controls = tuple(c for c in controls if c is not None)
+        
         source = event.GetEventObject()
         try:
             index = controls.index(source)
@@ -677,7 +700,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._keep_tab_in_app(event)
 
     def _result_selected(self, event):
-        self.platform_data[self._active_name]['result_index'] = self.results_list.GetSelection()
+        index = self.results_list.GetSelection()
+        self.platform_data[self._active_name]['result_index'] = index
+        if getattr(self, '_results', None) and 0 <= index < len(self._results):
+            item = self._results[index]
+            self.status(f"{item.author}: {item.description}")
 
     def status(self, message):
         if self._closing_app:

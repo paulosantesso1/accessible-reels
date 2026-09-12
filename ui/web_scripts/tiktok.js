@@ -501,7 +501,7 @@
     }
     if (event.shiftKey) return null;
     if (event.key === "F5") return "refresh_info";
-    return ({l: "toggle_like", f: "toggle_favorite"})[key] || null;
+    return null;
   }
 
   function editableTarget(target) {

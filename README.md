@@ -235,10 +235,12 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+A`: ler autor;
 - `Alt+D`: ler descrição;
 - `Alt+C`: copiar link;
+- `Alt+Shift+P`: abrir perfil;
 - `Alt+Shift+C`: abrir os comentários nativos do vídeo atual;
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
 - `Esc`: voltar dos comentários ao player;
+- `F2`: abrir a janela de configurações;
 - `F5`: atualizar autor e descrição;
 - `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos percentuais;
 - `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos percentuais;
