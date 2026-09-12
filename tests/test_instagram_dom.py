@@ -103,6 +103,29 @@ def test_instagram_search_collects_delayed_results_without_video(page):
     assert result['results'][0]['description'] == 'Reel encontrado'
 
 
+def test_instagram_search_collects_post_cards_outside_the_main_region(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = '<aside><a href="https://www.instagram.com/p/POST123/"><img alt="Vídeo de humor"></a></aside>';
+    }''')
+    result = page.evaluate("igCommand('collect_search_results')")
+    assert result['ok'] is True
+    assert result['results'][0]['url'] == 'https://www.instagram.com/p/POST123/'
+
+
+def test_instagram_search_uses_post_metadata_for_the_result_label(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = '<aside><a href="https://www.instagram.com/p/POST123/"><img></a></aside>';
+      window.fetch = async () => new Response(
+        '<meta property="og:description" content="1,234 likes - zetrovaoemarrua on September 3: &quot;Essa é linda demais!\\n#humor&quot;.">'
+      );
+      window.__accessibleInstagramEnableMetadataTest = true;
+    }''')
+    result = page.evaluate("igCommand('collect_search_results')")
+    assert result['ok'] is True
+    assert result['results'][0]['author'] == '@zetrovaoemarrua'
+    assert result['results'][0]['description'] == 'Essa é linda demais!'
+
+
 def test_instagram_play_starts_without_toggling_back_to_pause(page):
     page.evaluate('''() => {
       const v = document.querySelector('#v1');

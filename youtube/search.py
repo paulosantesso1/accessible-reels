@@ -4,6 +4,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from tiktok.search import SearchResult
 from tiktok.video_controls import VideoControlError
 
 
@@ -50,3 +51,32 @@ def validate_youtube_url(value: Any) -> str:
 
     # Retorna o link padronizado para o Short
     return f"https://www.youtube.com/shorts/{video_id}"
+
+
+def normalize_youtube_results(values: Any) -> tuple[SearchResult, ...]:
+    """Keep only canonical Shorts returned by the YouTube search page."""
+    if not isinstance(values, list):
+        return ()
+    results: list[SearchResult] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        try:
+            raw_url = urlsplit(str(value.get("url") or ""))
+            if not raw_url.path.startswith("/shorts/"):
+                continue
+            url = validate_youtube_url(value.get("url"))
+        except VideoControlError:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        results.append(SearchResult(
+            url,
+            " ".join(str(value.get("author") or "YouTube").split()),
+            " ".join(str(value.get("description") or "Short sem título").split()),
+        ))
+        if len(results) >= 50:
+            break
+    return tuple(results)

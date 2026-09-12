@@ -57,3 +57,32 @@ def test_youtube_audio_preference_is_saved_and_reapplied(page):
     }''')
     assert page.locator("#active").evaluate("video => video.volume") == pytest.approx(0.4)
     assert page.locator("#active").evaluate("video => video.muted") is False
+
+
+def test_youtube_search_collects_shorts_from_current_card_layout(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = `
+        <ytm-shorts-lockup-view-model>
+          <a href="https://www.youtube.com/shorts/AbCdEfGhI_j"><img></a>
+          <h3><a href="https://www.youtube.com/shorts/AbCdEfGhI_j" title="Curiosidade histórica">Curiosidade histórica</a></h3>
+        </ytm-shorts-lockup-view-model>`;
+    }''')
+    result = command(page, "collect_search_results")
+    assert result['ok'] is True
+    assert result['results'] == [{
+        'url': 'https://www.youtube.com/shorts/AbCdEfGhI_j',
+        'author': '',
+        'description': 'Curiosidade histórica',
+    }]
+
+
+def test_youtube_automatic_play_does_not_pause_an_autoplaying_short(page):
+    page.evaluate('''() => {
+      const video = document.querySelector('#active');
+      let paused = false;
+      Object.defineProperty(video, 'paused', {get: () => paused});
+      video.play = async () => { paused = false; };
+      video.pause = () => { paused = true; };
+    }''')
+    assert command(page, 'play') == {'ok': True, 'paused': False}
+    assert command(page, 'toggle') == {'ok': True, 'paused': True}

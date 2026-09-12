@@ -61,6 +61,9 @@ class WebViewClient:
         self.active = True
         self.target_url = PLATFORM_URLS[platform]
         self.after_load = None
+        self._retry_url = None
+        self._retry_after_load = None
+        self._retry_attempted = False
         view.Bind(wx.PyEventBinder(html2.wxEVT_WEBVIEW_CREATED, 1), self._created)
         view.Bind(html2.EVT_WEBVIEW_NAVIGATING, self._navigating)
         view.Bind(html2.EVT_WEBVIEW_LOADED, self._loaded)
@@ -102,6 +105,8 @@ class WebViewClient:
             was_ready = self.ready
             self.ready = value is True and not error
             if self.ready:
+                self._retry_url = None
+                self._retry_after_load = None
                 self.set_active(self.active)
                 if not was_ready:
                     self.on_loaded()
@@ -120,9 +125,25 @@ class WebViewClient:
     def _error(self, event):
         if event.GetTarget() not in ('', '_self', '_top'):
             return
+        # A platform can transiently reject a direct video URL immediately
+        # after search. Retry that one explicit result navigation once,
+        # retaining its callback and result list on every supported network.
+        if self._retry_url and not self._retry_attempted:
+            self._retry_attempted = True
+            url, after_load = self._retry_url, self._retry_after_load
+            logger.warning('WebView load error: platform=%s; retrying result navigation once', self.platform)
+            def retry():
+                if self.alive:
+                    self.generation += 1
+                    self.ready = False
+                    self._cancel('Navegação repetida após falha temporária.')
+                    self.after_load = after_load
+                    self.view.LoadURL(url)
+            wx.CallLater(1200, retry)
+            return
         self._cancel('Falha ao carregar a página. Tente recarregar.')
         logger.warning('WebView load error: platform=%s target=%s', self.platform, event.GetTarget())
-        self.on_error('Falha ao carregar a página. Tente recarregar.')
+        self.on_error('A plataforma recusou carregar esta página. Tente outro resultado ou recarregue.')
 
     def navigate(self, url, after_load=None):
         if not belongs_to_platform(url, self.platform):
@@ -133,7 +154,11 @@ class WebViewClient:
         self.generation += 1
         self.ready = False
         self._cancel('Navegação solicitada; o comando anterior foi encerrado.')
+        self.target_url = url
         self.after_load = after_load
+        self._retry_url = url
+        self._retry_after_load = after_load
+        self._retry_attempted = False
         self.view.LoadURL(url)
 
     def set_active(self, active):

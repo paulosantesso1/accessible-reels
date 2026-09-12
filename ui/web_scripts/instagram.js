@@ -239,7 +239,10 @@
   function collectSearchResults() {
     const results = [];
     const seen = new Set();
-    for (const anchor of document.querySelectorAll('main a[href], [role="main"] a[href]')) {
+    // Search cards can be mounted outside <main> while Instagram replaces the
+    // page shell. canonicalLink below keeps this broad selector restricted to
+    // actual Instagram posts and Reels.
+    for (const anchor of document.querySelectorAll('a[href]')) {
       const url = canonicalLink(anchor.href);
       if (!url || seen.has(url)) continue;
       seen.add(url);
@@ -251,21 +254,79 @@
     }
     return {results};
   }
+  function resultMetadata(html) {
+    const document = new DOMParser().parseFromString(html, "text/html");
+    const value = document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "";
+    // Instagram's public description is usually: "likes - author on date:
+    // \"caption\"" (with localized variants for "on").
+    const match = value.match(/-\s+(.+?)\s+(?:no|em|on)\s+.+?:\s*["“]([\s\S]*?)["”](?:\.|$)/i);
+    if (!match) return null;
+    const author = clean(match[1]).replace(/^@/, "");
+    const description = clean(match[2].split(/\n|\.{3}/)[0]);
+    return {author: author ? `@${author}` : "Instagram", description};
+  }
+  async function enrichSearchResults(results) {
+    // Test pages and login shells have no Instagram origin to query. The
+    // visible card data remains the safe fallback in those contexts.
+    if (!/(^|\.)instagram\.com$/i.test(location.hostname) &&
+        globalThis.__accessibleInstagramEnableMetadataTest !== true) return results;
+    const enriched = [...results];
+    const inspect = async index => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      try {
+        const response = await fetch(enriched[index].url, {
+          credentials: "same-origin", signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const metadata = resultMetadata(await response.text());
+        if (metadata?.description) enriched[index] = {...enriched[index], ...metadata};
+      } catch (_error) {
+        // A card without metadata remains available to open.
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    // Limit background requests and run small batches so search stays prompt.
+    for (let index = 0; index < Math.min(enriched.length, 6); index += 3) {
+      await Promise.all([...Array(Math.min(3, enriched.length - index))].map((_, offset) => inspect(index + offset)));
+    }
+    return enriched;
+  }
   async function execute(action, argument) {
     await audioReady;
     if (action === "diagnostics") return {message: `Instagram conectado; ${document.querySelectorAll("video").length} vídeo(s); Reel ativo ${activeVideo() ? "sim" : "não"}.`};
     if (action === "collect_search_results") {
-      const deadline = Date.now() + 5000;
-      let finalResults = [];
+      const deadline = Date.now() + 12000;
+      const collected = new Map();
+      let firstResultAt = 0;
+      let lastGrowthAt = 0;
+      let profileScrolls = 0;
+      const collectingProfile = argument === "profile";
+      const collectingMore = argument?.mode === "more";
+      const requiredSearchScrolls = collectingMore ? 12 : 8;
       do {
         const result = collectSearchResults();
-        finalResults = result.results;
-        if (finalResults.length >= 50) return {results: finalResults};
-        if (finalResults.length > 0) window.scrollBy(0, window.innerHeight);
+        const before = collected.size;
+        for (const item of result.results) collected.set(item.url, item);
+        const now = Date.now();
+        if (collected.size && !firstResultAt) firstResultAt = now;
+        if (collected.size > before) lastGrowthAt = now;
+        // Once cards start arriving, allow a short settling period for the
+        // current batch instead of waiting for an arbitrary 50 results.
+        const settledSearch = firstResultAt && profileScrolls >= requiredSearchScrolls && now - lastGrowthAt >= 1200;
+        const settledProfile = firstResultAt && profileScrolls >= 5 && now - lastGrowthAt >= 1200;
+        if (collected.size >= 50 || (collectingProfile ? settledProfile : settledSearch)) {
+          return {results: await enrichSearchResults([...collected.values()])};
+        }
+        if (collected.size) {
+          window.scrollBy(0, window.innerHeight);
+          profileScrolls += 1;
+        }
         if (/\/accounts\//.test(location.pathname)) throw new Error("Faça login no Instagram pelo navegador.");
         await sleep(300);
       } while (Date.now() < deadline);
-      return {results: finalResults};
+      return {results: await enrichSearchResults([...collected.values()])};
     }
     if (action === "close_comments") { await closeComments(); return {}; }
     const video = await waitFor(activeVideo, "Abra os Reels e faça login no Instagram pelo navegador.");

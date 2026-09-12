@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import threading
@@ -9,8 +10,6 @@ import ctypes
 from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
-
-import winsound
 
 import wx
 import wx.html2 as html2
@@ -25,13 +24,46 @@ from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url
 from instagram.search import normalize_reel_results, validate_reel_url
-from youtube.search import validate_youtube_url
+from youtube.search import normalize_youtube_results, validate_youtube_url
 from tiktok.video_controls import VideoControlError
 from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
 logger = get_logger()
+
+
+def instagram_fallback_queries(query):
+    """Return a few shorter keyword searches when Instagram rejects a phrase."""
+    words = re.findall(r"[^\W_]+", str(query or ""), flags=re.UNICODE)
+    ignored = {"a", "o", "as", "os", "e", "de", "da", "do", "das", "dos", "em", "no", "na", "um", "uma", "é"}
+    keywords = [word for word in words if word.casefold() not in ignored]
+    original = " ".join(words).casefold()
+    candidates = (
+        " ".join(keywords[:2]),
+        " ".join(keywords[:3]),
+        " ".join(keywords[-2:]),
+    )
+    unique = []
+    for candidate in candidates:
+        if candidate and candidate.casefold() != original and candidate.casefold() not in {item.casefold() for item in unique}:
+            unique.append(candidate)
+    return tuple(unique)
+
+
+def merge_search_results(current, additional):
+    """Append unseen normalized results without changing the current order."""
+    merged = []
+    seen = set()
+    for item in tuple(current or ()) + tuple(additional or ()):
+        url = getattr(item, 'url', None)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        merged.append(item)
+        if len(merged) >= 50:
+            break
+    return tuple(merged)
 
 
 def _copy_text_to_clipboard(text):
@@ -177,8 +209,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._registered_hotkeys = set()
         self._accelerator_ids = {}
         self._results = ()
-        self._search_beep_timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self._on_search_beep, self._search_beep_timer)
+        self._search_progress_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self._on_search_progress, self._search_progress_timer)
         self.CreateStatusBar()
         self._build_menu_bar()
         self.panel = wx.Panel(self)
@@ -237,11 +269,20 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._select_platform('TikTok')
             wx.CallAfter(self.open_network)
 
-    def _on_search_beep(self, event):
-        try:
-            winsound.PlaySound("SystemDefault", winsound.SND_ALIAS | winsound.SND_ASYNC)
-        except Exception:
-            pass
+    def _on_search_progress(self, event):
+        if self.search_progress.IsShown():
+            self.search_progress.Pulse()
+
+    def _set_search_loading(self, loading):
+        """Show a non-auditory progress indicator for network collection."""
+        self.search_progress_label.Show(loading)
+        self.search_progress.Show(loading)
+        if loading:
+            self.search_progress.Pulse()
+            self._search_progress_timer.Start(120)
+        else:
+            self._search_progress_timer.Stop()
+        self.search_progress.GetParent().Layout()
 
     def _build_menu_bar(self):
         bar = wx.MenuBar()
@@ -483,6 +524,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.query_field.Bind(wx.EVT_TEXT_ENTER, self.search)
         self.query_field.Bind(wx.EVT_KEY_DOWN, self._query_key_down)
         sizer.Add(self.query_field, 0, wx.EXPAND | wx.ALL, 5)
+        self.search_progress_label = wx.StaticText(page, label='Pesquisa em andamento...')
+        self.search_progress_label.SetName('Pesquisa em andamento')
+        sizer.Add(self.search_progress_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
+        self.search_progress = wx.Gauge(page, range=100, style=wx.GA_HORIZONTAL)
+        self.search_progress.SetName('Progresso da pesquisa, em andamento')
+        sizer.Add(self.search_progress, 0, wx.EXPAND | wx.ALL, 5)
+        self.search_progress_label.Hide()
+        self.search_progress.Hide()
         self.results_list = wx.ListBox(page)
         self.results_list.SetName('Resultados da pesquisa')
         self.results_list.Bind(wx.EVT_LISTBOX_DCLICK, self.open_result)
@@ -493,6 +542,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         open_button = wx.Button(page, label='Abrir resultado')
         open_button.Bind(wx.EVT_BUTTON, self.open_result)
         sizer.Add(open_button, 0, wx.ALL, 5)
+        self.load_more_button = wx.Button(page, label='Carregar mais resultados')
+        self.load_more_button.SetName('Carregar mais resultados da pesquisa')
+        self.load_more_button.Bind(wx.EVT_BUTTON, self.load_more_results)
+        self.load_more_button.Disable()
+        sizer.Add(self.load_more_button, 0, wx.ALL, 5)
         feed_button = wx.Button(page, label='Voltar ao feed')
         feed_button.Bind(wx.EVT_BUTTON, self.home)
         sizer.Add(feed_button, 0, wx.ALL, 5)
@@ -556,7 +610,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _plain_shortcuts(self, event):
         if event.GetKeyCode() == wx.WXK_ESCAPE:
             if self.activities.GetSelection() == 2:
-                self._search_beep_timer.Stop()
+                self._set_search_loading(False)
                 self.home()
                 return
             elif self.activities.GetSelection() != 0:
@@ -730,7 +784,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Aguarde o comando anterior.')
             return
         self.network.SetStringSelection(name)
-        if name in self.platform_data:
+        if isinstance(self.platform_data, dict) and name in self.platform_data:
             self.platform_data[name]['is_list_mode'] = False
         self.open_network(url=url, after_load=lambda: self.dispatch('play')
                           if self._active_name == name and not self._closing_app else None)
@@ -746,10 +800,13 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.results_list.Set([item.label for item in self._results])
         if self._results:
             self.results_list.SetSelection(max(0, min(data.get('result_index', 0), len(self._results) - 1)))
+        load_more = getattr(self, 'load_more_button', None)
+        if load_more:
+            load_more.Enable(bool(results and data.get('search_url')))
 
     def _platform_error(self, platform, message):
         logger.warning('Platform error: platform=%s message=%s', platform, message)
-        self._search_beep_timer.Stop()
+        self._set_search_loading(False)
         if platform == self._active_name:
             self.status(message)
 
@@ -839,11 +896,16 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 return
             self.platform_data[name]['results'] = ()
             self.platform_data[name]['result_index'] = 0
+            self.platform_data[name].pop('search_url', None)
+            # A profile grid is ordered by the network itself: pinned posts
+            # first, then newest to oldest.  Open that sequence as a list.
+            self.platform_data[name]['opening_profile'] = True
+            self.platform_data[name]['is_list_mode'] = False
             self._restore_fields()
             client.set_active(True)
-            client.navigate(profile_url, lambda: self.dispatch('collect_search_results') if name == self._active_name else None)
+            client.navigate(profile_url, lambda: self.dispatch('collect_search_results', 'profile') if name == self._active_name else None)
             self.status(f'Carregando perfil no {name}...')
-            self._search_beep_timer.Start(1000)
+            self._set_search_loading(True)
             return
             
         is_list_mode = self.platform_data.get(name, {}).get('is_list_mode', False)
@@ -866,6 +928,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 return
         
         if client.pending:
+            if action not in ('refresh_info', 'collect_search_results'):
+                self.status('Carregando o vídeo selecionado. Aguarde um instante antes de usar outro atalho.')
             return
         logger.info('Command requested: platform=%s action=%s', name, action)
         focused = wx.Window.FindFocus()
@@ -901,9 +965,18 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 data[field] = result[field]
         active = name == self._active_name
         if 'results' in result:
-            normalize = normalize_search_results if name == 'TikTok' else normalize_reel_results
-            data['results'] = normalize(result['results'])
-            data['result_index'] = 0
+            if name == 'TikTok':
+                normalize = normalize_search_results
+            elif name == 'YouTube':
+                normalize = normalize_youtube_results
+            else:
+                normalize = normalize_reel_results
+            normalized = normalize(result['results'])
+            if isinstance(argument, dict) and argument.get('mode') == 'more':
+                data['results'] = merge_search_results(data.get('results'), normalized)
+            else:
+                data['results'] = normalized
+                data['result_index'] = 0
         if active:
             self._restore_fields()
         message = 'Comando concluído.'
@@ -924,6 +997,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         elif action in ('toggle_playback', 'play'):
             message = 'Vídeo pausado.' if result.get('paused') else 'Reproduzindo vídeo.'
+            # A list item opens in a fresh document.  Playback confirms that
+            # its player exists; only then can the page return the matching
+            # author, description and profile URL.
+            if action == 'play' and data.pop('refresh_after_play', False) and active:
+                self.dispatch('refresh_info')
         elif action in ('volume_up', 'volume_down'):
             message = f"Volume: {round(result.get('volume', 0) * 100)}%."
         elif action in ('speed_up', 'speed_down'):
@@ -944,15 +1022,34 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.focus_controls()
             return
         elif action == 'collect_search_results' and active:
-            self._search_beep_timer.Stop()
-            self.clients[name].set_active(False)
-            self.activities.SetSelection(2)
-            if self._results:
-                self.results_list.SetFocus()
-                message = f'Carregamento concluído. {len(self._results)} vídeos na lista. Selecione um e pressione Enter para abrir.'
-            else:
+            opening_profile = data.pop('opening_profile', False)
+            if opening_profile and self._results:
+                # The first profile card is the pinned video when one exists;
+                # otherwise it is the most recent post.  List navigation then
+                # advances through the remaining cards in visual order.
+                data['result_index'] = 0
+                data['is_list_mode'] = True
+                self._set_search_loading(False)
+                self.results_list.SetSelection(0)
+                self.open_result()
+                return
+            if opening_profile:
+                data['is_list_mode'] = False
+                self._set_search_loading(False)
                 self.query_field.SetFocus()
-                message = 'Nenhum vídeo encontrado. Verifique sua pesquisa ou se a plataforma pede login (F6).'
+                message = 'Nenhum vídeo foi encontrado neste perfil. Verifique se a plataforma pede login (F6).'
+            elif name == 'Instagram' and not self._results and self._try_instagram_search_fallback(data):
+                return
+            else:
+                self._set_search_loading(False)
+                self.clients[name].set_active(False)
+                self.activities.SetSelection(2)
+                if self._results:
+                    self.results_list.SetFocus()
+                    message = f'Carregamento concluído. {len(self._results)} vídeos na lista. Selecione um e pressione Enter para abrir.'
+                else:
+                    self.query_field.SetFocus()
+                    message = 'Nenhum vídeo encontrado. Verifique sua pesquisa ou se a plataforma pede login (F6).'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
         if active and message:
@@ -987,16 +1084,65 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if name == 'TikTok':
             url = search_url(query)
         elif name == 'YouTube':
-            url = 'https://www.youtube.com/results?search_query=' + quote_plus(query)
+            # YouTube's Shorts search filter keeps ordinary long-form videos
+            # out of the results that this player can open.
+            url = 'https://www.youtube.com/results?search_query=' + quote_plus(query) + '&sp=EgIYAQ%253D%253D'
         else:
             url = 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
         self.platform_data[name]['results'] = ()
         self.platform_data[name]['result_index'] = 0
+        self.platform_data[name]['search_url'] = url
+        self.platform_data[name]['instagram_search_fallbacks'] = (
+            list(instagram_fallback_queries(query)) if name == 'Instagram' else []
+        )
         self._restore_fields()
         self.clients[name].set_active(True)
         self.clients[name].navigate(url, lambda: self.dispatch('collect_search_results') if name == self._active_name else None)
         self.status('Carregando pesquisa no ' + name + '...')
-        self._search_beep_timer.Start(1000)
+        self._set_search_loading(True)
+
+    def load_more_results(self, event=None):
+        """Return to the saved query and append its next visible result batch."""
+        name = self._active_name
+        data = self.platform_data.get(name, {})
+        url = data.get('search_url')
+        client = self.clients.get(name)
+        if not url or not client:
+            self.status('Faça uma pesquisa antes de carregar mais resultados.')
+            return
+        if client.pending:
+            self.status('Aguarde o comando anterior.')
+            return
+        if len(data.get('results', ())) >= 50:
+            self.status('A lista já contém o máximo de 50 resultados.')
+            return
+        data['is_list_mode'] = False
+        client.set_active(True)
+        client.navigate(
+            url,
+            lambda: self.dispatch('collect_search_results', {'mode': 'more'})
+            if name == self._active_name else None,
+        )
+        self.activities.SetSelection(2)
+        self._set_search_loading(True)
+        self.status('Carregando mais resultados...')
+
+    def _try_instagram_search_fallback(self, data):
+        fallbacks = data.get('instagram_search_fallbacks', [])
+        if not fallbacks:
+            return False
+        query = fallbacks.pop(0)
+        data['results'] = ()
+        data['result_index'] = 0
+        self._restore_fields()
+        self.clients['Instagram'].set_active(True)
+        url = 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
+        self.clients['Instagram'].navigate(
+            url, lambda: self.dispatch('collect_search_results')
+            if self._active_name == 'Instagram' else None,
+        )
+        self.status(f'Não houve resultado para a frase inteira. Tentando no Instagram: {query}.')
+        return True
 
     def open_result(self, event=None):
         index = self.results_list.GetSelection()
@@ -1009,6 +1155,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         name = self._active_name
         self.platform_data[name]['result_index'] = index
         self.platform_data[name]['is_list_mode'] = True
+        self.platform_data[name]['refresh_after_play'] = True
         self.clients[name].set_active(True)
         self.clients[name].navigate(self._results[index].url,
                                     lambda: self.dispatch('play') if name == self._active_name else None)

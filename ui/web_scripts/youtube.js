@@ -173,10 +173,17 @@
 
     async function execute(action, argument) {
         if (action === "play" || action === "toggle") {
-            const video = activeVideo();
+            let video = activeVideo();
+            if (action === "play") {
+                const deadline = Date.now() + 8000;
+                while (!video && Date.now() < deadline) {
+                    await sleep(150);
+                    video = activeVideo();
+                }
+            }
             if (!video) throw new Error("Vídeo não encontrado.");
             if (video.paused) await video.play();
-            else video.pause();
+            else if (action === "toggle") video.pause();
             // CORREÇÃO 1: Retorna o estado real de pausa para o Python anunciar corretamente!
             return { paused: video.paused };
         } 
@@ -271,12 +278,19 @@
             return {};
         }
         else if (action === "collect_search_results") {
-            const deadline = Date.now() + 5000;
-            let finalResults = [];
+            const deadline = Date.now() + 12000;
+            const collected = new Map();
+            let firstResultAt = 0;
+            let lastGrowthAt = 0;
+            let profileScrolls = 0;
+            const collectingProfile = argument === "profile";
+            const collectingMore = argument?.mode === "more";
+            const requiredSearchScrolls = collectingMore ? 12 : 8;
             do {
                 const results = [];
                 const seen = new Set();
-                const anchors = document.querySelectorAll('a[href^="/shorts/"]');
+                // Current Shorts cards may use relative or absolute links.
+                const anchors = document.querySelectorAll('a[href]');
                 for (const anchor of anchors) {
                     let url;
                     try { url = new URL(anchor.href, location.href); } catch (e) { continue; }
@@ -284,11 +298,11 @@
                     if (!match || seen.has(match[1])) continue;
                     seen.add(match[1]);
                     
-                    const container = anchor.closest('ytd-video-renderer, ytd-reel-item-renderer, ytd-rich-item-renderer') || anchor.parentElement;
-                    const titleEl = container && (container.querySelector('#video-title') || container.querySelector('.title') || container.querySelector('span[id="video-title"]'));
-                    const authorEl = container && (container.querySelector('.ytd-channel-name') || container.querySelector('#channel-name'));
+                    const container = anchor.closest('ytd-video-renderer, ytd-reel-item-renderer, ytd-rich-item-renderer, ytd-rich-grid-media, ytd-compact-video-renderer, ytm-shorts-lockup-view-model') || anchor.parentElement;
+                    const titleEl = container && (container.querySelector('#video-title') || container.querySelector('.title') || container.querySelector('[id="video-title"]') || container.querySelector('h3 a[title]'));
+                    const authorEl = container && (container.querySelector('ytd-channel-name') || container.querySelector('.ytd-channel-name') || container.querySelector('#channel-name'));
                     
-                    const titleStr = titleEl ? (titleEl.innerText || titleEl.textContent || "").trim() : "";
+                    const titleStr = titleEl ? (titleEl.getAttribute('title') || titleEl.innerText || titleEl.textContent || "").trim() : "";
                     const authorStr = authorEl ? (authorEl.innerText || authorEl.textContent || "").trim() : "";
                     const descFallback = anchor.getAttribute('title') || anchor.getAttribute('aria-label') || "";
                     
@@ -299,12 +313,23 @@
                     });
                     if (results.length >= 50) break;
                 }
-                finalResults = results;
-                if (finalResults.length >= 50) return { results: finalResults };
-                if (finalResults.length > 0) window.scrollBy(0, window.innerHeight);
+                const before = collected.size;
+                for (const item of results) collected.set(item.url, item);
+                const now = Date.now();
+                if (collected.size && !firstResultAt) firstResultAt = now;
+                if (collected.size > before) lastGrowthAt = now;
+                const settledSearch = firstResultAt && profileScrolls >= requiredSearchScrolls && now - lastGrowthAt >= 1200;
+                const settledProfile = firstResultAt && profileScrolls >= 5 && now - lastGrowthAt >= 1200;
+                if (collected.size >= 50 || (collectingProfile ? settledProfile : settledSearch)) {
+                    return { results: [...collected.values()] };
+                }
+                if (collected.size) {
+                    window.scrollBy(0, window.innerHeight);
+                    profileScrolls += 1;
+                }
                 await sleep(300);
             } while (Date.now() < deadline);
-            return { results: finalResults };
+            return { results: [...collected.values()] };
         }
         else if (action === "author" || action === "description" || action === "copy_link" || action === "refresh_info" || action === "download_link") {
             return snapshot();

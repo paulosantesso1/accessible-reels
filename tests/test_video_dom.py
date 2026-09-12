@@ -130,11 +130,52 @@ def test_initial_details_refresh_waits_for_delayed_video(page):
     assert result['author'] == '@ana'
 
 
+def test_search_keeps_cards_that_tiktok_virtualizes_during_collection(page):
+    page.set_content('''<main id="results">
+      <a href="https://www.tiktok.com/@ana/video/123"><img alt="Primeiro resultado"></a>
+    </main>''')
+    install_embedded_tiktok(page)
+    page.evaluate('''() => setTimeout(() => {
+      document.getElementById('results').innerHTML =
+        '<a href="https://www.tiktok.com/@bia/video/456"><img alt="Segundo resultado"></a>';
+    }, 400)''')
+    result = page.evaluate("command('collect_search_results')")
+    assert result['ok'] is True
+    assert [item['url'] for item in result['results']] == [
+        'https://www.tiktok.com/@ana/video/123',
+        'https://www.tiktok.com/@bia/video/456',
+    ]
+
+
 def test_embedded_play_starts_paused_video_and_keeps_playing_video(page):
     page.set_content('<video id="active" style="width:300px;height:300px"></video>')
     install_embedded_tiktok(page)
     page.eval_on_selector('video', 'v => v.pause()')
     assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
+    assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
+
+
+def test_embedded_play_retries_after_tiktok_replaces_an_empty_video_source(page):
+    page.set_content('<video id="active" style="width:300px;height:300px"></video>')
+    install_embedded_tiktok(page)
+    page.evaluate('''() => {
+      const video = document.querySelector('#active');
+      let attempts = 0;
+      Object.defineProperty(video, 'currentSrc', {configurable: true, value: ''});
+      Object.defineProperty(video, 'readyState', {configurable: true, value: 0});
+      video.play = () => {
+        attempts += 1;
+        if (attempts === 1) {
+          setTimeout(() => {
+            Object.defineProperty(video, 'currentSrc', {configurable: true, value: 'https://v.tiktokcdn.com/ready.mp4'});
+            Object.defineProperty(video, 'readyState', {configurable: true, value: HTMLMediaElement.HAVE_METADATA});
+          }, 200);
+          return Promise.reject(new DOMException('Failed to load because no supported source was found.', 'NotSupportedError'));
+        }
+        video.testPaused = false;
+        return Promise.resolve();
+      };
+    }''')
     assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
 
 

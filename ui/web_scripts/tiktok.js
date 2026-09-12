@@ -740,17 +740,39 @@
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") {
-      const deadline = Date.now() + 5000;
-      let finalResults = [];
+      const deadline = Date.now() + 12000;
+      const collected = new Map();
+      let firstResultAt = 0;
+      let lastGrowthAt = 0;
+      let profileScrolls = 0;
+      const collectingProfile = argument === "profile";
+      const collectingMore = argument?.mode === "more";
+      const requiredSearchScrolls = collectingMore ? 12 : 8;
       do {
         const result = collectSearchResults();
-        finalResults = result.results;
-        if (finalResults.length >= 50) return {results: finalResults};
-        if (finalResults.length > 0) window.scrollBy(0, window.innerHeight);
+        const before = collected.size;
+        for (const item of result.results) collected.set(item.url, item);
+        const now = Date.now();
+        if (collected.size && !firstResultAt) firstResultAt = now;
+        if (collected.size > before) lastGrowthAt = now;
+        // TikTok virtualizes older cards as more results render. Preserve
+        // every valid card seen during a short settling window.
+        const settledSearch = firstResultAt && profileScrolls >= requiredSearchScrolls && now - lastGrowthAt >= 1200;
+        // Profile grids load more rows only after scrolling.  Do not stop at
+        // the first visible row: keep going until several scrolls produced no
+        // new card, preserving pinned/newest-to-oldest DOM order in the map.
+        const settledProfile = firstResultAt && profileScrolls >= 5 && now - lastGrowthAt >= 1200;
+        if (collected.size >= 50 || (collectingProfile ? settledProfile : settledSearch)) {
+          return {results: [...collected.values()]};
+        }
+        if (collected.size) {
+          window.scrollBy(0, window.innerHeight);
+          profileScrolls += 1;
+        }
         if (/\/login/.test(location.pathname)) throw new Error("Faça login no TikTok pela página (F6).");
         await sleep(300);
       } while (Date.now() < deadline);
-      return {results: finalResults};
+      return {results: [...collected.values()]};
     }
     if (action === "seek") {
       if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
@@ -815,11 +837,40 @@
     if (action === "toggle" || action === "play") {
       initialPlaybackReleased = true;
       if (video.paused) {
-        applyAudioPreference(video);
-        await Promise.race([video.play(), sleep(5000).then(() => {
-          throw new Error("A reprodução não foi confirmada. Use Reproduzir ou pausar, ou F6 para verificar a página.");
-        })]);
-        scheduleAudioPreference(video);
+        const startPlayback = async candidate => {
+          await Promise.race([candidate.play(), sleep(5000).then(() => {
+            throw new Error("A reprodução não foi confirmada. Use Reproduzir ou pausar, ou F6 para verificar a página.");
+          })]);
+          scheduleAudioPreference(candidate);
+        };
+        try {
+          await startPlayback(video);
+        } catch (error) {
+          // TikTok can briefly expose an empty video while replacing a search
+          // result. Wait for its media source instead of exposing WebView's
+          // "no supported source" error to the user.
+          const isSourceError = value => value?.name === "NotSupportedError" ||
+            /supported source/i.test(String(value?.message || value));
+          if (!isSourceError(error)) throw error;
+          const deadline = Date.now() + 8000;
+          let started = false;
+          while (Date.now() < deadline) {
+            await sleep(150);
+            const candidate = activeVideo();
+            if (!candidate || !candidate.currentSrc ||
+                candidate.readyState < HTMLMediaElement.HAVE_METADATA || candidate.error) continue;
+            try {
+              await startPlayback(candidate);
+              started = true;
+              break;
+            } catch (retryError) {
+              if (!isSourceError(retryError)) throw retryError;
+            }
+          }
+          if (!started && video.paused && activeVideo()?.paused) {
+            throw new Error("O vídeo ainda não disponibilizou uma fonte reproduzível. Aguarde alguns segundos e tente novamente.");
+          }
+        }
       } else if (action === "toggle") video.pause();
       return {paused: video.paused};
     }
