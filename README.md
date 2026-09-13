@@ -232,13 +232,14 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+Seta para baixo`: próximo vídeo;
 - `Alt+Seta para cima`: vídeo anterior;
 - `Alt+P`: reproduzir ou pausar;
-- `Alt+A`: ler autor;
+- `Alt+A`: ler autor e verificar se você o segue;
 - `Alt+D`: ler descrição;
 - `Alt+C`: copiar link;
 - `Alt+Shift+P`: abrir perfil;
 - `Alt+Shift+C`: abrir os comentários nativos do vídeo atual;
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
+- `Alt+G`: seguir ou deixar de seguir o autor;
 - `Esc`: voltar dos comentários ao player;
 - `F2`: abrir a janela de configurações;
 - `F5`: atualizar autor e descrição;

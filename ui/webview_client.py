@@ -17,7 +17,7 @@ from app_logging import get_logger
 PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/', 'YouTube': 'https://www.youtube.com/shorts/'}
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
-           'close_comments', 'toggle_like', 'toggle_favorite',
+           'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow',
            'collect_search_results', 'download_link', 'diagnostics'}
 logger = get_logger()
 

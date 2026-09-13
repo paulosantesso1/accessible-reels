@@ -336,7 +336,24 @@
             return { results: [...collected.values()] };
         }
         else if (action === "author" || action === "description" || action === "copy_link" || action === "refresh_info" || action === "download_link") {
-            return snapshot();
+            const info = snapshot();
+            if (action === "author") {
+                let followStatus = "";
+                const videoForAuthor = activeVideo();
+                if (videoForAuthor) {
+                    const container = videoForAuthor.closest('ytd-reel-video-renderer') || videoForAuthor.parentElement;
+                    if (container) {
+                        const subBtn = container.querySelector('#subscribe-button button, ytd-subscribe-button-renderer button');
+                        if (subBtn) {
+                            const btnText = (subBtn.textContent || subBtn.innerText || "").toLowerCase();
+                            if (btnText.includes("inscrito") || btnText.includes("subscribed")) followStatus = " (Você já segue)";
+                            else followStatus = " (Não segue)";
+                        }
+                    }
+                }
+                info.author += followStatus;
+            }
+            return info;
         }
         else if (action === "diagnostics") {
             return { message: "Página do YouTube conectada." };
@@ -379,6 +396,33 @@
                 }
             }
             throw new Error("O YouTube não mudou de vídeo a tempo. Tente novamente ou use F6 para acessar a página.");
+        }
+
+        else if (action === "toggle_follow") {
+            const video = activeVideo();
+            if (!video) throw new Error("Vídeo não encontrado.");
+            const container = video.closest('ytd-reel-video-renderer') || video.parentElement;
+            const btn = container.querySelector('#subscribe-button button, ytd-subscribe-button-renderer button');
+            if (!btn) throw new Error("Botão de Inscrever-se não encontrado na tela.");
+            
+            const textBefore = (btn.textContent || btn.innerText || "").toLowerCase();
+            const beforeIsFollowing = textBefore.includes("inscrito") || textBefore.includes("subscribed");
+            btn.click();
+            
+            const deadline = Date.now() + 3500;
+            let afterIsFollowing = beforeIsFollowing;
+            while (Date.now() < deadline) {
+                await sleep(150);
+                const textAfter = (btn.textContent || btn.innerText || "").toLowerCase();
+                if (textAfter.includes("inscrito") || textAfter.includes("subscribed")) afterIsFollowing = true;
+                else if (textAfter.includes("inscrever-se") || textAfter.includes("subscribe")) afterIsFollowing = false;
+                
+                if (afterIsFollowing !== beforeIsFollowing) break;
+            }
+            if (afterIsFollowing === beforeIsFollowing) {
+                throw new Error("A rede não confirmou a alteração de inscrição. Tente novamente.");
+            }
+            return { state: afterIsFollowing };
         }
         else if (action === "toggle_like") {
             const video = activeVideo();

@@ -162,6 +162,7 @@
         let username = new URL(profile.href).pathname.split("/")[1];
         if (username) profile_url = `https://www.instagram.com/${username}/reels/`;
     }
+
     return {author, description, link, profile_url};
   }
   function commentDialog() {
@@ -340,6 +341,16 @@
     }
     if (["author", "description", "refresh_info", "copy_link", "download_link"].includes(action)) {
       const info = snapshot();
+      if (action === "author") {
+        let followStatus = " (Você já segue)";
+        const root = reelRoot(video);
+        const followBtns = [...root.querySelectorAll("button, [role='button'], span")].filter(el => {
+          const text = clean(el.textContent).toLowerCase();
+          return visible(el) && (text === "seguir" || text === "follow");
+        });
+        if (followBtns.length > 0) followStatus = " (Não segue)";
+        info.author += followStatus;
+      }
       if (action === "download_link") return {...info, media_url: video.currentSrc || video.src || ""};
       if (action === "copy_link" && !info.link) throw new Error("Não foi possível identificar o link do Reel atual.");
       return info;
@@ -408,6 +419,42 @@
         base + (action === "speed_up" ? (speeds[base] <= current + 0.001 ? 1 : 0) : -1)));
       video.playbackRate = speeds[next];
       return {playbackRate: video.playbackRate};
+    }
+
+    if (action === "toggle_follow") {
+      const video = activeVideo();
+      if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
+      const root = reelRoot(video);
+      const btns = [...root.querySelectorAll("button, [role='button'], span")].filter(el => {
+        const text = clean(el.textContent).toLowerCase();
+        return visible(el) && (text === "seguir" || text === "follow" || text === "seguindo" || text === "following");
+      });
+      const btn = btns[0];
+      if (!btn) throw new Error("Botão de Seguir não encontrado. Pode ser seu próprio vídeo.");
+      
+      const textBefore = clean(btn.textContent).toLowerCase();
+      const beforeIsFollowing = textBefore === "seguindo" || textBefore === "following";
+      await click(btn);
+      
+      const deadline = Date.now() + 3500;
+      let afterIsFollowing = beforeIsFollowing;
+      while (Date.now() < deadline) {
+        await sleep(150);
+        if (!btn.isConnected || !visible(btn)) {
+            // Se o botão sumiu e não seguíamos, é porque começamos a seguir.
+            if (!beforeIsFollowing) afterIsFollowing = true;
+        } else {
+            const textAfter = clean(btn.textContent).toLowerCase();
+            if (textAfter === "seguindo" || textAfter === "following") afterIsFollowing = true;
+            else if (textAfter === "seguir" || textAfter === "follow") afterIsFollowing = false;
+        }
+        
+        if (afterIsFollowing !== beforeIsFollowing) break;
+      }
+      if (afterIsFollowing === beforeIsFollowing) {
+        throw new Error("A rede não confirmou a alteração de seguimento. Tente novamente.");
+      }
+      return { state: afterIsFollowing };
     }
     if (action === "toggle_like") return toggleSocial(/^(curtir|descurtir|like|unlike)$/i, /^(descurtir|unlike)$/i, "a curtida");
     if (action === "toggle_favorite") return toggleSocial(/^(salvar|remover|remover dos salvos|save|unsave|remove)$/i, /^(remover|remover dos salvos|unsave|remove)$/i, "Salvar");

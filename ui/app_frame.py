@@ -163,12 +163,14 @@ def keyboard_help_text():
         'Alt+Shift+M — Ativar ou desativar o mudo\n'
         'F2 — Abrir configurações\n'
         'F5 — Atualizar autor e descrição\n'
-        'Alt+A / Alt+D — Ler autor / descrição\n'
+        'Alt+A — Ler autor e verificar se você o segue\n'
+        'Alt+D — Ler descrição\n'
         'Alt+C — Copiar link\n'
         'Ctrl+B — Baixar vídeo atual na pasta de downloads\n'
         'Alt+Shift+C — Comentários\n'
         'Alt+L — Curtir ou descurtir\n'
-        'Alt+F — Salvar ou remover dos salvos\n'
+        'Alt+F — Adicionar ou remover dos favoritos\n'
+        'Alt+G — Seguir ou deixar de seguir o autor\n'
         'Alt+E — Pesquisar vídeos\n'
         'Ctrl+R — Voltar aos resultados da pesquisa\n'
         'Ctrl+Home — Voltar ao feed\n'
@@ -974,6 +976,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             if name == self._active_name and self.IsActive() and action not in ('open_comments', 'collect_search_results', 'close_comments'):
                 if restore_focus and wx.Window.FindFocus() is self.current():
                     restore_focus.SetFocus()
+        
+
+
         client.execute('seek' if action in SEEK_SECONDS else COMMANDS.get(action, action),
                        SEEK_SECONDS.get(action, argument), completed)
 
@@ -1046,6 +1051,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = 'Curtida adicionada.' if result.get('state') else 'Curtida removida.'
         elif action == 'toggle_favorite':
             message = 'Vídeo salvo.' if result.get('state') else 'Vídeo removido dos salvos.'
+        elif action == 'toggle_follow':
+            message = 'Você começou a seguir este autor.' if result.get('state') else 'Você deixou de seguir este autor.'
         elif action == 'open_comments' and active:
             self.activities.SetSelection(1)
             self.current().SetCanFocus(False)

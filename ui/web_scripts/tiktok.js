@@ -791,6 +791,25 @@
     }
     if (["author", "description", "copy_link", "refresh_info", "download_link"].includes(action)) {
       const info = snapshot();
+      if (action === "author") {
+        const FOLLOW_SELECTORS = [
+          "button[data-e2e=feed-follow]", "button[data-e2e=video-author-follow]",
+          "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
+          "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
+        ];
+        let followStatus = " (Você já segue)";
+        const btn = findNearVideo(FOLLOW_SELECTORS);
+        if (btn) {
+          const t = (btn.textContent || "").trim().toLowerCase();
+          const len = btn.innerHTML.trim().length;
+          if (t === "seguindo" || t === "following" || t === "mensagem" || t === "message" || (!t && len >= 450)) {
+            followStatus = " (Você já segue)";
+          } else if (t === "seguir" || t === "follow" || (!t && len < 450)) {
+            followStatus = " (Não segue)";
+          }
+        }
+        info.author += followStatus;
+      }
       if (action === "download_link") return {...info, media_url: downloadMedia(video, info.link || "")};
       if (action === "copy_link" && !info.link) return copyLinkFromTikTok(video);
       return info;
@@ -921,6 +940,59 @@
       });
       await sleep(100);
       return {muted: preferredMuted};
+    }
+
+    if (action === "toggle_follow") {
+      const FOLLOW_SELECTORS = [
+        "button[data-e2e=feed-follow]", "button[data-e2e=video-author-follow]",
+        "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
+        "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
+      ];
+      // On TikTok, unfollowing from the feed is sometimes not possible (no button),
+      // but following is. toggleAction handles the state reading via regex.
+      // undoPattern is the state where we ARE following.
+      // inactivePattern is the state where we are NOT following.
+      // Often the button just disappears when followed, but we'll try to rely on toggleAction or custom logic.
+      const video = activeVideo();
+      if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
+      let btn = findNearVideo(FOLLOW_SELECTORS);
+      if (!btn) {
+        // Fallback: search by text
+        for (const ancestor of ancestorsFor(video)) {
+          btn = [...ancestor.querySelectorAll("button")].find(b => {
+            const t = (b.textContent || "").trim().toLowerCase();
+            return visible(b) && (t === "seguir" || t === "follow" || t === "seguindo" || t === "following");
+          });
+          if (btn) break;
+        }
+      }
+      if (!btn) throw new Error("Botão de Seguir não encontrado. Pode ser seu próprio vídeo ou o botão não está visível neste feed.");
+
+      const textBefore = (btn.textContent || "").trim().toLowerCase();
+      const lenBefore = btn.innerHTML.trim().length;
+      const beforeIsFollowing = textBefore === "seguindo" || textBefore === "following" || textBefore === "mensagem" || textBefore === "message" || (!textBefore && lenBefore >= 450);
+      await trustedClick(btn);
+      
+      const deadline = Date.now() + 3500;
+      let afterIsFollowing = beforeIsFollowing;
+      while (Date.now() < deadline) {
+        await sleep(150);
+        // Re-query in case it was replaced
+        btn = findNearVideo(FOLLOW_SELECTORS) || btn;
+        if (!btn.isConnected || !visible(btn)) {
+            if (!beforeIsFollowing) afterIsFollowing = true;
+        } else {
+            const textAfter = (btn.textContent || "").trim().toLowerCase();
+            const lenAfter = btn.innerHTML.trim().length;
+            if (textAfter === "seguindo" || textAfter === "following" || textAfter === "mensagem" || textAfter === "message" || (!textAfter && lenAfter >= 450)) afterIsFollowing = true;
+            else if (textAfter === "seguir" || textAfter === "follow" || (!textAfter && lenAfter < 450)) afterIsFollowing = false;
+        }
+        if (afterIsFollowing !== beforeIsFollowing) break;
+      }
+      if (afterIsFollowing === beforeIsFollowing) {
+        throw new Error("A rede não confirmou a alteração de seguimento. Tente novamente.");
+      }
+      return { state: afterIsFollowing };
     }
     if (action === "toggle_like") {
       return {state: await toggleAction(LIKE_SELECTORS, /descurtir|unlike|remove like/i,
