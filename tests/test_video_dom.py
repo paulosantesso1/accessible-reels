@@ -37,8 +37,8 @@ def install_embedded_tiktok(page):
           }
         }
       };
-      window.command = action => new Promise(resolve =>
-        window.commandListener({type: 'accessible-reels-command', action}, {}, resolve));
+      window.command = (action, argument) => new Promise(resolve =>
+        window.commandListener({type: 'accessible-reels-command', action, argument}, {}, resolve));
       for (const video of document.querySelectorAll('video')) {
         video.testPaused = video.id !== 'active';
         Object.defineProperty(video, 'paused', {get: () => video.testPaused});
@@ -49,6 +49,13 @@ def install_embedded_tiktok(page):
     page.add_script_tag(content=(
         Path(__file__).resolve().parents[1] / "ui/web_scripts/tiktok.js"
     ).read_text(encoding="utf-8"))
+
+
+def load_tiktok_page(page, path, body):
+    page.route("https://www.tiktok.com/**", lambda route: route.fulfill(
+        status=200, content_type="text/html", body=body
+    ))
+    page.goto("https://www.tiktok.com" + path)
 
 
 def test_download_identifies_active_feed_media_without_search(page):
@@ -138,7 +145,9 @@ def test_tiktok_follow_status_is_unknown_without_an_explicit_control(page):
     result = page.evaluate("command('author')")
 
     assert result['ok'] is True
-    assert result['author'] == '@ana (Não foi possível verificar se você segue)'
+    assert result['author'] == '@ana'
+    assert result['follow_state'] is None
+    assert result['needs_profile_follow'] is True
 
 
 def test_tiktok_follow_uses_explicit_accessible_state(page):
@@ -150,9 +159,9 @@ def test_tiktok_follow_uses_explicit_accessible_state(page):
       </article>''')
     install_embedded_tiktok(page)
 
-    assert page.evaluate("command('author')")['author'].endswith('(Não segue)')
+    assert page.evaluate("command('author')")['follow_state'] is False
     assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': True}
-    assert page.evaluate("command('author')")['author'].endswith('(Você já segue)')
+    assert page.evaluate("command('author')")['follow_state'] is True
     assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': False}
 
 
@@ -167,9 +176,91 @@ def test_tiktok_follow_explains_how_to_unfollow_when_control_disappears(page):
     assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': True}
     result = page.evaluate("command('toggle_follow')")
 
+    assert result['ok'] is True
+    assert result['needs_profile_follow'] is True
+    assert result['profile_url'] == 'https://www.tiktok.com/@ana'
+
+
+def test_tiktok_profile_follow_reads_and_changes_explicit_button_state(page):
+    load_tiktok_page(page, '/@ana', '''
+      <aside><button data-e2e="follow-button" style="width:100px;height:40px"
+        onclick="window.wrongProfileClicked=true">Follow suggested account</button></aside>
+      <main style="width:600px;height:400px"><header style="width:500px;height:100px">
+        <button data-e2e="follow-button" aria-label="Seguir @ana" aria-pressed="false"
+          style="width:100px;height:40px"
+          onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'false' ? 'true' : 'false')"></button>
+      </header></main>''')
+    install_embedded_tiktok(page)
+    const_argument = "{toggle:%s, profile_url:'https://www.tiktok.com/@ana'}"
+
+    assert page.evaluate("command('profile_follow', " + const_argument % 'false' + ")") == {'ok': True, 'state': False}
+    assert page.evaluate("command('profile_follow', " + const_argument % 'true' + ")") == {'ok': True, 'state': True}
+    assert page.evaluate("command('profile_follow', " + const_argument % 'true' + ")") == {'ok': True, 'state': False}
+    assert page.evaluate("Boolean(window.wrongProfileClicked)") is False
+
+
+def test_tiktok_profile_message_button_is_not_follow_evidence(page):
+    load_tiktok_page(page, '/@ana', '''<main><header style="width:500px;height:100px">
+      <button style="width:100px;height:40px">Message</button>
+    </header></main>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("""async () => {
+      setTimeout(() => {
+        const follow = document.createElement('button');
+        follow.dataset.e2e = 'follow-button';
+        follow.textContent = 'Follow';
+        follow.style = 'width:100px;height:40px';
+        document.querySelector('header').append(follow);
+      }, 250);
+      return await command('profile_follow', {
+        toggle:false, profile_url:'https://www.tiktok.com/@ana'
+      });
+    }""")
+
+    assert result == {'ok': True, 'state': False}
+
+
+def test_tiktok_profile_unfollow_uses_follow_icon_and_verifies_replacement(page):
+    load_tiktok_page(page, '/@ana', '''<main style="width:600px;height:400px"><header style="width:500px;height:100px">
+      <button style="width:100px;height:40px">Message</button>
+      <div role="button" class="DivFollowIcon-test" aria-label="Unfollow @ana"
+        style="width:40px;height:40px" onclick="this.outerHTML='<button data-e2e=&quot;follow-button&quot; style=&quot;width:100px;height:40px&quot;>Follow</button>'"></div>
+      </header></main>''')
+    install_embedded_tiktok(page)
+
+    argument = "{toggle:%s, profile_url:'https://www.tiktok.com/@ana'}"
+    assert page.evaluate("command('profile_follow', " + argument % 'false' + ")") == {'ok': True, 'state': True}
+    assert page.evaluate("command('profile_follow', " + argument % 'true' + ")") == {'ok': True, 'state': False}
+
+
+def test_tiktok_profile_follow_refuses_a_different_profile(page):
+    load_tiktok_page(page, '/@outra', '''<main><header style="width:500px;height:100px">
+      <button data-e2e="follow-button" style="width:100px;height:40px">Follow</button>
+    </header></main>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("""command('profile_follow', {
+      toggle:true, profile_url:'https://www.tiktok.com/@ana'
+    })""")
+
     assert result['ok'] is False
-    assert 'F6' in result['error']
-    assert 'abra o perfil diretamente' in result['error']
+    assert 'não corresponde ao autor esperado' in result['error']
+
+
+def test_tiktok_profile_follow_reports_captcha_without_clicking(page):
+    load_tiktok_page(page, '/@ana', '''<main><header style="width:500px;height:100px">
+      <div class="secsdk-captcha-wrapper" style="width:200px;height:80px">Verify</div>
+    </header></main>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("""command('profile_follow', {
+      toggle:true, profile_url:'https://www.tiktok.com/@ana'
+    })""")
+
+    assert result['ok'] is False
+    assert 'Após retornar ao vídeo' in result['error']
+    assert 'repita a ação' in result['error']
 
 
 def test_profile_link_ignores_video_permalink_before_author_link(page):

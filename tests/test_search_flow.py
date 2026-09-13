@@ -9,9 +9,18 @@ from ui.app_frame import MainFrame, instagram_fallback_queries, merge_search_res
 from ui.webview_client import PLATFORM_URLS, WebViewClient
 
 
+def mock_frame():
+    frame = Mock()
+    frame._tiktok_follow_verification_active.return_value = False
+    frame._return_tiktok_follow_verification.side_effect = (
+        lambda message: MainFrame._return_tiktok_follow_verification(frame, message)
+    )
+    return frame
+
+
 @pytest.mark.parametrize('platform', ['TikTok', 'Instagram'])
 def test_search_collection_is_not_dropped_by_automatic_refresh(platform):
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = platform
     frame._closing_app = False
     frame._pending_page_focus = None
@@ -40,7 +49,7 @@ def test_result_player_list_and_feed_round_trip(platform):
                SearchResult('https://www.tiktok.com/@b/video/2', '@b', 'Second')) if platform == 'TikTok' else (
                SearchResult('https://www.instagram.com/reel/A/', 'A', 'First'),
                SearchResult('https://www.instagram.com/reel/B/', 'B', 'Second'))
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = platform
     frame._results = results
     frame.platform_data = {platform: {'results': results}}
@@ -97,7 +106,7 @@ def test_more_search_results_are_appended_without_reordering_existing_items():
 
 def test_load_more_returns_to_saved_query_and_collects_an_additional_batch():
     first = SearchResult('https://www.tiktok.com/@a/video/1', '@a', 'Primeiro')
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = 'TikTok'
     frame.platform_data = {'TikTok': {
         'results': (first,), 'is_list_mode': True,
@@ -134,7 +143,7 @@ def test_return_to_feed_invalidates_a_pending_command_and_late_response():
 
 
 def test_list_mode_navigation_intercepts_next_and_previous_video():
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = 'TikTok'
     frame._results = ['first', 'second', 'third']
     frame.platform_data = {'TikTok': {'is_list_mode': True, 'result_index': 1}}
@@ -172,7 +181,7 @@ def test_escape_returns_to_feed_from_search_tab():
 
 
 def test_open_profile_navigates_and_triggers_collection():
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = 'TikTok'
     frame.platform_data = {'TikTok': {'profile_url': 'https://www.tiktok.com/@user'}}
     client = Mock(pending=False)
@@ -186,6 +195,226 @@ def test_open_profile_navigates_and_triggers_collection():
     frame.dispatch.assert_called_once_with('collect_search_results', 'profile')
     frame._set_search_loading.assert_called_once_with(True)
     assert frame.platform_data['TikTok']['opening_profile'] is True
+
+
+def test_follow_verification_opens_profile_without_starting_collection():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+    result = {
+        'author': '@ana',
+        'profile_url': 'https://www.tiktok.com/@ana',
+        'link': 'https://www.tiktok.com/@ana/video/123',
+    }
+
+    assert MainFrame._start_tiktok_follow_verification(frame, 'read_author', result) is True
+
+    context = frame.platform_data['TikTok']['follow_verification']
+    assert context == {
+        'return_url': 'https://www.tiktok.com/@ana/video/123',
+        'toggle': False,
+        'author': '@ana',
+        'phase': 'checking',
+    }
+    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/@ana'
+    client.navigate.call_args.args[1]()
+    frame.dispatch.assert_called_once_with('profile_follow', {
+        'toggle': False,
+        'profile_url': 'https://www.tiktok.com/@ana',
+    })
+    frame._set_search_loading.assert_not_called()
+
+
+def test_follow_profile_navigation_does_not_dispatch_after_platform_switch():
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+    result = {
+        'author': '@ana',
+        'profile_url': 'https://www.tiktok.com/@ana',
+        'link': 'https://www.tiktok.com/@ana/video/123',
+    }
+    MainFrame._start_tiktok_follow_verification(frame, 'toggle_follow', result)
+
+    frame._active_name = 'Instagram'
+    client.navigate.call_args.args[1]()
+
+    frame.dispatch.assert_not_called()
+    assert client.navigate.call_count == 2
+    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/@ana/video/123'
+    client.navigate.call_args.args[1]()
+    assert 'follow_verification' not in frame.platform_data['TikTok']
+
+
+@pytest.mark.parametrize(('unexpected_url', 'message'), [
+    (
+        'https://www.tiktok.com/login?redirect_url=%2F%40ana',
+        'É preciso entrar no TikTok. Após retornar ao vídeo, use F6, faça login na página e repita a ação.',
+    ),
+    (
+        'https://www.tiktok.com/@outra',
+        'A página mudou antes da verificação. Nenhuma ação de seguimento foi realizada.',
+    ),
+])
+def test_unexpected_follow_navigation_returns_without_leaving_blocked_state(unexpected_url, message):
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+    MainFrame._start_tiktok_follow_verification(frame, 'toggle_follow', {
+        'author': '@ana',
+        'profile_url': 'https://www.tiktok.com/@ana',
+        'link': 'https://www.tiktok.com/@ana/video/123',
+    })
+
+    client.navigate.call_args.kwargs['on_unexpected'](unexpected_url)
+
+    context = frame.platform_data['TikTok']['follow_verification']
+    assert context['phase'] == 'returning'
+    assert context['message'] == message
+    assert client.navigate.call_count == 2
+    client.navigate.call_args.args[1]()
+    assert 'follow_verification' not in frame.platform_data['TikTok']
+    frame.status.assert_called_with(message)
+
+
+def test_follow_profile_navigation_error_returns_to_original_video():
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'return_url': 'https://www.tiktok.com/@ana/video/123',
+        'toggle': False,
+        'author': '@ana',
+    }}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+
+    MainFrame._platform_error(frame, 'TikTok', 'Perfil indisponível.')
+
+    context = frame.platform_data['TikTok']['follow_verification']
+    assert context['phase'] == 'returning'
+    assert context['message'] == 'Perfil indisponível.'
+    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/@ana/video/123'
+    client.navigate.call_args.args[1]()
+    assert 'follow_verification' not in frame.platform_data['TikTok']
+    frame.status.assert_called_with('Perfil indisponível.')
+
+
+def test_follow_return_navigation_failure_preserves_the_verified_result():
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'return_url': 'https://www.tiktok.com/@ana/video/123',
+        'toggle': True,
+        'author': '@ana',
+        'phase': 'returning',
+        'message': 'Você começou a seguir este autor.',
+    }}}
+    frame.clients = {'TikTok': Mock()}
+
+    MainFrame._platform_error(frame, 'TikTok', 'Falha ao carregar o vídeo.')
+
+    assert 'follow_verification' not in frame.platform_data['TikTok']
+    frame.status.assert_called_with(
+        'Você começou a seguir este autor. Não foi possível retornar automaticamente ao vídeo.'
+    )
+
+
+def test_follow_return_unexpected_navigation_clears_context_and_preserves_result():
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'return_url': 'https://www.tiktok.com/@ana/video/123',
+        'toggle': True,
+        'author': '@ana',
+    }}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+    MainFrame._finish_tiktok_follow_verification(frame, {'ok': True, 'state': True})
+
+    client.navigate.call_args.kwargs['on_unexpected']('https://example.com/')
+
+    assert 'follow_verification' not in frame.platform_data['TikTok']
+    frame.status.assert_called_with(
+        'Você começou a seguir este autor. Não foi possível retornar automaticamente ao vídeo.'
+    )
+
+
+def test_follow_success_without_boolean_state_is_not_reported_as_not_following():
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'return_url': 'https://www.tiktok.com/@ana/video/123',
+        'toggle': False,
+        'author': '@ana',
+    }}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+
+    MainFrame._finish_tiktok_follow_verification(frame, {'ok': True})
+    client.navigate.call_args.args[1]()
+
+    frame.status.assert_called_with('Não foi possível verificar o estado de seguimento.')
+
+
+@pytest.mark.parametrize(('toggle', 'state', 'message'), [
+    (False, True, 'Autor: @ana (Você já segue)'),
+    (False, False, 'Autor: @ana (Você não segue)'),
+    (True, True, 'Você começou a seguir este autor.'),
+    (True, False, 'Você deixou de seguir este autor.'),
+])
+def test_follow_verification_returns_to_video_with_confirmed_message(toggle, state, message):
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'return_url': 'https://www.tiktok.com/@ana/video/123',
+        'toggle': toggle,
+        'author': '@ana',
+    }}}
+    client = Mock()
+    frame.clients = {'TikTok': client}
+
+    MainFrame._finish_tiktok_follow_verification(frame, {'ok': True, 'state': state})
+
+    context = frame.platform_data['TikTok']['follow_verification']
+    assert context['phase'] == 'returning'
+    assert context['message'] == message
+    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/@ana/video/123'
+    client.navigate.call_args.args[1]()
+    assert 'follow_verification' not in frame.platform_data['TikTok']
+    assert frame.status.call_args_list[-1].args[0] == message
+
+
+def test_unknown_feed_follow_state_starts_profile_verification():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    frame._start_tiktok_follow_verification.return_value = True
+    result = {
+        'ok': True,
+        'author': '@ana',
+        'profile_url': 'https://www.tiktok.com/@ana',
+        'link': 'https://www.tiktok.com/@ana/video/123',
+        'follow_state': None,
+        'needs_profile_follow': True,
+    }
+
+    MainFrame._result(frame, 'TikTok', 'read_author', None, result)
+
+    assert frame.platform_data['TikTok']['author'] == '@ana'
+    frame._start_tiktok_follow_verification.assert_called_once_with('read_author', result)
+    frame.status.assert_not_called()
 
 
 def test_profile_collection_opens_pinned_or_newest_video_as_the_first_list_item():
@@ -233,7 +462,7 @@ def test_instagram_fallback_navigates_to_the_next_shorter_query():
 
 
 def test_youtube_search_uses_the_shorts_only_filter():
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = 'YouTube'
     frame.query_field.GetValue.return_value = 'curiosidade histórica'
     frame.current.return_value = True
@@ -247,7 +476,7 @@ def test_youtube_search_uses_the_shorts_only_filter():
 
 
 def test_new_search_clears_a_stale_profile_opening_state():
-    frame = Mock()
+    frame = mock_frame()
     frame._active_name = 'TikTok'
     frame.query_field.GetValue.return_value = 'gatos'
     frame.current.return_value = True

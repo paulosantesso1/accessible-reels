@@ -163,15 +163,14 @@ def keyboard_help_text():
         'Alt+Shift+M — Ativar ou desativar o mudo\n'
         'F2 — Abrir configurações\n'
         'F5 — Atualizar autor e descrição\n'
-        'Alt+A — Ler autor e verificar se você o segue\n'
+        'Alt+A — Ler autor e verificar se você o segue; no TikTok, o perfil pode ser consultado automaticamente\n'
         'Alt+D — Ler descrição\n'
         'Alt+C — Copiar link\n'
         'Ctrl+B — Baixar vídeo atual na pasta de downloads\n'
         'Alt+Shift+C — Comentários\n'
         'Alt+L — Curtir ou descurtir\n'
         'Alt+F — Adicionar ou remover dos favoritos\n'
-        'Alt+G — Seguir ou deixar de seguir quando a rede oferece o controle; '
-        'no TikTok, deixar de seguir pode exigir usar F6 e abrir o perfil diretamente na página\n'
+        'Alt+G — Seguir ou deixar de seguir o autor; no TikTok, o app pode consultar o perfil e retornar ao vídeo\n'
         'Alt+E — Pesquisar vídeos\n'
         'Ctrl+R — Voltar aos resultados da pesquisa\n'
         'Ctrl+Home — Voltar ao feed\n'
@@ -362,6 +361,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.select_network()
 
     def _open_platform(self, name):
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         was_active = (self._active_name == name and self.current() is not None)
         self._select_platform(name)
         if self.network.GetStringSelection() == name:
@@ -723,12 +725,19 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def current(self):
         return self.views.get(self.network.GetStringSelection())
 
+    def _tiktok_follow_verification_active(self):
+        return bool(self.platform_data.get('TikTok', {}).get('follow_verification'))
+
     def focus_controls(self, event=None):
         self.activities.SetSelection(0)
         super().focus_controls(event)
 
     def select_network(self, event=None):
         name = self.network.GetStringSelection()
+        if self._tiktok_follow_verification_active() and name != 'TikTok':
+            self.network.SetStringSelection('TikTok')
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         old = self.clients.get(self._active_name)
         if old and old.pending:
             self.network.SetStringSelection(self._active_name)
@@ -797,6 +806,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.status(f'{name} na janela do aplicativo. Use os controles ou F6 para acessar a página.')
 
     def open_link(self, event=None):
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         with wx.TextEntryDialog(self, 'Cole a URL de um vídeo do TikTok, Reel do Instagram ou Short do YouTube:',
                                 'Abrir link a partir de uma URL') as dialog:
             dialog.FindWindow(wx.ID_OK).SetLabel('Abrir vídeo')
@@ -836,8 +848,19 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _platform_error(self, platform, message):
         logger.warning('Platform error: platform=%s message=%s', platform, message)
-        self.platform_data.get(platform, {}).pop('opening_profile', None)
+        data = self.platform_data.get(platform, {})
+        data.pop('opening_profile', None)
         self._set_search_loading(False)
+        follow_context = data.get('follow_verification') if platform == 'TikTok' else None
+        if follow_context and platform in self.clients:
+            if follow_context.get('phase') == 'returning':
+                data.pop('follow_verification', None)
+                final_message = follow_context.get('message') or message
+                if platform == self._active_name:
+                    self.status(final_message + ' Não foi possível retornar automaticamente ao vídeo.')
+            else:
+                self._return_tiktok_follow_verification(message)
+            return
         if platform == self._active_name:
             self.status(message)
 
@@ -858,6 +881,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.dispatch('refresh_info')
 
     def home(self, event=None):
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
         else:
@@ -887,6 +913,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.status(f'{len(self._results)} resultados. Enter abre; Ctrl+Home volta ao feed.')
 
     def reload(self, event=None):
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         if self.current():
             self.current().Reload()
         else:
@@ -911,6 +940,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     self._download_folder = load_download_folder()
             finally:
                 dlg.Destroy()
+            return
+        if action != 'profile_follow' and self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
             return
         if action in ('post_comment', 'reply_comment'):
             self.status('A publicação e as respostas a comentários estão desativadas temporariamente.')
@@ -983,6 +1015,103 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         client.execute('seek' if action in SEEK_SECONDS else COMMANDS.get(action, action),
                        SEEK_SECONDS.get(action, argument), completed)
 
+    def _start_tiktok_follow_verification(self, action, result):
+        """Verify or change follow state on the author's profile, then return."""
+        if self._active_name != 'TikTok' or action not in ('read_author', 'toggle_follow'):
+            return False
+        data = self.platform_data['TikTok']
+        profile_url = result.get('profile_url') or data.get('profile_url')
+        return_url = result.get('link') or data.get('link')
+        if not profile_url or not return_url:
+            return False
+        context = {
+            'return_url': return_url,
+            'toggle': action == 'toggle_follow',
+            'author': result.get('author') or data.get('author') or 'Autor não encontrado',
+            'phase': 'checking',
+        }
+        data['follow_verification'] = context
+
+        def profile_loaded():
+            if data.get('follow_verification') is not context:
+                return
+            if self._active_name != 'TikTok':
+                self._return_tiktok_follow_verification('A verificação de seguimento foi cancelada.')
+                return
+            self.dispatch('profile_follow', {
+                'toggle': context['toggle'],
+                'profile_url': profile_url,
+            })
+
+        def unexpected_navigation(unexpected_url):
+            if data.get('follow_verification') is context:
+                path = urlsplit(unexpected_url).path.lower()
+                message = (
+                    'É preciso entrar no TikTok. Após retornar ao vídeo, use F6, faça login na página e repita a ação.'
+                    if '/login' in path else
+                    'A página mudou antes da verificação. Nenhuma ação de seguimento foi realizada.'
+                )
+                self._return_tiktok_follow_verification(
+                    message
+                )
+
+        self.clients['TikTok'].navigate(
+            profile_url,
+            profile_loaded,
+            expected_url=profile_url,
+            on_unexpected=unexpected_navigation,
+        )
+        self.status('Verificando o estado de seguimento no perfil do TikTok...')
+        return True
+
+    def _return_tiktok_follow_verification(self, message):
+        data = self.platform_data['TikTok']
+        context = data.get('follow_verification')
+        if not context:
+            return
+        context['phase'] = 'returning'
+        context['message'] = message
+
+        def returned():
+            if data.get('follow_verification') is context:
+                data.pop('follow_verification', None)
+            if not self._closing_app and self._active_name == 'TikTok':
+                self.status(message)
+
+        def return_interrupted(_unexpected_url):
+            if data.get('follow_verification') is context:
+                data.pop('follow_verification', None)
+            if not self._closing_app and self._active_name == 'TikTok':
+                self.status(message + ' Não foi possível retornar automaticamente ao vídeo.')
+
+        self.clients['TikTok'].navigate(
+            context['return_url'],
+            returned,
+            expected_url=context['return_url'],
+            on_unexpected=return_interrupted,
+        )
+        if self._active_name == 'TikTok':
+            self.status('Retornando ao vídeo após verificar o perfil...')
+
+    def _finish_tiktok_follow_verification(self, result):
+        data = self.platform_data['TikTok']
+        context = data.get('follow_verification')
+        if not context:
+            self._platform_error('TikTok', result.get('error') or 'A verificação de seguimento foi encerrada.')
+            return
+        state = result.get('state')
+        if result.get('ok') is True and isinstance(state, bool):
+            if context['toggle']:
+                message = ('Você começou a seguir este autor.' if state
+                           else 'Você deixou de seguir este autor.')
+            else:
+                status = 'Você já segue' if state else 'Você não segue'
+                message = f"Autor: {context['author']} ({status})"
+        else:
+            message = result.get('error') or 'Não foi possível verificar o estado de seguimento.'
+
+        self._return_tiktok_follow_verification(message)
+
     # Compatibility hooks retained for callers of the former native window.
     def _dispatch_shortcut(self, action):
         self.dispatch(action)
@@ -992,6 +1121,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _result(self, name, action, argument, result):
         if result.get('ignored'):
+            return
+        if name == 'TikTok' and action == 'profile_follow':
+            self._finish_tiktok_follow_verification(result)
             return
         if result.get('ok') is not True:
             logger.warning('Command failed: platform=%s action=%s message=%s', name, action, result.get('error'))
@@ -1018,6 +1150,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 data['result_index'] = 0
         if active:
             self._restore_fields()
+        if (name == 'TikTok' and action in ('read_author', 'toggle_follow')
+                and result.get('needs_profile_follow')
+                and self._start_tiktok_follow_verification(action, result)):
+            return
         message = 'Comando concluído.'
         if action in SEEK_SECONDS:
             position = round(result.get('position', 0))
@@ -1026,6 +1162,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = None
         elif action == 'read_author':
             message = 'Autor: ' + data.get('author', 'Não encontrado')
+            if name == 'TikTok':
+                state = result.get('follow_state')
+                if state is True:
+                    message += ' (Você já segue)'
+                elif state is False:
+                    message += ' (Você não segue)'
+                else:
+                    message += ' (Não foi possível verificar se você segue)'
         elif action == 'read_description':
             message = 'Descrição: ' + data.get('description', 'Não encontrada')
         elif action == 'copy_link' and active:
@@ -1111,6 +1255,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.status('Link copiado.' if success else 'Não foi possível copiar o link.')
 
     def search(self, event=None):
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         query = self.query_field.GetValue().strip()
         if not query:
             self.status('Digite o que deseja pesquisar.')
@@ -1145,6 +1292,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def load_more_results(self, event=None):
         """Return to the saved query and append its next visible result batch."""
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         name = self._active_name
         data = self.platform_data.get(name, {})
         url = data.get('search_url')
@@ -1187,6 +1337,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         return True
 
     def open_result(self, event=None):
+        if self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
+            return
         index = self.results_list.GetSelection()
         if not 0 <= index < len(self._results):
             self.status('Selecione um resultado da pesquisa.')

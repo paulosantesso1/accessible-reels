@@ -239,9 +239,8 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+Shift+C`: abrir os comentários nativos do vídeo atual;
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
-- `Alt+G`: seguir ou deixar de seguir o autor quando a rede oferece o controle. No TikTok,
-  se o botão desaparecer depois de seguir, use `F6`, abra o perfil diretamente na página
-  e acione o controle nativo de deixar de seguir;
+- `Alt+G`: seguir ou deixar de seguir o autor. Quando o feed do TikTok oculta o
+  controle, o aplicativo consulta o perfil e retorna automaticamente ao vídeo;
 - `Esc`: voltar dos comentários ao player;
 - `F2`: abrir a janela de configurações;
 - `F5`: atualizar autor e descrição;

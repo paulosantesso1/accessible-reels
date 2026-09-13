@@ -42,6 +42,25 @@ def test_main_navigation_cancels_pending_command():
     assert callback.call_args.args[0]['ok'] is False
 
 
+def test_checked_navigation_cancels_callback_on_a_different_profile():
+    client = make_client()
+    loaded = Mock()
+    unexpected = Mock()
+    expected = 'https://www.tiktok.com/@ana'
+    client.navigate(expected, loaded, expected_url=expected, on_unexpected=unexpected)
+    event = Mock()
+    event.IsTargetMainFrame.return_value = True
+    event.GetURL.return_value = 'https://www.tiktok.com/@outra'
+
+    with patch('ui.webview_client.wx.CallAfter', side_effect=lambda callback, *args: callback(*args)):
+        client._navigating(event)
+
+    loaded.assert_not_called()
+    unexpected.assert_called_once_with('https://www.tiktok.com/@outra')
+    assert client.after_load is None
+    assert client._retry_url is None
+
+
 @pytest.mark.parametrize(('platform', 'url'), [
     ('TikTok', 'https://www.tiktok.com/@ana/video/123'),
     ('Instagram', 'https://www.instagram.com/reel/ABC123/'),

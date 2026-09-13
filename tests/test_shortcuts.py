@@ -170,6 +170,7 @@ def test_comments_use_a_short_list_label_and_full_read_only_details():
 
 def test_platform_menu_action_selects_and_opens_the_requested_platform():
     frame = type('Frame', (), {})()
+    frame._tiktok_follow_verification_active = Mock(return_value=False)
     frame._active_name = 'TikTok'
     frame.current = Mock(return_value=False)
     frame.platform_data = {'Instagram': {}}

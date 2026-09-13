@@ -148,6 +148,117 @@
     return null;
   }
 
+  function isExpectedProfile(expectedProfileUrl) {
+    try {
+      const expected = new URL(expectedProfileUrl);
+      const host = value => value.toLowerCase().replace(/^(www\.|m\.)/, "");
+      const path = value => decodeURIComponent(value).replace(/\/+$/, "").toLowerCase();
+      return expected.protocol === "https:" && host(expected.hostname) === "tiktok.com" &&
+        host(location.hostname) === "tiktok.com" && /^\/@[^/]+$/.test(path(expected.pathname)) &&
+        path(location.pathname) === path(expected.pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function profileFollowSnapshot(expectedProfileUrl) {
+    if (!isExpectedProfile(expectedProfileUrl)) return {state: null, target: null, wrongProfile: true};
+    const roots = [...document.querySelectorAll([
+      "[data-e2e='user-page-header']", "[data-e2e='profile-page-header']",
+      "main header", "header", "[class*='DivShareLayoutHeader']",
+      "[class*='ShareLayoutHeader']", "[class*='ProfileHeader']"
+    ].join(","))].filter(visible);
+    const selectors = [
+      "button[data-e2e='follow-button']", "[role=button][data-e2e='follow-button']",
+      "button[data-e2e*='profile-follow' i]", "[role=button][data-e2e*='profile-follow' i]",
+      "button[aria-label*='seguir' i]", "button[aria-label*='follow' i]",
+      "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]"
+    ];
+    for (const root of roots) {
+      for (const element of root.querySelectorAll(selectors.join(","))) {
+        if (!visible(element)) continue;
+        const state = followState(element);
+        if (state !== null) return {state, target: element};
+      }
+    }
+
+    // TikTok currently exposes a person/check icon beside Message on profiles
+    // that are already followed. This is the actionable unfollow control.
+    const unfollowIcon = roots.flatMap(root => [...root.querySelectorAll(
+      "div[class*='DivFollowIcon'], button[class*='DivFollowIcon'], [role=button][class*='DivFollowIcon']"
+    )]).find(visible);
+    if (unfollowIcon) return {state: true, target: unfollowIcon};
+
+    return {state: null, target: null};
+  }
+
+  function interactionBlocked() {
+    if (document.querySelector(".secsdk-captcha-wrapper, [data-e2e*='captcha' i]")) {
+      return "O TikTok exige uma verificação. Após retornar ao vídeo, use F6, conclua-a na página e repita a ação.";
+    }
+    const text = normalizedText(document.body?.innerText).toLowerCase();
+    if (/too many requests|muitas solicita[cç][oõ]es/.test(text)) {
+      return "O TikTok limitou temporariamente esta ação. Tente novamente mais tarde.";
+    }
+    if (/\/login/.test(location.pathname)) {
+      return "É preciso entrar no TikTok. Após retornar ao vídeo, use F6, faça login na página e repita a ação.";
+    }
+    return "";
+  }
+
+  async function profileFollowAction(toggle, expectedProfileUrl) {
+    if (!isExpectedProfile(expectedProfileUrl)) {
+      throw new Error("O perfil carregado não corresponde ao autor esperado. Nenhuma ação foi realizada.");
+    }
+    const deadline = Date.now() + 8000;
+    let current = profileFollowSnapshot(expectedProfileUrl);
+    while (current.state === null && Date.now() < deadline) {
+      const blocked = interactionBlocked();
+      if (blocked) throw new Error(blocked);
+      await sleep(150);
+      current = profileFollowSnapshot(expectedProfileUrl);
+    }
+    if (current.state === null) {
+      throw new Error("Não foi possível verificar o estado de seguimento no perfil do TikTok.");
+    }
+    if (!toggle) return {state: current.state};
+    if (!current.target) {
+      throw new Error("O perfil confirma que você segue este autor, mas não oferece um controle seguro para deixar de seguir.");
+    }
+
+    const before = current.state;
+    if (!isExpectedProfile(expectedProfileUrl)) {
+      throw new Error("A página mudou antes do clique. Nenhuma ação de seguimento foi realizada.");
+    }
+    await trustedClick(current.target);
+    if (before) {
+      // Some layouts open a confirmation dialog instead of changing state on
+      // the first click. Only accept an exact unfollow action inside a dialog.
+      const confirmDeadline = Date.now() + 1200;
+      while (Date.now() < confirmDeadline) {
+        const confirm = [...document.querySelectorAll("[role=dialog] button, [role=dialog] [role=button]")]
+          .find(element => visible(element) && /^(deixar de seguir|parar de seguir|unfollow)$/i.test(
+            normalizedText(element.getAttribute("aria-label") || element.textContent)
+          ));
+        if (confirm) {
+          await trustedClick(confirm);
+          break;
+        }
+        await sleep(100);
+      }
+    }
+
+    const changedDeadline = Date.now() + 5000;
+    while (Date.now() < changedDeadline) {
+      const blocked = interactionBlocked();
+      if (blocked) throw new Error(blocked);
+      await sleep(150);
+      current = profileFollowSnapshot(expectedProfileUrl);
+      if (current.state !== null && current.state !== before) return {state: current.state};
+    }
+    throw new Error("O TikTok não confirmou a alteração do estado de seguimento.");
+  }
+
   async function trustedClick(element, scroll = true) {
     if (!element || !element.isConnected) throw new Error("O controle desapareceu da página.");
     if (scroll) element.scrollIntoView({block: "center", inline: "center"});
@@ -756,6 +867,9 @@
       const deadline = Date.now() + 8000;
       while (!activeVideo() && Date.now() < deadline) await sleep(150);
     }
+    if (action === "profile_follow") {
+      return profileFollowAction(Boolean(argument?.toggle), argument?.profile_url || "");
+    }
     const video = activeVideo();
     if (!["diagnostics", "collect_search_results", "close_comments"].includes(action) && !video) {
       throw new Error("Não foi possível localizar o vídeo atual.");
@@ -811,12 +925,10 @@
           "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
           "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
         ];
-        let followStatus = " (Não foi possível verificar se você segue)";
         const btn = findNearVideo(FOLLOW_SELECTORS);
         const state = followState(btn);
-        if (state === true) followStatus = " (Você já segue)";
-        else if (state === false) followStatus = " (Não segue)";
-        info.author += followStatus;
+        info.follow_state = state;
+        info.needs_profile_follow = state === null && Boolean(info.profile_url);
       }
       if (action === "download_link") return {...info, media_url: downloadMedia(video, info.link || "")};
       if (action === "copy_link" && !info.link) return copyLinkFromTikTok(video);
@@ -969,16 +1081,11 @@
           if (btn) break;
         }
       }
-      if (!btn) {
-        throw new Error(
-          "O TikTok não mostra um controle de seguimento neste feed. " +
-          "Pode ser seu próprio vídeo; para deixar de seguir, use F6 e abra o perfil diretamente na página."
-        );
-      }
+      if (!btn) return {needs_profile_follow: true, ...snapshot()};
 
       const beforeIsFollowing = followState(btn);
       if (beforeIsFollowing === null) {
-        throw new Error("Não foi possível verificar o estado do botão Seguir. Use F6 para confirmar na página.");
+        return {needs_profile_follow: true, ...snapshot()};
       }
       await trustedClick(btn);
       
