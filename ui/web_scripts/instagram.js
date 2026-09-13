@@ -107,6 +107,21 @@
     // Nested role=button wrappers exist around Save. Prefer the actual inner button.
     return candidates.find(el => !candidates.some(other => other !== el && el.contains(other))) || null;
   }
+  function followState(element) {
+    if (!element) return null;
+    const value = clean([
+      element.getAttribute("aria-label"), element.getAttribute("title"), element.textContent
+    ].filter(Boolean).join(" ")).toLowerCase();
+    if (/deixar de seguir|parar de seguir|\bunfollow\b|\bseguindo\b|\bfollowing\b/.test(value)) return true;
+    if (/\bseguir\b|\bfollow\b/.test(value)) {
+      return element.getAttribute("aria-pressed") === "true";
+    }
+    return null;
+  }
+  function followButton(root) {
+    return [...root.querySelectorAll("button, [role='button']")]
+      .find(element => visible(element) && followState(element) !== null) || null;
+  }
   async function click(element) {
     if (!visible(element) || element.disabled || element.getAttribute("aria-disabled") === "true") {
       throw new Error("O controle não está disponível no Instagram.");
@@ -342,13 +357,11 @@
     if (["author", "description", "refresh_info", "copy_link", "download_link"].includes(action)) {
       const info = snapshot();
       if (action === "author") {
-        let followStatus = " (Você já segue)";
+        let followStatus = " (Não foi possível verificar se você segue)";
         const root = reelRoot(video);
-        const followBtns = [...root.querySelectorAll("button, [role='button'], span")].filter(el => {
-          const text = clean(el.textContent).toLowerCase();
-          return visible(el) && (text === "seguir" || text === "follow");
-        });
-        if (followBtns.length > 0) followStatus = " (Não segue)";
+        const state = followState(followButton(root));
+        if (state === true) followStatus = " (Você já segue)";
+        else if (state === false) followStatus = " (Não segue)";
         info.author += followStatus;
       }
       if (action === "download_link") return {...info, media_url: video.currentSrc || video.src || ""};
@@ -425,28 +438,27 @@
       const video = activeVideo();
       if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
       const root = reelRoot(video);
-      const btns = [...root.querySelectorAll("button, [role='button'], span")].filter(el => {
-        const text = clean(el.textContent).toLowerCase();
-        return visible(el) && (text === "seguir" || text === "follow" || text === "seguindo" || text === "following");
-      });
-      const btn = btns[0];
+      let btn = followButton(root);
       if (!btn) throw new Error("Botão de Seguir não encontrado. Pode ser seu próprio vídeo.");
-      
-      const textBefore = clean(btn.textContent).toLowerCase();
-      const beforeIsFollowing = textBefore === "seguindo" || textBefore === "following";
+
+      const beforeIsFollowing = followState(btn);
+      if (beforeIsFollowing === null) {
+        throw new Error("Não foi possível verificar o estado do botão Seguir. Use F6 para confirmar na página.");
+      }
       await click(btn);
       
       const deadline = Date.now() + 3500;
       let afterIsFollowing = beforeIsFollowing;
       while (Date.now() < deadline) {
         await sleep(150);
-        if (!btn.isConnected || !visible(btn)) {
+        const currentButton = followButton(root);
+        if (!currentButton || !currentButton.isConnected || !visible(currentButton)) {
             // Se o botão sumiu e não seguíamos, é porque começamos a seguir.
             if (!beforeIsFollowing) afterIsFollowing = true;
         } else {
-            const textAfter = clean(btn.textContent).toLowerCase();
-            if (textAfter === "seguindo" || textAfter === "following") afterIsFollowing = true;
-            else if (textAfter === "seguir" || textAfter === "follow") afterIsFollowing = false;
+            btn = currentButton;
+            const state = followState(btn);
+            if (state !== null) afterIsFollowing = state;
         }
         
         if (afterIsFollowing !== beforeIsFollowing) break;

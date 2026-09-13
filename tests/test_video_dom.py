@@ -130,6 +130,32 @@ def test_initial_details_refresh_waits_for_delayed_video(page):
     assert result['author'] == '@ana'
 
 
+def test_tiktok_follow_status_is_unknown_without_an_explicit_control(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a></article>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("command('author')")
+
+    assert result['ok'] is True
+    assert result['author'] == '@ana (Não foi possível verificar se você segue)'
+
+
+def test_tiktok_follow_uses_explicit_accessible_state(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+      <button data-e2e="feed-follow" aria-label="Seguir @ana" aria-pressed="false"
+        style="width:80px;height:40px"
+        onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'false' ? 'true' : 'false')"></button>
+      </article>''')
+    install_embedded_tiktok(page)
+
+    assert page.evaluate("command('author')")['author'].endswith('(Não segue)')
+    assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': True}
+    assert page.evaluate("command('author')")['author'].endswith('(Você já segue)')
+    assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': False}
+
+
 def test_profile_link_ignores_video_permalink_before_author_link(page):
     page.set_content('''<div>
       <video id="active" style="width:600px;height:400px"></video>

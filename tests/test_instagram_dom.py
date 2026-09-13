@@ -146,6 +146,31 @@ def test_instagram_reads_only_active_reel_metadata(page):
     assert info["link"] == "https://www.instagram.com/reel/ABC_123/"
 
 
+def test_instagram_follow_status_is_unknown_without_an_explicit_control(page):
+    result = command(page, "author")
+
+    assert result["ok"] is True
+    assert result["author"] == "@ana (Não foi possível verificar se você segue)"
+
+
+def test_instagram_follow_uses_explicit_accessible_state(page):
+    page.locator("#active").evaluate('''root => {
+      const button = document.createElement('button');
+      button.id = 'follow';
+      button.setAttribute('aria-label', 'Seguir @ana');
+      button.setAttribute('aria-pressed', 'false');
+      button.onclick = () => button.setAttribute(
+        'aria-pressed', button.getAttribute('aria-pressed') === 'false' ? 'true' : 'false'
+      );
+      root.append(button);
+    }''')
+
+    assert command(page, "author")["author"].endswith("(Não segue)")
+    assert command(page, "toggle_follow") == {"ok": True, "state": True}
+    assert command(page, "author")["author"].endswith("(Você já segue)")
+    assert command(page, "toggle_follow") == {"ok": True, "state": False}
+
+
 def test_instagram_like_and_save_verify_state_and_target_inner_button(page):
     assert command(page, "toggle_like") == {"ok": True, "state": True}
     assert command(page, "toggle_like") == {"ok": True, "state": False}

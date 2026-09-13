@@ -134,6 +134,20 @@
       Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
   };
 
+  function followState(element) {
+    if (!element) return null;
+    const pressed = element.getAttribute("aria-pressed");
+    if (pressed === "true") return true;
+    if (pressed === "false") return false;
+    const value = [
+      element.getAttribute("aria-label"), element.getAttribute("title"),
+      element.getAttribute("data-state"), element.textContent
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+    if (/deixar de seguir|parar de seguir|\bunfollow\b|\bseguindo\b|\bfollowing\b/.test(value)) return true;
+    if (/\bseguir\b|\bfollow\b/.test(value)) return false;
+    return null;
+  }
+
   async function trustedClick(element, scroll = true) {
     if (!element || !element.isConnected) throw new Error("O controle desapareceu da página.");
     if (scroll) element.scrollIntoView({block: "center", inline: "center"});
@@ -797,17 +811,11 @@
           "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
           "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
         ];
-        let followStatus = " (Você já segue)";
+        let followStatus = " (Não foi possível verificar se você segue)";
         const btn = findNearVideo(FOLLOW_SELECTORS);
-        if (btn) {
-          const t = (btn.textContent || "").trim().toLowerCase();
-          const len = btn.innerHTML.trim().length;
-          if (t === "seguindo" || t === "following" || t === "mensagem" || t === "message" || (!t && len >= 450)) {
-            followStatus = " (Você já segue)";
-          } else if (t === "seguir" || t === "follow" || (!t && len < 450)) {
-            followStatus = " (Não segue)";
-          }
-        }
+        const state = followState(btn);
+        if (state === true) followStatus = " (Você já segue)";
+        else if (state === false) followStatus = " (Não segue)";
         info.author += followStatus;
       }
       if (action === "download_link") return {...info, media_url: downloadMedia(video, info.link || "")};
@@ -948,11 +956,6 @@
         "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
         "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
       ];
-      // On TikTok, unfollowing from the feed is sometimes not possible (no button),
-      // but following is. toggleAction handles the state reading via regex.
-      // undoPattern is the state where we ARE following.
-      // inactivePattern is the state where we are NOT following.
-      // Often the button just disappears when followed, but we'll try to rely on toggleAction or custom logic.
       const video = activeVideo();
       if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
       let btn = findNearVideo(FOLLOW_SELECTORS);
@@ -968,9 +971,10 @@
       }
       if (!btn) throw new Error("Botão de Seguir não encontrado. Pode ser seu próprio vídeo ou o botão não está visível neste feed.");
 
-      const textBefore = (btn.textContent || "").trim().toLowerCase();
-      const lenBefore = btn.innerHTML.trim().length;
-      const beforeIsFollowing = textBefore === "seguindo" || textBefore === "following" || textBefore === "mensagem" || textBefore === "message" || (!textBefore && lenBefore >= 450);
+      const beforeIsFollowing = followState(btn);
+      if (beforeIsFollowing === null) {
+        throw new Error("Não foi possível verificar o estado do botão Seguir. Use F6 para confirmar na página.");
+      }
       await trustedClick(btn);
       
       const deadline = Date.now() + 3500;
@@ -978,14 +982,14 @@
       while (Date.now() < deadline) {
         await sleep(150);
         // Re-query in case it was replaced
-        btn = findNearVideo(FOLLOW_SELECTORS) || btn;
-        if (!btn.isConnected || !visible(btn)) {
-            if (!beforeIsFollowing) afterIsFollowing = true;
+        const currentButton = findNearVideo(FOLLOW_SELECTORS);
+        if (!currentButton || !currentButton.isConnected || !visible(currentButton)) {
+          // TikTok commonly removes the Follow control after a successful follow.
+          if (!beforeIsFollowing) afterIsFollowing = true;
         } else {
-            const textAfter = (btn.textContent || "").trim().toLowerCase();
-            const lenAfter = btn.innerHTML.trim().length;
-            if (textAfter === "seguindo" || textAfter === "following" || textAfter === "mensagem" || textAfter === "message" || (!textAfter && lenAfter >= 450)) afterIsFollowing = true;
-            else if (textAfter === "seguir" || textAfter === "follow" || (!textAfter && lenAfter < 450)) afterIsFollowing = false;
+          btn = currentButton;
+          const state = followState(btn);
+          if (state !== null) afterIsFollowing = state;
         }
         if (afterIsFollowing !== beforeIsFollowing) break;
       }

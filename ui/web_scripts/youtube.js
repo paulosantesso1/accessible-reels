@@ -96,6 +96,19 @@
         return ancestors;
     }
 
+    function followState(element) {
+        if (!element) return null;
+        const pressed = element.getAttribute('aria-pressed');
+        if (pressed === 'true') return true;
+        if (pressed === 'false') return false;
+        const value = [
+            element.getAttribute('aria-label'), element.getAttribute('title'), element.textContent
+        ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (/cancelar inscri[cç][aã]o|\bunsubscribe\b|\binscrito\b|\bsubscribed\b/.test(value)) return true;
+        if (/inscrever-se|\bsubscribe\b/.test(value)) return false;
+        return null;
+    }
+
     // Tira a "foto" da tela capturando os dados
     function snapshot() {
         const video = activeVideo();
@@ -338,16 +351,16 @@
         else if (action === "author" || action === "description" || action === "copy_link" || action === "refresh_info" || action === "download_link") {
             const info = snapshot();
             if (action === "author") {
-                let followStatus = "";
+                let followStatus = " (Não foi possível verificar se você segue)";
                 const videoForAuthor = activeVideo();
                 if (videoForAuthor) {
                     const container = videoForAuthor.closest('ytd-reel-video-renderer') || videoForAuthor.parentElement;
                     if (container) {
                         const subBtn = container.querySelector('#subscribe-button button, ytd-subscribe-button-renderer button');
                         if (subBtn) {
-                            const btnText = (subBtn.textContent || subBtn.innerText || "").toLowerCase();
-                            if (btnText.includes("inscrito") || btnText.includes("subscribed")) followStatus = " (Você já segue)";
-                            else followStatus = " (Não segue)";
+                            const state = followState(subBtn);
+                            if (state === true) followStatus = " (Você já segue)";
+                            else if (state === false) followStatus = " (Não segue)";
                         }
                     }
                 }
@@ -405,17 +418,18 @@
             const btn = container.querySelector('#subscribe-button button, ytd-subscribe-button-renderer button');
             if (!btn) throw new Error("Botão de Inscrever-se não encontrado na tela.");
             
-            const textBefore = (btn.textContent || btn.innerText || "").toLowerCase();
-            const beforeIsFollowing = textBefore.includes("inscrito") || textBefore.includes("subscribed");
+            const beforeIsFollowing = followState(btn);
+            if (beforeIsFollowing === null) {
+                throw new Error("Não foi possível verificar o estado do botão Inscrever-se. Use F6 para confirmar na página.");
+            }
             btn.click();
             
             const deadline = Date.now() + 3500;
             let afterIsFollowing = beforeIsFollowing;
             while (Date.now() < deadline) {
                 await sleep(150);
-                const textAfter = (btn.textContent || btn.innerText || "").toLowerCase();
-                if (textAfter.includes("inscrito") || textAfter.includes("subscribed")) afterIsFollowing = true;
-                else if (textAfter.includes("inscrever-se") || textAfter.includes("subscribe")) afterIsFollowing = false;
+                const state = followState(btn);
+                if (state !== null) afterIsFollowing = state;
                 
                 if (afterIsFollowing !== beforeIsFollowing) break;
             }

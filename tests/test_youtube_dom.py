@@ -101,3 +101,33 @@ def test_youtube_profile_is_canonicalized_from_channel_shorts_link(page):
 
     assert result['ok'] is True
     assert result['profile_url'] == 'https://www.youtube.com/@canal/shorts'
+
+
+def test_youtube_follow_status_is_unknown_without_an_explicit_control(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = `
+        <div style="width:500px;height:650px">
+          <video id="active"></video><ytd-channel-name>@canal</ytd-channel-name>
+        </div>`;
+    }''')
+
+    result = command(page, 'author')
+
+    assert result['ok'] is True
+    assert result['author'] == '@canal (Não foi possível verificar se você segue)'
+
+
+def test_youtube_follow_uses_explicit_accessible_state(page):
+    page.evaluate('''() => {
+      document.body.innerHTML = `
+        <ytd-reel-video-renderer style="display:block;width:500px;height:650px">
+          <video id="active"></video><ytd-channel-name>@canal</ytd-channel-name>
+          <div id="subscribe-button"><button aria-label="Inscrever-se em @canal" aria-pressed="false"
+            onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'false' ? 'true' : 'false')"></button></div>
+        </ytd-reel-video-renderer>`;
+    }''')
+
+    assert command(page, 'author')['author'].endswith('(Não segue)')
+    assert command(page, 'toggle_follow') == {'ok': True, 'state': True}
+    assert command(page, 'author')['author'].endswith('(Você já segue)')
+    assert command(page, 'toggle_follow') == {'ok': True, 'state': False}
