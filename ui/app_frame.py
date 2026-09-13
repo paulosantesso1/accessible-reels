@@ -1123,6 +1123,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if result.get('ignored'):
             return
         if name == 'TikTok' and action == 'profile_follow':
+            if result.get('ok') is True:
+                logger.info('TikTok profile follow verification completed: state=%s', result.get('state'))
+            else:
+                logger.warning('TikTok profile follow verification failed: %s', result.get('error'))
             self._finish_tiktok_follow_verification(result)
             return
         if result.get('ok') is not True:

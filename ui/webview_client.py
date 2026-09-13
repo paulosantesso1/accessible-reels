@@ -133,16 +133,24 @@ class WebViewClient:
         def checked(value, error):
             if not self.alive or generation != self.generation:
                 return
+            document_ready = value is True and not error
+            if (document_ready and self.after_load and self._after_load_expected_url
+                    and not same_page_target(self.view.GetCurrentURL(), self._after_load_expected_url)):
+                logger.info(
+                    'Ignoring loaded event before checked destination: platform=%s current=%s expected=%s',
+                    self.platform, self.view.GetCurrentURL(), self._after_load_expected_url,
+                )
+                return
             was_ready = self.ready
-            self.ready = value is True and not error
+            self.ready = document_ready
             if self.ready:
+                self.set_active(self.active)
+                if not was_ready:
+                    self.on_loaded()
                 self._retry_url = None
                 self._retry_after_load = None
                 self._retry_expected_url = None
                 self._retry_unexpected = None
-                self.set_active(self.active)
-                if not was_ready:
-                    self.on_loaded()
                 if self.after_load:
                     callback, self.after_load = self.after_load, None
                     self._after_load_expected_url = None
@@ -159,6 +167,17 @@ class WebViewClient:
 
     def _error(self, event):
         if event.GetTarget() not in ('', '_self', '_top'):
+            return
+        # WebView2 can report a late navigation/resource failure after the top
+        # document is already interactive. At that point the bridge is usable;
+        # treating the event as a page failure would cancel an in-flight social
+        # action and reload a page that is working.
+        current_url = self.view.GetCurrentURL()
+        if self.ready and belongs_to_platform(current_url, self.platform):
+            logger.info(
+                'Ignoring WebView load error after page became ready: platform=%s current=%s target=%s',
+                self.platform, current_url, event.GetTarget(),
+            )
             return
         # A platform can transiently reject a direct video URL immediately
         # after search. Retry that one explicit result navigation once,

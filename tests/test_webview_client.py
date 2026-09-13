@@ -94,6 +94,42 @@ def test_second_failed_result_navigation_reports_the_platform_error():
     client.on_error.assert_called_once_with('A plataforma recusou carregar esta página. Tente outro resultado ou recarregue.')
 
 
+def test_late_load_error_does_not_cancel_a_command_on_a_ready_page():
+    client = make_client()
+    client.view.GetCurrentURL.return_value = 'https://www.tiktok.com/@ana'
+    client.ready = True
+    callback = Mock()
+    client.pending = {'callback': callback, 'timer': Mock(), 'token': 'token'}
+    client._retry_url = 'https://www.tiktok.com/@ana'
+    event = Mock()
+    event.GetTarget.return_value = ''
+
+    with patch('ui.webview_client.wx.CallLater') as call_later:
+        client._error(event)
+
+    assert client.pending is not None
+    callback.assert_not_called()
+    call_later.assert_not_called()
+    client.on_error.assert_not_called()
+
+
+def test_loaded_event_waits_for_the_checked_destination_url():
+    client = make_client()
+    expected = 'https://www.tiktok.com/@ana/video/123'
+    callback = Mock()
+    client.after_load = callback
+    client._after_load_expected_url = expected
+    client.view.GetCurrentURL.return_value = 'https://www.tiktok.com/@ana'
+
+    with patch('ui.webview_client.webview_native.evaluate') as evaluate:
+        client._loaded(Mock())
+        evaluate.call_args.args[2](True, None)
+
+    callback.assert_not_called()
+    assert client.after_load is callback
+    assert client.ready is False
+
+
 def test_command_recovers_when_cached_ready_flag_is_false():
     client = make_client()
     callback = Mock()
