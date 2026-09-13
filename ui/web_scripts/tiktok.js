@@ -969,7 +969,12 @@
           if (btn) break;
         }
       }
-      if (!btn) throw new Error("Botão de Seguir não encontrado. Pode ser seu próprio vídeo ou o botão não está visível neste feed.");
+      if (!btn) {
+        throw new Error(
+          "O TikTok não mostra um controle de seguimento neste feed. " +
+          "Pode ser seu próprio vídeo; para deixar de seguir, use F6 e abra o perfil diretamente na página."
+        );
+      }
 
       const beforeIsFollowing = followState(btn);
       if (beforeIsFollowing === null) {

@@ -156,6 +156,22 @@ def test_tiktok_follow_uses_explicit_accessible_state(page):
     assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': False}
 
 
+def test_tiktok_follow_explains_how_to_unfollow_when_control_disappears(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+      <button data-e2e="feed-follow" aria-label="Seguir @ana" aria-pressed="false"
+        style="width:80px;height:40px" onclick="this.remove()"></button>
+      </article>''')
+    install_embedded_tiktok(page)
+
+    assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': True}
+    result = page.evaluate("command('toggle_follow')")
+
+    assert result['ok'] is False
+    assert 'F6' in result['error']
+    assert 'abra o perfil diretamente' in result['error']
+
+
 def test_profile_link_ignores_video_permalink_before_author_link(page):
     page.set_content('''<div>
       <video id="active" style="width:600px;height:400px"></video>
