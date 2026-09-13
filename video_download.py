@@ -137,6 +137,10 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
     exe_path = root_dir / exe_name
     
     if not exe_path.is_file():
+        if frozen:
+            raise VideoDownloadError(
+                'O motor de downloads incluído não foi encontrado. Reinstale o Accessible Reels.'
+            )
         exe_path = exe_name
     else:
         exe_path = str(exe_path)

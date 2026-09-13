@@ -148,6 +148,15 @@ def test_subprocess_fails_gracefully(tmp_path):
             download_video("https://www.tiktok.com/@user/video/123", "TikTok", tmp_path)
 
 
+def test_frozen_app_does_not_fall_back_to_path_when_ytdlp_bundle_is_missing(tmp_path):
+    with patch("sys.frozen", True, create=True), patch("sys.executable", str(tmp_path / "Accessible Reels.exe")), \
+         patch("subprocess.Popen") as popen:
+        with pytest.raises(VideoDownloadError, match="motor de downloads incluído não foi encontrado"):
+            download_video("https://www.youtube.com/shorts/AbCdEfGhI_j", "YouTube", tmp_path / "videos")
+
+    popen.assert_not_called()
+
+
 def test_ytdlp_update_raises_when_process_returns_failure():
     process = Mock(returncode=1, stdout='', stderr='arquivo sem permissão')
     with patch('subprocess.run', return_value=process):
