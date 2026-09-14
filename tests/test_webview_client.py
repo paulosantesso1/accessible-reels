@@ -16,6 +16,27 @@ def make_client(platform='TikTok'):
     return WebViewClient(view, platform, Mock(), Mock())
 
 
+def test_background_silence_and_focus_are_installed_before_first_navigation():
+    view = Mock()
+    client = WebViewClient(view, 'TikTok', Mock(), Mock(), prelude='/* SILENT */',
+                           before_load=lambda: view.SetCanFocus(False))
+    client.initialize()
+    calls = [call[0] for call in view.mock_calls]
+    assert calls.index('SetCanFocus') < calls.index('LoadURL')
+    assert calls.index('AddUserScript') < calls.index('LoadURL')
+    assert view.AddUserScript.call_args.args[0].startswith('/* SILENT */')
+
+
+def test_failed_silence_installation_does_not_load_auxiliary_profile():
+    view = Mock()
+    view.AddUserScript.return_value = False
+    failed = Mock()
+    client = WebViewClient(view, 'TikTok', Mock(), failed, prelude='/* SILENT */')
+    client.initialize()
+    view.LoadURL.assert_not_called()
+    failed.assert_called_once()
+
+
 def test_unnamed_child_navigation_does_not_disable_controls():
     client = make_client()
     client.ready = True
@@ -36,9 +57,12 @@ def test_main_navigation_cancels_pending_command():
     client.pending = {'callback': callback, 'timer': Mock()}
     event = Mock()
     event.IsTargetMainFrame.return_value = True
-    client._navigating(event)
+    with patch('ui.webview_client.wx.CallAfter') as deferred:
+        client._navigating(event)
+    callback.assert_not_called()
     assert client.generation == 1
     assert client.pending is None
+    deferred.call_args.args[0]()
     assert callback.call_args.args[0]['ok'] is False
 
 
@@ -140,6 +164,34 @@ def test_command_recovers_when_cached_ready_flag_is_false():
         assert '__accessibleRun' in script
         evaluate.call_args.args[2]({'ok': True, 'paused': True}, None)
     callback.assert_called_once_with({'ok': True, 'paused': True})
+
+
+def test_old_retry_cannot_replace_a_new_navigation():
+    client = make_client()
+    client.navigate('https://www.tiktok.com/@ana')
+    event = Mock()
+    event.GetTarget.return_value = ''
+    with patch('ui.webview_client.wx.CallLater') as later:
+        client._error(event)
+    retry = later.call_args.args[1]
+    client.navigate('https://www.tiktok.com/@ana/video/123')
+    client.view.LoadURL.reset_mock()
+    retry()
+    client.view.LoadURL.assert_not_called()
+
+
+def test_load_error_preserves_recovery_started_by_command_callback():
+    client = make_client()
+    returned = Mock()
+    def cancelled(result):
+        client.navigate('https://www.tiktok.com/@ana/video/123', returned)
+    client.pending = {'callback': cancelled, 'timer': Mock()}
+    event = Mock()
+    event.GetTarget.return_value = ''
+    client._error(event)
+    assert client.after_load is returned
+    assert client._retry_url == 'https://www.tiktok.com/@ana/video/123'
+    client.on_error.assert_not_called()
 
 
 def test_inactive_network_does_not_execute_commands():

@@ -259,8 +259,8 @@ def test_tiktok_profile_follow_reports_captcha_without_clicking(page):
     })""")
 
     assert result['ok'] is False
-    assert 'Após retornar ao vídeo' in result['error']
-    assert 'repita a ação' in result['error']
+    assert 'exige uma verificação' in result['error']
+    assert 'Não foi possível confirmar' in result['error']
 
 
 def test_profile_link_ignores_video_permalink_before_author_link(page):

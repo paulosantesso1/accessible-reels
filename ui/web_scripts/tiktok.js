@@ -194,14 +194,14 @@
 
   function interactionBlocked() {
     if (document.querySelector(".secsdk-captcha-wrapper, [data-e2e*='captcha' i]")) {
-      return "O TikTok exige uma verificação. Após retornar ao vídeo, use F6, conclua-a na página e repita a ação.";
+      return "O TikTok exige uma verificação para esta conta. Não foi possível confirmar o seguimento.";
     }
     const text = normalizedText(document.body?.innerText).toLowerCase();
     if (/too many requests|muitas solicita[cç][oõ]es/.test(text)) {
       return "O TikTok limitou temporariamente esta ação. Tente novamente mais tarde.";
     }
     if (/\/login/.test(location.pathname)) {
-      return "É preciso entrar no TikTok. Após retornar ao vídeo, use F6, faça login na página e repita a ação.";
+      return "É preciso entrar no TikTok. Use F6 para verificar o login e repita a ação.";
     }
     return "";
   }

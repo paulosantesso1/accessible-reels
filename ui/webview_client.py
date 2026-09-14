@@ -66,8 +66,10 @@ def scripts_for(platform):
 
 
 class WebViewClient:
-    def __init__(self, view, platform, on_loaded, on_error):
+    def __init__(self, view, platform, on_loaded, on_error, *, prelude='', before_load=None):
         self.view, self.platform = view, platform
+        self.prelude = prelude
+        self.before_load = before_load
         self.on_loaded, self.on_error = on_loaded, on_error
         self.generation = 0
         self.pending = None
@@ -93,7 +95,10 @@ class WebViewClient:
         """Install scripts after Create; some wx builds emit CREATED before Python binds."""
         if self.ready or getattr(self, '_initialized', False):
             return
-        if not self.view.AddScriptMessageHandler('reelsHost') or not self.view.AddUserScript(scripts_for(self.platform)):
+        if self.before_load:
+            self.before_load()
+        if not self.view.AddScriptMessageHandler('reelsHost') or not self.view.AddUserScript(
+                self.prelude + '\n' + scripts_for(self.platform)):
             self.on_error('Não foi possível preparar os controles da página.')
             return
         self._initialized = True
@@ -121,7 +126,16 @@ class WebViewClient:
                 wx.CallAfter(unexpected, event.GetURL())
         self.generation += 1
         self.ready = False
-        self._cancel('A página mudou. Confira o vídeo antes de repetir a ação.')
+        logger.info('Main navigation: platform=%s destination=%s action=%s',
+                    self.platform, event.GetURL(), self.pending.get('action') if self.pending else None)
+        # Invalidate immediately, but deliver cancellation after the native
+        # navigation event. Its callback may navigate back to the video.
+        pending, self.pending = self.pending, None
+        if pending:
+            pending['timer'].Stop()
+            wx.CallAfter(lambda: pending['callback']({
+                'ok': False, 'error': 'A página mudou. Confira o vídeo antes de repetir a ação.'
+            }) if self.alive else None)
         event.Skip()
 
     def _loaded(self, event):
@@ -168,6 +182,9 @@ class WebViewClient:
     def _error(self, event):
         if event.GetTarget() not in ('', '_self', '_top'):
             return
+        logger.warning('WebView navigation error: platform=%s url=%s code=%s detail=%s current=%s',
+                       self.platform, event.GetURL(), event.GetInt(), event.GetString(),
+                       self.view.GetCurrentURL())
         # WebView2 can report a late navigation/resource failure after the top
         # document is already interactive. At that point the bridge is usable;
         # treating the event as a page failure would cancel an in-flight social
@@ -186,9 +203,11 @@ class WebViewClient:
             self._retry_attempted = True
             url, after_load = self._retry_url, self._retry_after_load
             expected_url, unexpected = self._retry_expected_url, self._retry_unexpected
+            retry_generation = self.generation
             logger.warning('WebView load error: platform=%s; retrying result navigation once', self.platform)
             def retry():
-                if self.alive:
+                if (self.alive and self.generation == retry_generation
+                        and self._retry_url == url and not self.ready):
                     self.generation += 1
                     self.ready = False
                     self._cancel('Navegação repetida após falha temporária.')
@@ -198,7 +217,9 @@ class WebViewClient:
                     self.view.LoadURL(url)
             wx.CallLater(1200, retry)
             return
-        self._cancel('Falha ao carregar a página. Tente recarregar.')
+        # Clear failed-navigation state before notifying callers, which can
+        # synchronously start a recovery navigation with its own callback.
+        pending, self.pending = self.pending, None
         self.after_load = None
         self._after_load_expected_url = None
         self._after_load_unexpected = None
@@ -207,6 +228,10 @@ class WebViewClient:
         self._retry_expected_url = None
         self._retry_unexpected = None
         logger.warning('WebView load error: platform=%s target=%s', self.platform, event.GetTarget())
+        if pending:
+            pending['timer'].Stop()
+            pending['callback']({'ok': False, 'error': 'Falha ao carregar a página. Tente recarregar.'})
+            return
         self.on_error('A plataforma recusou carregar esta página. Tente outro resultado ou recarregue.')
 
     def navigate(self, url, after_load=None, *, expected_url=None, on_unexpected=None):
