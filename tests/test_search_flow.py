@@ -18,6 +18,28 @@ def mock_frame():
     return frame
 
 
+def test_social_login_popup_is_opened_separately_from_the_platform_page():
+    frame = mock_frame()
+    event = Mock()
+    event.GetURL.return_value = 'https://accounts.google.com/o/oauth2/auth'
+
+    MainFrame.new_window(frame, event)
+
+    frame._open_login_window.assert_called_once_with(event.GetURL())
+    event.GetEventObject().LoadURL.assert_not_called()
+
+
+def test_non_https_popup_is_not_opened():
+    frame = mock_frame()
+    event = Mock()
+    event.GetURL.return_value = 'mailto:help@example.com'
+
+    MainFrame.new_window(frame, event)
+
+    frame._open_login_window.assert_not_called()
+    frame.status.assert_called_once()
+
+
 @pytest.mark.parametrize('platform', ['TikTok', 'Instagram'])
 def test_search_collection_is_not_dropped_by_automatic_refresh(platform):
     frame = mock_frame()

@@ -18,7 +18,7 @@ from app_logging import get_logger, log_directory
 from webview_runtime import backend_version
 from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
 from ui.download_controls import DownloadControlsMixin
-from ui.webview_client import WebViewClient, PLATFORM_URLS
+from ui.webview_client import WebViewClient, PLATFORM_URLS, belongs_to_platform
 from ui.video_link import parse_video_link
 from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
@@ -206,6 +206,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._active_name = 'TikTok'
         self._pending_page_focus = None
         self._closing_app = False
+        self._login_windows = set()
         self.initialize_downloads()
         self._update_checking = False
         self._registered_hotkeys = set()
@@ -896,10 +897,49 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
 
     def new_window(self, event):
-        if urlsplit(event.GetURL()).scheme == 'https':
-            event.GetEventObject().LoadURL(event.GetURL())
-        else:
+        url = event.GetURL()
+        if urlsplit(url).scheme != 'https':
             self.status('Esse link exige um aplicativo externo e não foi aberto.')
+            return
+        self._open_login_window(url)
+
+    def _open_login_window(self, url):
+        """Open an OAuth popup without replacing the platform page that requested it."""
+        platform = self._active_name
+        popup = wx.Frame(self, title='Entrar na conta', size=(520, 760))
+        view = html2.WebView.New(backend=html2.WebViewBackendEdge)
+        if view is None or not view.Create(popup):
+            popup.Destroy()
+            self.status('Não foi possível abrir a janela de login.')
+            return
+        content = wx.BoxSizer(wx.VERTICAL)
+        content.Add(view, 1, wx.EXPAND)
+        popup.SetSizer(content)
+        state = {'finished': False}
+        self._login_windows.add(popup)
+
+        def returned_to_platform(loaded_event):
+            if state['finished'] or self._closing_app:
+                loaded_event.Skip()
+                return
+            if belongs_to_platform(view.GetCurrentURL(), platform):
+                state['finished'] = True
+                main_view = self.views.get(platform)
+                if main_view:
+                    main_view.Reload()
+                self.status('Login concluído na página. Atualizando a plataforma...')
+                wx.CallAfter(popup.Close)
+            loaded_event.Skip()
+
+        def closed(close_event):
+            self._login_windows.discard(popup)
+            close_event.Skip()
+
+        view.Bind(html2.EVT_WEBVIEW_NEWWINDOW, self.new_window)
+        view.Bind(html2.EVT_WEBVIEW_LOADED, returned_to_platform)
+        popup.Bind(wx.EVT_CLOSE, closed)
+        popup.Show()
+        view.LoadURL(url)
 
     def dispatch(self, action, argument=None):
         if action == 'exit':
@@ -1320,6 +1360,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _closing(self, event):
         self._closing_app = True
+        for popup in tuple(self._login_windows):
+            popup.Destroy()
+        self._login_windows.clear()
         transfer = getattr(self, '_browser_download', None)
         if transfer:
             transfer.finish(None, 'Aplicativo fechado.')
