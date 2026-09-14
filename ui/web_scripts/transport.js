@@ -24,7 +24,10 @@
           const id = ++clickId;
           const timeout = setTimeout(() => { waiting.delete(id); resolve({ok:false, error:'O clique não respondeu a tempo.'}); }, 5000);
           waiting.set(id, result => { clearTimeout(timeout); resolve(result); });
-          window.reelsHost.postMessage(JSON.stringify({type:'click', token:commandToken, id, x:message.x, y:message.y}));
+          window.reelsHost.postMessage(JSON.stringify({
+            type:'click', token:commandToken, id, x:message.x, y:message.y,
+            follow_diagnostic: message.follow_diagnostic
+          }));
         });
       }
     }

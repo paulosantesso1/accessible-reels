@@ -32,7 +32,7 @@ ACCELERATOR_SPECS = (
     ("open_comments", wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C")),
     ("toggle_like", wx.ACCEL_ALT, ord("L")),
     ("toggle_favorite", wx.ACCEL_ALT, ord("F")),
-    ("toggle_follow", wx.ACCEL_ALT, ord("G")),
+    ("read_follow_status", wx.ACCEL_ALT, ord("G")),
     ("open_profile", wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("P")),
 )
 

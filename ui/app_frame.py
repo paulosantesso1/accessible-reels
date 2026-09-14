@@ -29,7 +29,7 @@ from tiktok.video_controls import VideoControlError
 from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
-            'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
+            'read_author':'author', 'read_follow_status':'author', 'read_description':'description', 'open_comments':'comments'}
 logger = get_logger()
 
 
@@ -163,14 +163,14 @@ def keyboard_help_text():
         'Alt+Shift+M — Ativar ou desativar o mudo\n'
         'F2 — Abrir configurações\n'
         'F5 — Atualizar autor e descrição\n'
-        'Alt+A — Ler autor e verificar se você o segue; no TikTok, a consulta ocorre em segundo plano\n'
+        'Alt+A — Ler autor\n'
         'Alt+D — Ler descrição\n'
         'Alt+C — Copiar link\n'
         'Ctrl+B — Baixar vídeo atual na pasta de downloads\n'
         'Alt+Shift+C — Comentários\n'
         'Alt+L — Curtir ou descurtir\n'
         'Alt+F — Adicionar ou remover dos favoritos\n'
-        'Alt+G — Seguir ou deixar de seguir o autor; no TikTok, sem sair do vídeo\n'
+        'Alt+G — Informar se você segue o autor\n'
         'Alt+E — Pesquisar vídeos\n'
         'Ctrl+R — Voltar aos resultados da pesquisa\n'
         'Ctrl+Home — Voltar ao feed\n'
@@ -915,7 +915,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             finally:
                 dlg.Destroy()
             return
-        if action in ('read_author', 'toggle_follow') and self._tiktok_follow_verification_active():
+        if action in ('read_follow_status', 'toggle_follow') and self._tiktok_follow_verification_active():
             self.status('Aguarde a verificação do estado de seguimento terminar.')
             return
         if action in ('post_comment', 'reply_comment'):
@@ -930,7 +930,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         name = self._active_name
         client = self.clients[name]
-        
+
         if action == 'open_profile':
             profile_url = self.platform_data.get(name, {}).get('profile_url')
             if not profile_url:
@@ -992,7 +992,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _start_tiktok_follow_verification(self, action, result):
         """Keep the player document intact while inspecting the author's profile."""
-        if self._active_name != 'TikTok' or action not in ('read_author', 'toggle_follow'):
+        if self._active_name != 'TikTok' or action not in ('read_follow_status', 'toggle_follow'):
             return False
         from ui.background_follow import BackgroundFollow
         data = self.platform_data['TikTok']
@@ -1005,6 +1005,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             'toggle': action == 'toggle_follow',
             'expected_state': result.get('expected_state'),
             'author': result.get('author') or 'este autor',
+            'read_for_feed_click': action == 'toggle_follow' and result.get('needs_follow_state'),
+            'status_only': action == 'read_follow_status',
         }
         data['follow_verification'] = context
 
@@ -1014,6 +1016,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._finish_tiktok_follow_verification(result)
 
         try:
+            # TikTok accepts the social gesture in the visible feed, not in
+            # a hidden WebView. The profile is used only to read a missing
+            # state; the actual click always returns to the active video.
             worker = BackgroundFollow(self, profile_url, False, completed)
             context['worker'] = worker
             worker.start()
@@ -1031,6 +1036,29 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             worker.close()
         author = context['author']
         state = result.get('state')
+        if context.get('status_only'):
+            if result.get('ok') is True and isinstance(state, bool):
+                message = f'Você segue {author}.' if state else f'Você não segue {author}.'
+            else:
+                message = result.get('error') or 'Não foi possível confirmar o estado de seguimento.'
+            self.platform_data['TikTok']['last_follow_message'] = message
+            if not self._closing_app:
+                self.status(message)
+            return
+        if context.get('read_for_feed_click'):
+            if result.get('ok') is not True or not isinstance(state, bool):
+                message = result.get('error') or 'Não foi possível confirmar o estado de seguimento.'
+            else:
+                client = self.clients.get('TikTok')
+                if client and not client.pending:
+                    client.execute('toggle_follow', {'known_follow_state': state},
+                                   lambda response: self._result('TikTok', 'toggle_follow', None, response))
+                    return
+                message = 'O vídeo ainda está carregando. Tente novamente em alguns instantes.'
+            self.platform_data['TikTok']['last_follow_message'] = message
+            if not self._closing_app:
+                self.status(message)
+            return
         if result.get('ok') is True and isinstance(state, bool):
             if context['toggle']:
                 if state is context.get('expected_state'):
@@ -1090,8 +1118,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 data['result_index'] = 0
         if active:
             self._restore_fields()
-        if (name == 'TikTok' and action in ('read_author', 'toggle_follow')
+        if name == 'TikTok' and action == 'read_follow_status':
+            if self._start_tiktok_follow_verification(action, result):
+                self.status('Um momento, consultando se você segue.')
+                return
+        if (name == 'TikTok' and action == 'toggle_follow'
                 and self._start_tiktok_follow_verification(action, result)):
+            self.status('Um momento, alterando o seguimento de ' +
+                        data.get('author', 'este autor') + '.')
             return
         message = 'Comando concluído.'
         if action in SEEK_SECONDS:
@@ -1101,14 +1135,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = None
         elif action == 'read_author':
             message = 'Autor: ' + data.get('author', 'Não encontrado')
-            if name == 'TikTok':
-                state = result.get('follow_state')
-                if state is True:
-                    message += ' (Você já segue)'
-                elif state is False:
-                    message += ' (Você não segue)'
-                else:
-                    message += ' (Não foi possível verificar se você segue)'
+        elif action == 'read_follow_status':
+            message = 'Status de seguimento: ' + data.get('author', 'Não encontrado')
         elif action == 'read_description':
             message = 'Descrição: ' + data.get('description', 'Não encontrada')
         elif action == 'copy_link' and active:

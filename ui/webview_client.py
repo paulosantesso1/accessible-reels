@@ -317,6 +317,13 @@ class WebViewClient:
                 return
         except (TypeError, ValueError, AttributeError):
             return
+        if self.pending['action'] == 'toggle_follow' and isinstance(value.get('follow_diagnostic'), dict):
+            diagnostic = value['follow_diagnostic']
+            logger.info(
+                'TikTok follow click diagnostic: target=%s hit=%s inside_target=%s path=%s',
+                diagnostic.get('target'), diagnostic.get('hit'),
+                diagnostic.get('hit_inside_target'), diagnostic.get('path'),
+            )
         self.pending['clicks'].add(identifier)
         token, generation = self.pending['token'], self.generation
         def valid():

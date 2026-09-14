@@ -205,6 +205,7 @@ def test_follow_verification_uses_auxiliary_page_without_touching_player():
     with patch('ui.background_follow.BackgroundFollow') as worker:
         assert MainFrame._start_tiktok_follow_verification(frame, 'toggle_follow', {
             'author': '@ana', 'profile_url': 'https://www.tiktok.com/@ana',
+            'follow_click_sent': True,
         })
     worker.return_value.start.assert_called_once()
     assert worker.call_args.args[1:3] == ('https://www.tiktok.com/@ana', False)
@@ -213,7 +214,54 @@ def test_follow_verification_uses_auxiliary_page_without_touching_player():
     frame.focus_controls.assert_not_called()
 
 
-def test_tiktok_follow_shortcut_clicks_in_player():
+def test_unknown_feed_button_reads_state_before_clicking_the_feed():
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    frame.clients = {'TikTok': Mock()}
+    with patch('ui.background_follow.BackgroundFollow') as worker:
+        assert MainFrame._start_tiktok_follow_verification(frame, 'toggle_follow', {
+            'author': '@ana', 'profile_url': 'https://www.tiktok.com/@ana',
+            'follow_click_sent': False,
+        })
+
+    assert worker.call_args.args[1:3] == ('https://www.tiktok.com/@ana', False)
+
+
+def test_verified_state_retries_the_feed_click():
+    frame = mock_frame()
+    frame._closing_app = False
+    worker = Mock()
+    client = Mock(pending=None)
+    frame.clients = {'TikTok': client}
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'toggle': True, 'author': '@ana', 'worker': worker, 'read_for_feed_click': True,
+    }}}
+
+    MainFrame._finish_tiktok_follow_verification(frame, {'ok': True, 'state': False})
+
+    client.execute.assert_called_once()
+    assert client.execute.call_args.args[:2] == ('toggle_follow', {'known_follow_state': False})
+
+
+def test_profile_follow_announces_that_the_change_is_in_progress():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {}}
+    frame._restore_fields = Mock()
+    frame._start_tiktok_follow_verification.return_value = True
+    result = {
+        'ok': True, 'author': '@ana', 'profile_url': 'https://www.tiktok.com/@ana',
+        'follow_click_sent': False,
+    }
+
+    MainFrame._result(frame, 'TikTok', 'toggle_follow', None, result)
+
+    frame.status.assert_called_once_with('Um momento, alterando o seguimento de @ana.')
+
+
+def test_tiktok_follow_shortcut_stays_in_player():
     frame = mock_frame()
     frame._active_name = 'TikTok'
     frame.platform_data = {'TikTok': {}}
@@ -248,11 +296,10 @@ def test_background_follow_reports_once_and_keeps_player(toggle, state, message)
     frame.clients['TikTok'].navigate.assert_not_called()
 
 
-def test_unknown_feed_follow_state_starts_profile_verification():
+def test_read_author_does_not_start_follow_verification():
     frame = Mock()
     frame._active_name = 'TikTok'
     frame.platform_data = {'TikTok': {}}
-    frame._start_tiktok_follow_verification.return_value = True
     result = {
         'ok': True,
         'author': '@ana',
@@ -265,8 +312,55 @@ def test_unknown_feed_follow_state_starts_profile_verification():
     MainFrame._result(frame, 'TikTok', 'read_author', None, result)
 
     assert frame.platform_data['TikTok']['author'] == '@ana'
-    frame._start_tiktok_follow_verification.assert_called_once_with('read_author', result)
-    frame.status.assert_not_called()
+    frame._start_tiktok_follow_verification.assert_not_called()
+    frame.status.assert_called_once_with('Autor: @ana')
+
+
+def test_known_feed_follow_state_announces_author_without_profile_query():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {}}
+    frame._restore_fields = Mock()
+    result = {
+        'ok': True,
+        'author': '@ana',
+        'profile_url': 'https://www.tiktok.com/@ana',
+        'follow_state': True,
+        'needs_profile_follow': False,
+    }
+
+    MainFrame._result(frame, 'TikTok', 'read_author', None, result)
+
+    frame.status.assert_called_once_with('Autor: @ana')
+    frame._start_tiktok_follow_verification.assert_not_called()
+
+
+def test_follow_status_starts_a_background_query_without_clicking():
+    frame = Mock()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    frame._start_tiktok_follow_verification.return_value = True
+    result = {
+        'ok': True, 'author': '@ana', 'profile_url': 'https://www.tiktok.com/@ana',
+    }
+
+    MainFrame._result(frame, 'TikTok', 'read_follow_status', None, result)
+
+    frame._start_tiktok_follow_verification.assert_called_once_with('read_follow_status', result)
+    frame.status.assert_called_once_with('Um momento, consultando se você segue.')
+
+
+def test_follow_status_reports_the_verified_state():
+    frame = mock_frame()
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'toggle': False, 'status_only': True, 'author': '@ana', 'worker': Mock(),
+    }}}
+
+    MainFrame._finish_tiktok_follow_verification(frame, {'ok': True, 'state': True})
+
+    frame.status.assert_called_once_with('Você segue @ana.')
 
 
 def test_visible_follow_click_is_not_success_when_profile_disagrees():

@@ -1,4 +1,5 @@
 from unittest.mock import Mock, patch
+import json
 
 import pytest
 
@@ -64,6 +65,29 @@ def test_main_navigation_cancels_pending_command():
     assert client.pending is None
     deferred.call_args.args[0]()
     assert callback.call_args.args[0]['ok'] is False
+
+
+def test_follow_click_diagnostic_is_logged_without_labels_or_text():
+    client = make_client()
+    client.view.GetClientSize.return_value = (800, 600)
+    client.pending = {'token': 'token', 'clicks': set(), 'action': 'toggle_follow'}
+    event = Mock()
+    event.GetURL.return_value = 'https://www.tiktok.com/'
+    event.GetString.return_value = json.dumps({
+        'type': 'click', 'token': 'token', 'id': 1, 'x': 100, 'y': 200,
+        'follow_diagnostic': {
+            'target': {'tag': 'button', 'data_e2e': 'feed-follow'},
+            'hit': {'tag': 'svg'}, 'hit_inside_target': True,
+            'path': [{'tag': 'svg'}, {'tag': 'button', 'data_e2e': 'feed-follow'}],
+        },
+    })
+
+    with patch('ui.webview_client.webview_native.click') as click, \
+         patch('ui.webview_client.logger.info') as logged:
+        client._message(event)
+
+    logged.assert_called_once()
+    click.assert_called_once()
 
 
 def test_checked_navigation_cancels_callback_on_a_different_profile():

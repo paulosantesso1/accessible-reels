@@ -272,7 +272,22 @@
     throw new Error("O TikTok não confirmou a alteração do estado de seguimento.");
   }
 
-  async function trustedClick(element, scroll = true) {
+  function followClickDiagnostic(target, x, y) {
+    const describe = element => element ? {
+      tag: element.tagName.toLowerCase(),
+      role: element.getAttribute("role") || "",
+      data_e2e: element.getAttribute("data-e2e") || "",
+      classes: [...element.classList].slice(0, 4).join(" ")
+    } : null;
+    const hit = document.elementFromPoint(x, y);
+    const path = [];
+    for (let element = hit; element && path.length < 4; element = element.parentElement) {
+      path.push(describe(element));
+    }
+    return {target: describe(target), hit: describe(hit), hit_inside_target: Boolean(hit && target.contains(hit)), path};
+  }
+
+  async function trustedClick(element, scroll = true, diagnostic = false) {
     if (!element || !element.isConnected) throw new Error("O controle desapareceu da página.");
     if (scroll) element.scrollIntoView({block: "center", inline: "center"});
     await sleep(80);
@@ -280,7 +295,9 @@
     const response = await transport.runtime.sendMessage({
       type: "accessible-reels-trusted-click",
       x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2
+      y: rect.top + rect.height / 2,
+      follow_diagnostic: diagnostic ? followClickDiagnostic(element,
+        rect.left + rect.width / 2, rect.top + rect.height / 2) : undefined
     });
     if (!response || response.ok !== true) {
       throw new Error(response && response.error ? response.error : "O navegador recusou o clique.");
@@ -1078,35 +1095,36 @@
     if (action === "toggle_follow") {
       const FOLLOW_SELECTORS = [
         "button[data-e2e=feed-follow]", "button[data-e2e=video-author-follow]",
-        "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
-        "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
+        "[role=button][data-e2e=feed-follow]", "[role=button][data-e2e=video-author-follow]",
+        "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]"
       ];
       const video = activeVideo();
       if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
-      let btn = findNearVideo(FOLLOW_SELECTORS);
-      if (!btn) {
-        // Fallback: search by text
-        for (const ancestor of ancestorsFor(video)) {
-          btn = [...ancestor.querySelectorAll("button")].find(b => {
-            const t = (b.textContent || "").trim().toLowerCase();
-            return visible(b) && (t === "seguir" || t === "follow" || t === "seguindo" || t === "following");
-          });
-          if (btn) break;
-        }
-      }
-      if (!btn) throw new Error("Este vídeo não oferece um botão seguro para seguir ou deixar de seguir.");
-      const beforeIsFollowing = followState(btn);
-      if (beforeIsFollowing === null) {
-        throw new Error("Não foi possível identificar o estado do botão Seguir deste vídeo.");
-      }
       const info = snapshot();
       if (!info.profile_url) throw new Error("Não foi possível identificar o autor para conferir o seguimento.");
       if (activeVideo() !== video) throw new Error("O vídeo mudou. Repita a ação no vídeo atual.");
-      await trustedClick(btn);
-      // Give the visible page time to submit the action. A disappearing or
-      // changed button is never proof of success; the host reads a fresh profile.
-      await sleep(2000);
-      return {...info, expected_state: !beforeIsFollowing, follow_click_sent: true};
+      let button = findNearVideo(FOLLOW_SELECTORS);
+      if (!button) {
+        for (const ancestor of ancestorsFor(video)) {
+          button = [...ancestor.querySelectorAll("button, [role=button]")].find(element => {
+            const text = normalizedText(element.getAttribute("aria-label") || element.textContent).toLowerCase();
+            return visible(element) && /^(seguir|follow|seguindo|following)\b/.test(text);
+          });
+          if (button) break;
+        }
+      }
+      if (!button) throw new Error("Este vídeo não oferece um botão para seguir ou deixar de seguir.");
+      const visibleState = followState(button);
+      const knownState = typeof argument?.known_follow_state === "boolean" ? argument.known_follow_state : null;
+      if (visibleState === null && knownState === null) {
+        // The feed's icon is actionable but has no accessible state. Ask the
+        // profile only for the state, then come back here for the real click.
+        return {...info, needs_follow_state: true, follow_click_sent: false};
+      }
+      const before = visibleState === null ? knownState : visibleState;
+      await trustedClick(button, true, true);
+      await sleep(1200);
+      return {...info, expected_state: !before, follow_click_sent: true};
     }
     if (action === "toggle_like") {
       return {state: await toggleAction(LIKE_SELECTORS, /descurtir|unlike|remove like/i,

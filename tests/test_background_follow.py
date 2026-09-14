@@ -16,17 +16,33 @@ def worker():
     task.view = Mock()
     task.host = Mock()
     task.timer = Mock()
+    task.load_timer = None
     task.completed = Mock()
     return task
 
 
 def test_duplicate_loaded_events_do_not_toggle_twice():
     task = worker()
-    task.loaded()
-    task.loaded()
+    with patch('ui.background_follow.wx.CallLater') as later:
+        task.loaded()
+        task.loaded()
+        later.call_args.args[1](later.call_args.args[2])
     task.client.execute.assert_called_once_with('profile_follow', {
         'toggle': True, 'profile_url': 'https://www.tiktok.com/@ana',
     }, task.observed)
+
+
+def test_profile_command_waits_for_the_last_navigation_to_settle():
+    task = worker()
+    task.client.generation = 3
+    task.client.ready = True
+    with patch('ui.background_follow.wx.CallLater') as later:
+        task.loaded()
+        task.client.generation = 4
+        later.call_args.args[1](later.call_args.args[2])
+
+    task.client.execute.assert_not_called()
+    assert later.call_count == 2
 
 
 def test_optimistic_change_is_rechecked_without_a_second_click():

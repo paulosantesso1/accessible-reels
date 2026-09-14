@@ -67,7 +67,7 @@ def test_required_accelerators_are_preserved():
     assert shortcuts["open_comments"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C"))
     assert shortcuts["toggle_like"] == (wx.ACCEL_ALT, ord("L"))
     assert shortcuts["toggle_favorite"] == (wx.ACCEL_ALT, ord("F"))
-    assert shortcuts["toggle_follow"] == (wx.ACCEL_ALT, ord("G"))
+    assert shortcuts["read_follow_status"] == (wx.ACCEL_ALT, ord("G"))
     assert shortcuts["open_profile"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("P"))
 
 
