@@ -5,7 +5,8 @@ from pathlib import Path
 
 import wx
 
-from video_download import load_download_settings, save_download_settings, settings_path, update_ytdlp
+from video_download import (bundled_ytdlp_path, load_download_settings,
+                            save_download_settings, settings_path, update_ytdlp)
 from .shortcuts import (DEFAULT_SHORTCUTS, SHORTCUT_DEFINITIONS, can_be_global,
                         display_shortcut, load_shortcut_settings,
                         save_shortcut_settings, shortcut_from_event)
@@ -176,8 +177,8 @@ class SettingsDialog(wx.Dialog):
 
     def on_manual_update(self, event):
         frozen = getattr(sys, "frozen", False)
-        root_dir = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent.parent
-        exe_path = root_dir / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp")
+        exe_name = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
+        exe_path = bundled_ytdlp_path(exe_name) if frozen else Path(__file__).resolve().parent.parent / exe_name
         if not exe_path.is_file():
             wx.MessageBox("O executável do motor de download não foi encontrado.", "Erro", wx.OK | wx.ICON_ERROR, self)
             return

@@ -22,7 +22,9 @@ if (!(Test-Path -LiteralPath $ytDlp -PathType Leaf)) { throw "yt-dlp.exe ausente
 & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --add-binary "$loader;." --add-binary "$ytDlp;." --add-data "ui\web_scripts;ui\web_scripts" main.py
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
 & $PythonExe scripts\verify_web_scripts.py
-if (!(Test-Path -LiteralPath 'dist\Accessible Reels\yt-dlp.exe' -PathType Leaf)) { throw "yt-dlp.exe ausente no pacote gerado." }
+$packagedYtDlp = @('dist\Accessible Reels\yt-dlp.exe', 'dist\Accessible Reels\_internal\yt-dlp.exe') |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if (!$packagedYtDlp) { throw "yt-dlp.exe ausente no pacote gerado." }
 if ($LASTEXITCODE -ne 0) { throw "Os scripts WebView não foram empacotados corretamente." }
 
 & "$PSScriptRoot\prepare_webview2.ps1" -Destination "dist\Accessible Reels"

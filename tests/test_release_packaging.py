@@ -26,5 +26,5 @@ def test_release_build_embeds_external_ytdlp_executable():
     build = (ROOT / 'scripts' / 'build_windows_release.ps1').read_text(encoding='utf-8')
     assert "Join-Path $root 'yt-dlp.exe'" in build
     assert '--add-binary "$ytDlp;."' in build
-    assert "dist\\Accessible Reels\\yt-dlp.exe" in build
+    assert "dist\\Accessible Reels\\_internal\\yt-dlp.exe" in build
     assert '--collect-all yt_dlp' not in build

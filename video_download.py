@@ -3,6 +3,7 @@ import json
 import os
 import re
 import hashlib
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -15,6 +16,19 @@ from youtube.search import validate_youtube_url
 
 class VideoDownloadError(Exception):
     pass
+
+
+def bundled_ytdlp_path(exe_name: str) -> Path:
+    """Locate yt-dlp in both legacy and PyInstaller 6 onedir layouts."""
+    roots = [Path(sys.executable).resolve().parent]
+    bundle_root = getattr(sys, '_MEIPASS', None)
+    if bundle_root:
+        roots.append(Path(bundle_root))
+    for root in roots:
+        candidate = root / exe_name
+        if candidate.is_file():
+            return candidate
+    return roots[0] / exe_name
 
 
 def settings_path(local_app_data=None):
@@ -131,10 +145,9 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
     folder = Path(folder).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     
-    frozen = getattr(sys, 'frozen', False)
-    root_dir = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent
     exe_name = 'yt-dlp.exe' if os.name == 'nt' else 'yt-dlp'
-    exe_path = root_dir / exe_name
+    frozen = getattr(sys, 'frozen', False)
+    exe_path = bundled_ytdlp_path(exe_name) if frozen else Path(__file__).resolve().parent / exe_name
     
     if not exe_path.is_file():
         if frozen:
@@ -263,10 +276,9 @@ def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):
         import subprocess
         import sys
         
-        frozen = getattr(sys, 'frozen', False)
-        root_dir = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent
         exe_name = 'yt-dlp.exe' if os.name == 'nt' else 'yt-dlp'
-        exe_path = root_dir / exe_name
+        frozen = getattr(sys, 'frozen', False)
+        exe_path = bundled_ytdlp_path(exe_name) if frozen else Path(__file__).resolve().parent / exe_name
         
         if not exe_path.is_file():
             return

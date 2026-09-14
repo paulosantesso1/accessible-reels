@@ -1,5 +1,11 @@
 # Histórico de versões
 
+## 1.1.1 — 2026-09-14
+
+- Corrigido o empacotamento do motor de downloads para as versões atuais do
+  PyInstaller. O instalador inclui o yt-dlp e o Accessible Reels o localiza
+  corretamente após a instalação.
+
 ## 1.1.0 — 2026-09-14
 
 Esta versão amplia o Accessible Reels para YouTube Shorts, melhora o controle

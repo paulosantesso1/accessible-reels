@@ -7,7 +7,7 @@ import wx
 import pytest
 
 from video_download import (
-    VideoDownloadError, download_error, download_video, load_download_folder,
+    VideoDownloadError, bundled_ytdlp_path, download_error, download_video, load_download_folder,
     media_url, save_download_folder, update_ytdlp,
 )
 from ui.download_controls import DownloadControlsMixin
@@ -155,6 +155,16 @@ def test_frozen_app_does_not_fall_back_to_path_when_ytdlp_bundle_is_missing(tmp_
             download_video("https://www.youtube.com/shorts/AbCdEfGhI_j", "YouTube", tmp_path / "videos")
 
     popen.assert_not_called()
+
+
+def test_frozen_app_finds_ytdlp_inside_pyinstaller_internal_directory(tmp_path):
+    bundle = tmp_path / "_internal"
+    bundle.mkdir()
+    executable = bundle / "yt-dlp.exe"
+    executable.write_bytes(b"bundle")
+    with patch("sys.executable", str(tmp_path / "Accessible Reels.exe")), \
+         patch("sys._MEIPASS", str(bundle), create=True):
+        assert bundled_ytdlp_path("yt-dlp.exe") == executable
 
 
 def test_ytdlp_update_raises_when_process_returns_failure():
