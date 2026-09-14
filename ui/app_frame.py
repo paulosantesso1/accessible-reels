@@ -986,8 +986,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         
 
 
-        page_action = ('author' if name == 'TikTok' and action == 'toggle_follow'
-                       else 'seek' if action in SEEK_SECONDS else COMMANDS.get(action, action))
+        page_action = 'seek' if action in SEEK_SECONDS else COMMANDS.get(action, action)
         client.execute(page_action,
                        SEEK_SECONDS.get(action, argument), completed)
 
@@ -1004,6 +1003,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return True
         context = {
             'toggle': action == 'toggle_follow',
+            'expected_state': result.get('expected_state'),
             'author': result.get('author') or 'este autor',
         }
         data['follow_verification'] = context
@@ -1014,7 +1014,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._finish_tiktok_follow_verification(result)
 
         try:
-            worker = BackgroundFollow(self, profile_url, context['toggle'], completed)
+            worker = BackgroundFollow(self, profile_url, False, completed)
             context['worker'] = worker
             worker.start()
         except Exception:
@@ -1033,8 +1033,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         state = result.get('state')
         if result.get('ok') is True and isinstance(state, bool):
             if context['toggle']:
-                message = (f'Você começou a seguir {author}.' if state
-                           else f'Você deixou de seguir {author}.')
+                if state is context.get('expected_state'):
+                    message = (f'Você começou a seguir {author}.' if state
+                               else f'Você deixou de seguir {author}.')
+                else:
+                    message = f'O TikTok não confirmou a alteração de seguimento de {author}.'
             else:
                 message = (f'Você segue {author}.' if state
                            else f'Você não segue {author}.')

@@ -160,9 +160,23 @@ def test_tiktok_follow_uses_explicit_accessible_state(page):
     install_embedded_tiktok(page)
 
     assert page.evaluate("command('author')")['follow_state'] is False
-    assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': True}
+    assert page.evaluate("command('toggle_follow')")['expected_state'] is True
     assert page.evaluate("command('author')")['follow_state'] is True
-    assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': False}
+    assert page.evaluate("command('toggle_follow')")['expected_state'] is False
+
+
+def test_feed_click_only_requests_verification_even_when_button_does_not_change(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+      <button data-e2e="feed-follow" aria-pressed="false" style="width:80px;height:40px"
+        onclick="window.clicks=(window.clicks || 0)+1">Follow</button></article>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('toggle_follow')")
+    assert result['follow_click_sent'] is True
+    assert result['expected_state'] is True
+    assert result['profile_url'] == 'https://www.tiktok.com/@ana'
+    assert 'state' not in result
+    assert page.evaluate('window.clicks') == 1
 
 
 def test_tiktok_follow_explains_how_to_unfollow_when_control_disappears(page):
@@ -173,12 +187,11 @@ def test_tiktok_follow_explains_how_to_unfollow_when_control_disappears(page):
       </article>''')
     install_embedded_tiktok(page)
 
-    assert page.evaluate("command('toggle_follow')") == {'ok': True, 'state': True}
+    assert page.evaluate("command('toggle_follow')")['expected_state'] is True
     result = page.evaluate("command('toggle_follow')")
 
-    assert result['ok'] is True
-    assert result['needs_profile_follow'] is True
-    assert result['profile_url'] == 'https://www.tiktok.com/@ana'
+    assert result['ok'] is False
+    assert 'não oferece um botão seguro' in result['error']
 
 
 def test_tiktok_profile_follow_reads_and_changes_explicit_button_state(page):

@@ -1094,34 +1094,19 @@
           if (btn) break;
         }
       }
-      if (!btn) return {needs_profile_follow: true, ...snapshot()};
-
+      if (!btn) throw new Error("Este vídeo não oferece um botão seguro para seguir ou deixar de seguir.");
       const beforeIsFollowing = followState(btn);
       if (beforeIsFollowing === null) {
-        return {needs_profile_follow: true, ...snapshot()};
+        throw new Error("Não foi possível identificar o estado do botão Seguir deste vídeo.");
       }
+      const info = snapshot();
+      if (!info.profile_url) throw new Error("Não foi possível identificar o autor para conferir o seguimento.");
+      if (activeVideo() !== video) throw new Error("O vídeo mudou. Repita a ação no vídeo atual.");
       await trustedClick(btn);
-      
-      const deadline = Date.now() + 3500;
-      let afterIsFollowing = beforeIsFollowing;
-      while (Date.now() < deadline) {
-        await sleep(150);
-        // Re-query in case it was replaced
-        const currentButton = findNearVideo(FOLLOW_SELECTORS);
-        if (!currentButton || !currentButton.isConnected || !visible(currentButton)) {
-          // TikTok commonly removes the Follow control after a successful follow.
-          if (!beforeIsFollowing) afterIsFollowing = true;
-        } else {
-          btn = currentButton;
-          const state = followState(btn);
-          if (state !== null) afterIsFollowing = state;
-        }
-        if (afterIsFollowing !== beforeIsFollowing) break;
-      }
-      if (afterIsFollowing === beforeIsFollowing) {
-        throw new Error("A rede não confirmou a alteração de seguimento. Tente novamente.");
-      }
-      return { state: afterIsFollowing };
+      // Give the visible page time to submit the action. A disappearing or
+      // changed button is never proof of success; the host reads a fresh profile.
+      await sleep(2000);
+      return {...info, expected_state: !beforeIsFollowing, follow_click_sent: true};
     }
     if (action === "toggle_like") {
       return {state: await toggleAction(LIKE_SELECTORS, /descurtir|unlike|remove like/i,

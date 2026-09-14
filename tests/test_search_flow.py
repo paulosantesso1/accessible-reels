@@ -207,13 +207,13 @@ def test_follow_verification_uses_auxiliary_page_without_touching_player():
             'author': '@ana', 'profile_url': 'https://www.tiktok.com/@ana',
         })
     worker.return_value.start.assert_called_once()
-    assert worker.call_args.args[1:3] == ('https://www.tiktok.com/@ana', True)
+    assert worker.call_args.args[1:3] == ('https://www.tiktok.com/@ana', False)
     frame.clients['TikTok'].navigate.assert_not_called()
     frame.status.assert_not_called()
     frame.focus_controls.assert_not_called()
 
 
-def test_tiktok_follow_shortcut_only_reads_author_in_player():
+def test_tiktok_follow_shortcut_clicks_in_player():
     frame = mock_frame()
     frame._active_name = 'TikTok'
     frame.platform_data = {'TikTok': {}}
@@ -221,7 +221,7 @@ def test_tiktok_follow_shortcut_only_reads_author_in_player():
     frame.clients = {'TikTok': client}
     with patch('ui.app_frame.wx.Window.FindFocus', return_value=None):
         MainFrame.dispatch(frame, 'toggle_follow')
-    assert client.execute.call_args.args[:2] == ('author', None)
+    assert client.execute.call_args.args[:2] == ('toggle_follow', None)
     client.navigate.assert_not_called()
 
 
@@ -237,7 +237,7 @@ def test_background_follow_reports_once_and_keeps_player(toggle, state, message)
     frame._closing_app = False
     worker = Mock()
     frame.platform_data = {'TikTok': {'follow_verification': {
-        'toggle': toggle, 'author': '@ana', 'worker': worker,
+        'toggle': toggle, 'expected_state': state, 'author': '@ana', 'worker': worker,
     }}}
     frame.clients = {'TikTok': Mock()}
     MainFrame._finish_tiktok_follow_verification(frame, {'ok': True, 'state': state})
@@ -267,6 +267,16 @@ def test_unknown_feed_follow_state_starts_profile_verification():
     assert frame.platform_data['TikTok']['author'] == '@ana'
     frame._start_tiktok_follow_verification.assert_called_once_with('read_author', result)
     frame.status.assert_not_called()
+
+
+def test_visible_follow_click_is_not_success_when_profile_disagrees():
+    frame = mock_frame()
+    frame._closing_app = False
+    frame.platform_data = {'TikTok': {'follow_verification': {
+        'toggle': True, 'expected_state': True, 'author': '@ana', 'worker': Mock(),
+    }}}
+    MainFrame._finish_tiktok_follow_verification(frame, {'ok': True, 'state': False})
+    frame.status.assert_called_once_with('O TikTok não confirmou a alteração de seguimento de @ana.')
 
 
 def test_profile_collection_opens_pinned_or_newest_video_as_the_first_list_item():
