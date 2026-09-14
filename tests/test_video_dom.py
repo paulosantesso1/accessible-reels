@@ -909,6 +909,21 @@ def test_extension_audio_guard_blocks_volume_spike_before_playback(page):
     )
 
 
+def test_audio_guard_hides_minimize_visibility_event_only_from_active_platform(page):
+    page.set_content("<video></video>")
+    page.evaluate("globalThis.__accessibleNetworkActive = true")
+    guard = (Path(__file__).resolve().parents[1] / "ui" / "web_scripts" / "audio_guard.js").read_text(encoding="utf-8")
+    page.add_script_tag(content=guard)
+    page.evaluate("document.addEventListener('visibilitychange', () => globalThis.visibilityCount = (globalThis.visibilityCount || 0) + 1)")
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    assert page.evaluate("globalThis.visibilityCount || 0") == 0
+    assert page.evaluate("document.hidden") is False
+    assert page.evaluate("document.visibilityState") == "visible"
+    page.evaluate("globalThis.__accessibleNetworkActive = false")
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    assert page.evaluate("globalThis.visibilityCount") == 1
+
+
 def test_real_dom_finds_video_link_in_outer_feed_item_even_when_link_has_no_area(page):
     page.set_content(
         """

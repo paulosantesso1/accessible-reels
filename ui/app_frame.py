@@ -16,11 +16,13 @@ import wx.html2 as html2
 
 from app_logging import get_logger, log_directory
 from webview_runtime import backend_version
-from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
+from ui.webview_focus import EmbeddedFocusMixin
 from ui.download_controls import DownloadControlsMixin
 from ui.webview_client import WebViewClient, PLATFORM_URLS, belongs_to_platform
 from ui.video_link import parse_video_link
-from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
+from ui.shortcuts import (SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
+                          action_shortcut, load_shortcut_settings,
+                          shortcut_to_windows)
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url
 from instagram.search import normalize_reel_results, validate_reel_url
@@ -31,6 +33,24 @@ from updater import UpdateError, can_self_update, check_for_update, download_upd
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_follow_status':'author', 'read_description':'description', 'open_comments':'comments'}
 logger = get_logger()
+
+# WebView2/Chromium otherwise deprioritizes a renderer whose native window is
+# minimized. Commands received through RegisterHotKey would then wait until the
+# user restores Accessible Reels, which defeats global media controls.
+BACKGROUND_WEBVIEW_ARGUMENTS = (
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+)
+
+
+def webview_browser_arguments(existing: str = '') -> str:
+    """Keep the caller's WebView2 options while enabling background controls."""
+    values = existing.split()
+    for argument in BACKGROUND_WEBVIEW_ARGUMENTS:
+        if argument not in values:
+            values.append(argument)
+    return ' '.join(values)
 
 
 def instagram_fallback_queries(query):
@@ -147,36 +167,13 @@ def comment_details_text(index, count, text):
     return f'Comentário {index} de {count}\n\n{str(text or "").strip() or "Sem texto disponível."}'
 
 
-def keyboard_help_text():
-    speed_help = 'Shift+< / Shift+> - Diminuir ou aumentar a velocidade\n'
-    return (
-        'Ajuda rápida de atalhos\n\n'
-        'F6 — Alternar entre a página da plataforma e os controles\n'
-        'Ctrl+1 / Ctrl+2 / Ctrl+3 — Abrir TikTok / Instagram / YouTube\n'
-        'Ctrl+O — Abrir um link de vídeo\n'
-        'Alt+Seta para cima / baixo — Vídeo anterior / próximo\n'
-        'Alt+P — Reproduzir ou pausar\n'
-        'Alt+Shift+P — Abrir perfil\n'
-        'Alt+Seta para esquerda / direita — Voltar ou avançar 30 segundos\n'
-        'Alt+Shift+Seta para esquerda / direita — Voltar ou avançar 15 segundos\n'
-        'Alt+Shift+Seta para cima / baixo — Aumentar ou diminuir o volume\n'
-        'Alt+Shift+M — Ativar ou desativar o mudo\n'
-        'F2 — Abrir configurações\n'
-        'F5 — Atualizar autor e descrição\n'
-        'Alt+A — Ler autor\n'
-        'Alt+D — Ler descrição\n'
-        'Alt+C — Copiar link\n'
-        'Ctrl+B — Baixar vídeo atual na pasta de downloads\n'
-        'Alt+Shift+C — Comentários\n'
-        'Alt+L — Curtir ou descurtir\n'
-        'Alt+F — Adicionar ou remover dos favoritos\n'
-        'Alt+G — Informar se você segue o autor\n'
-        'Alt+E — Pesquisar vídeos\n'
-        'Ctrl+R — Voltar aos resultados da pesquisa\n'
-        'Ctrl+Home — Voltar ao feed\n'
-        'Alt+S — Sair\n'
-        + speed_help
-    )
+def keyboard_help_text(shortcuts=None):
+    lines = ['Ajuda rápida de atalhos', '']
+    lines.extend(f'{action_shortcut(item.action, shortcuts)} — {item.label}'
+                 for item in SHORTCUT_DEFINITIONS)
+    lines.extend(['F10 — Abrir a barra de menus',
+                  'Esc — Voltar ao player a partir de comentários ou pesquisa'])
+    return '\n'.join(lines) + '\n'
 
 
 def webview_profile_path(*, local_app_data=None, frozen=None, source_root=None):
@@ -202,6 +199,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def __init__(self, *, auto_open=False):
         super().__init__(None, title='Accessible Reels', size=(1180, 850))
         os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(webview_profile_path())
+        os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = webview_browser_arguments(
+            os.environ.get('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', '')
+        )
         self.views, self.clients, self.platform_data = {}, {}, {}
         self._active_name = 'TikTok'
         self._pending_page_focus = None
@@ -210,7 +210,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.initialize_downloads()
         self._update_checking = False
         self._registered_hotkeys = set()
+        self._registered_hotkey_actions = set()
         self._accelerator_ids = {}
+        self._system_hotkey_ids = {}
+        self.shortcuts, self.global_shortcuts = load_shortcut_settings()
         self._results = ()
         self._search_progress_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self._on_search_progress, self._search_progress_timer)
@@ -251,7 +254,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._build_search()
         self._configure_accelerators()
         self.activities.SetSelection(0)
-        self.Bind(wx.EVT_HOTKEY, self.toggle_page_controls, id=FOCUS_PAGE_HOTKEY)
+        self.Bind(wx.EVT_HOTKEY, self._on_system_hotkey)
         self.Bind(wx.EVT_ACTIVATE, self._activation_changed)
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
@@ -289,14 +292,17 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _build_menu_bar(self):
         bar = wx.MenuBar()
+        # Menu accelerators use wx's canonical key names; the settings list and
+        # accessible controls present the localized names separately.
+        key = lambda action: self.shortcuts[action].replace('Comma', ',').replace('Period', '.')
         platform = wx.Menu()
-        self._append_menu_item(platform, 'Abrir ou mostrar TikTok', lambda event: self._open_platform('TikTok'))
-        self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'))
-        self._append_menu_item(platform, 'Abrir ou mostrar YouTube', lambda event: self._open_platform('YouTube'))
+        self._append_menu_item(platform, 'Abrir ou mostrar TikTok', lambda event: self._open_platform('TikTok'), key('select_tiktok'))
+        self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'), key('select_instagram'))
+        self._append_menu_item(platform, 'Abrir ou mostrar YouTube', lambda event: self._open_platform('YouTube'), key('select_youtube'))
         platform.AppendSeparator()
-        self._append_menu_item(platform, 'Abrir link...', self.open_link, 'Ctrl+O')
-        self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, 'Ctrl+R')
-        self._append_menu_item(platform, 'Voltar ao feed', self.home, 'Ctrl+Home')
+        self._append_menu_item(platform, 'Abrir link...', self.open_link, key('open_link'))
+        self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, key('return_results'))
+        self._append_menu_item(platform, 'Voltar ao feed', self.home, key('home'))
         self._append_menu_item(platform, 'Recarregar página', self.reload)
         bar.Append(platform, '&Plataforma')
 
@@ -309,7 +315,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Diminuir velocidade', 'speed_down'), ('Aumentar velocidade', 'speed_up'),
             ('Ativar ou desativar mudo', 'toggle_mute'),
         ]:
-            self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a))
+            self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(player, '&Player')
 
         actions = wx.Menu()
@@ -317,23 +323,25 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
             ('Copiar link', 'copy_link'), ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
         ]:
-            self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a))
+            self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(actions, '&Ações')
 
         help_menu = wx.Menu()
-        self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, 'F1')
+        self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, key('show_help'))
         self._append_menu_item(help_menu, 'Verificar atualizações', self.on_check_for_updates)
         self._append_menu_item(help_menu, 'Abrir pasta de logs para suporte', self.open_log_folder)
         help_menu.AppendSeparator()
         self._append_menu_item(help_menu, 'Verificar runtime incluído...', self.install_webview2_runtime)
 
         help_menu.AppendSeparator()
-        self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), 'Alt+S')
-        downloads = wx.Menu()
-        self._append_menu_item(downloads, 'Baixar vídeo atual', self.start_video_download, 'Ctrl+B')
-        self._append_menu_item(downloads, 'Escolher pasta de downloads...', self.choose_download_folder)
-        self._append_menu_item(downloads, 'Abrir pasta de downloads', self.open_download_folder)
-        bar.Append(downloads, '&Downloads')
+        self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), key('exit'))
+        settings = wx.Menu()
+        self._append_menu_item(settings, 'Abrir configurações...', lambda event: self.dispatch('open_settings'), key('open_settings'))
+        settings.AppendSeparator()
+        self._append_menu_item(settings, 'Baixar vídeo atual', self.start_video_download, key('download_video'))
+        self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
+        self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
+        bar.Append(settings, '&Configurações')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
 
@@ -557,41 +565,70 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _configure_accelerators(self):
         entries = []
-        for action, modifiers, key in ACCELERATOR_SPECS + SEEK_ACCELERATOR_SPECS:
+        for action, modifiers, key in accelerator_specs(getattr(self, 'shortcuts', None)):
             identifier = wx.NewIdRef()
             self._accelerator_ids[action] = identifier
-            self.Bind(wx.EVT_MENU, lambda e, a=action: self.dispatch(a), id=identifier)
+            self.Bind(wx.EVT_MENU, lambda e, a=action: MainFrame._invoke_shortcut(self, a), id=identifier)
             entries.append((modifiers, key, identifier))
-        for action, modifiers, callback in [('toggle_page_controls', wx.ACCEL_NORMAL, self.toggle_page_controls)]:
-            identifier = wx.NewIdRef()
-            self._accelerator_ids[action] = identifier
-            self.Bind(wx.EVT_MENU, callback, id=identifier)
-            entries.append((modifiers, wx.WXK_F6, identifier))
-        identifier = wx.NewIdRef()
-        self.Bind(wx.EVT_MENU, getattr(self, 'show_keyboard_help', lambda event: None), id=identifier)
-        entries.append((wx.ACCEL_NORMAL, wx.WXK_F1, identifier))
-        for action, key, handler in [
-            ('select_tiktok', ord('1'), lambda event: self._open_platform('TikTok')),
-            ('select_instagram', ord('2'), lambda event: self._open_platform('Instagram')),
-            ('select_youtube', ord('3'), lambda event: self._open_platform('YouTube')),
-            ('open_selected_platform', wx.WXK_RETURN, lambda event: self.open_network()),
-            ('open_link', ord('O'), lambda event: self.open_link()),
-            ('download_video', ord('B'), lambda event: self.start_video_download()),
-            ('return_results', ord('R'), lambda event: self.return_to_results()),
-            ('home', wx.WXK_HOME, lambda event: self.home()),
-        ]:
-            identifier = wx.NewIdRef()
-            self._accelerator_ids[action] = identifier
-            self.Bind(wx.EVT_MENU, handler, id=identifier)
-            entries.append((wx.ACCEL_CTRL, key, identifier))
         self.SetAcceleratorTable(wx.AcceleratorTable(entries))
+
+    def _invoke_shortcut(self, action):
+        if action == 'show_help': self.show_keyboard_help(); return
+        if action == 'toggle_page_controls': self.toggle_page_controls(); return
+        if action.startswith('select_'):
+            self._open_platform({'select_tiktok': 'TikTok', 'select_instagram': 'Instagram', 'select_youtube': 'YouTube'}[action]); return
+        if action == 'open_selected_platform': self.open_network(); return
+        if action == 'open_link': self.open_link(); return
+        if action == 'download_video': self.start_video_download(); return
+        if action == 'return_results': self.return_to_results(); return
+        if action == 'home': self.home(); return
+        self.dispatch(action)
+
+    def _on_system_hotkey(self, event):
+        action = next((name for name, identifier in self._system_hotkey_ids.items()
+                       if int(identifier) == event.GetId()), None)
+        if action:
+            logger.info('Global shortcut received: action=%s active=%s', action, self.IsActive())
+            self._invoke_shortcut(action)
+
+    def _activation_changed(self, event):
+        self._sync_system_hotkeys(event.GetActive())
+        event.Skip()
+
+    def _sync_system_hotkeys(self, active):
+        actions = set(self.global_shortcuts)
+        if active and 'toggle_page_controls' not in actions:
+            actions.add('toggle_page_controls')
+        # Global registrations must survive activation changes. Unregistering
+        # and registering every time the window minimizes creates a small but
+        # real gap in which Windows sends Alt+Down nowhere.
+        for action in self._registered_hotkey_actions - actions:
+            identifier = self._system_hotkey_ids[action]
+            self.UnregisterHotKey(identifier)
+            self._registered_hotkeys.discard(identifier)
+        self._registered_hotkey_actions.intersection_update(actions)
+        for action in actions - self._registered_hotkey_actions:
+            identifier = self._system_hotkey_ids.setdefault(action, int(wx.NewIdRef()))
+            modifiers, key = shortcut_to_windows(self.shortcuts[action])
+            if self.RegisterHotKey(identifier, modifiers, key):
+                self._registered_hotkeys.add(identifier)
+                self._registered_hotkey_actions.add(action)
+            else:
+                self.status(f'Não foi possível ativar o atalho global {action_shortcut(action, self.shortcuts)}; ele pode estar em uso por outro programa.')
+
+    def _release_hotkey(self):
+        """Release every Windows registration once, only on close or reconfigure."""
+        for identifier in tuple(self._registered_hotkeys):
+            self.UnregisterHotKey(identifier)
+        self._registered_hotkeys.clear()
+        self._registered_hotkey_actions.clear()
 
     def show_keyboard_help(self, event=None):
         dialog = wx.Dialog(self, title='Ajuda rápida de atalhos', style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         dialog.SetMinSize((520, 380))
         root = wx.BoxSizer(wx.VERTICAL)
         label = wx.StaticText(dialog, label='Ajuda rápida de atalhos')
-        field = wx.TextCtrl(dialog, value=keyboard_help_text(), style=wx.TE_MULTILINE | wx.TE_READONLY)
+        field = wx.TextCtrl(dialog, value=keyboard_help_text(self.shortcuts), style=wx.TE_MULTILINE | wx.TE_READONLY)
         field.SetName('Ajuda rápida de atalhos')
         close = wx.Button(dialog, wx.ID_OK, 'Fechar')
         root.Add(label, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
@@ -948,12 +985,17 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if action == 'open_settings':
             from ui.settings_dialog import SettingsDialog
             from video_download import load_download_folder
+            self._release_hotkey()
             dlg = SettingsDialog(self)
             try:
                 if dlg.ShowModal() == wx.ID_OK:
                     self._download_folder = load_download_folder()
+                    self.shortcuts, self.global_shortcuts = load_shortcut_settings()
+                    self._configure_accelerators()
+                    self._build_menu_bar()
             finally:
                 dlg.Destroy()
+                self._sync_system_hotkeys(self.IsActive())
             return
         if action in ('read_follow_status', 'toggle_follow') and self._tiktok_follow_verification_active():
             self.status('Aguarde a verificação do estado de seguimento terminar.')
@@ -1010,6 +1052,13 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 return
         
         if client.pending:
+            if action in ('next_video', 'previous_video'):
+                # A global key can arrive while WebView2 finishes the previous
+                # page command. Keep the last requested direction instead of
+                # silently losing it.
+                self.platform_data.setdefault(name, {})['queued_navigation'] = action
+                self.status('Comando de navegação recebido. Ele será executado assim que o vídeo terminar de carregar.')
+                return
             if action not in ('refresh_info', 'collect_search_results'):
                 self.status('Carregando o vídeo selecionado. Aguarde um instante antes de usar outro atalho.')
             return
@@ -1020,6 +1069,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             if self._closing_app:
                 return
             self._result(name, action, argument, result)
+            platform_state = self.platform_data.get(name)
+            queued = platform_state.pop('queued_navigation', None) if isinstance(platform_state, dict) else None
+            if queued and name == self._active_name and self.clients.get(name) is client:
+                wx.CallAfter(self.dispatch, queued)
             if name == self._active_name and self.IsActive() and action not in ('open_comments', 'collect_search_results', 'close_comments'):
                 if restore_focus and wx.Window.FindFocus() is self.current():
                     restore_focus.SetFocus()

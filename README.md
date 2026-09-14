@@ -187,7 +187,8 @@ Instagram. Na lista de pesquisa, o atalho baixa o resultado selecionado.
 Em cada download, a janela padrão **Salvar como** permite escolher o nome do
 arquivo MP4 e a pasta de destino. A última pasta usada aparece como sugestão.
 O Windows pede confirmação ao substituir um arquivo existente; o arquivo anterior
-é preservado até o novo download terminar. O menu **Downloads** permite trocar ou abrir essa pasta.
+é preservado até o novo download terminar. O menu **Configurações** permite baixar,
+trocar ou abrir essa pasta.
 
 O download tenta primeiro transferir o MP4 pelo WebView2, usando a sessão aberta,
 sem depender do yt-dlp. O motor faz parte do runtime já incluído no instalador.
@@ -204,6 +205,16 @@ incluída pelo script de build. O formato escolhido contém áudio e vídeo junt
 sem exigir uma instalação separada do FFmpeg.
 
 ## Atalhos e acessibilidade
+
+Pressione **F2** ou abra o menu **Configurações**. Na guia **Atalhos**, todos os
+comandos aparecem em uma única lista. Selecione um comando e use **Alterar atalho**
+para capturar uma nova combinação. Marque a linha para tornar aquele atalho global,
+isto é, fazê-lo funcionar mesmo quando outro programa estiver em primeiro plano.
+O aplicativo impede combinações duplicadas e permite restaurar um comando ou todos
+os padrões antes de salvar.
+
+Minimizar o Accessible Reels com **Windows+M** não pausa o vídeo da plataforma ativa.
+Ao trocar de plataforma, a mídia da plataforma anterior continua sendo pausada.
 
 O aplicativo possui as guias **TikTok** e **Instagram**. A guia TikTok contém os
 controles existentes; a guia Instagram contém os controles dos Reels.
