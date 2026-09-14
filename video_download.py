@@ -10,6 +10,7 @@ from app_logging import get_logger, sanitize
 from instagram.search import validate_reel_url
 from tiktok.search import validate_search_result_url
 from tiktok.video_controls import VideoControlError
+from youtube.search import validate_youtube_url
 
 
 class VideoDownloadError(Exception):
@@ -21,24 +22,51 @@ def settings_path(local_app_data=None):
     return root / 'Accessible Reels' / 'download-settings.json'
 
 
-def load_download_folder(*, local_app_data=None):
+def load_download_settings(*, local_app_data=None, path=None):
+    target = Path(path) if path is not None else settings_path(local_app_data)
     try:
-        value = json.loads(settings_path(local_app_data).read_text(encoding='utf-8'))
-        folder = value.get('folder')
-        return Path(folder) if isinstance(folder, str) and folder and Path(folder).is_absolute() else None
-    except (OSError, ValueError, AttributeError):
-        return None
+        value = json.loads(target.read_text(encoding='utf-8'))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def save_download_settings(values, *, local_app_data=None, path=None):
+    target = Path(path) if path is not None else settings_path(local_app_data)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    settings = load_download_settings(local_app_data=local_app_data, path=target)
+    settings.update(values)
+    temporary = target.with_suffix('.tmp')
+    temporary.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+    temporary.replace(target)
+    return settings
+
+
+def load_download_folder(*, local_app_data=None):
+    folder = load_download_settings(local_app_data=local_app_data).get('folder')
+    return Path(folder) if isinstance(folder, str) and folder and Path(folder).is_absolute() else None
 
 
 def save_download_folder(folder, *, local_app_data=None):
     folder = Path(folder).resolve()
     folder.mkdir(parents=True, exist_ok=True)
-    target = settings_path(local_app_data)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix('.tmp')
-    temporary.write_text(json.dumps({'folder': str(folder)}, ensure_ascii=False), encoding='utf-8')
-    temporary.replace(target)
+    save_download_settings({'folder': str(folder)}, local_app_data=local_app_data)
     return folder
+
+
+def update_ytdlp(exe_path):
+    import subprocess
+
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    process = subprocess.run(
+        [str(exe_path), '-U'], capture_output=True, text=True,
+        creationflags=creationflags,
+    )
+    output = '\n'.join(part.strip() for part in (process.stdout, process.stderr) if part.strip())
+    if process.returncode != 0:
+        detail = sanitize(output or 'Falha desconhecida.')[:500]
+        raise VideoDownloadError(detail)
+    return output
 
 
 def video_url(value, platform):
@@ -46,12 +74,15 @@ def video_url(value, platform):
         return validate_search_result_url(value)
     if platform == 'Instagram':
         return validate_reel_url(value)
+    if platform == 'YouTube':
+        return validate_youtube_url(value)
     raise VideoDownloadError('Plataforma não suportada.')
 
 
 def media_url(value, platform):
     hosts = {'TikTok': ('tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokcdn-eu.com', 'byteoversea.com', 'ibytedtos.com', 'muscdn.com'),
-             'Instagram': ('cdninstagram.com', 'fbcdn.net')}.get(platform, ())
+             'Instagram': ('cdninstagram.com', 'fbcdn.net'),
+             'YouTube': ('googlevideo.com',)}.get(platform, ())
     try:
         parsed = urlsplit(value or '')
         tiktok_play = (platform == 'TikTok' and parsed.hostname in ('www.tiktok.com', 'tiktok.com')
@@ -82,7 +113,9 @@ class _DownloadLogger:
     def error(self, message): pass
 
 
-def download_video(url, platform, folder, progress=lambda message: None, *, direct_url=None, factory=None):
+def download_video(url, platform, folder, progress=lambda message: None, *, direct_url=None):
+    import subprocess
+    import sys
     sources = []
     try:
         sources.append(video_url(url, platform))
@@ -97,58 +130,200 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
         raise VideoDownloadError('Não foi possível identificar um endereço baixável para o vídeo ativo.')
     folder = Path(folder).resolve()
     folder.mkdir(parents=True, exist_ok=True)
-    if factory is None:
-        from yt_dlp import YoutubeDL
-        factory = YoutubeDL
-    last_percent = -10
+    
+    frozen = getattr(sys, 'frozen', False)
+    root_dir = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent
+    exe_name = 'yt-dlp.exe' if os.name == 'nt' else 'yt-dlp'
+    exe_path = root_dir / exe_name
+    
+    if not exe_path.is_file():
+        if frozen:
+            raise VideoDownloadError(
+                'O motor de downloads incluído não foi encontrado. Reinstale o Accessible Reels.'
+            )
+        exe_path = exe_name
+    else:
+        exe_path = str(exe_path)
 
-    def changed(value):
-        nonlocal last_percent
-        if value.get('status') == 'downloading':
-            total = value.get('total_bytes') or value.get('total_bytes_estimate')
-            if total:
-                percent = min(100, int(100 * value.get('downloaded_bytes', 0) / total))
-                if percent >= last_percent + 10:
-                    last_percent = percent
-                    progress(f'Baixando vídeo: {percent}%.')
-        elif value.get('status') == 'finished':
-            progress('Download recebido. Finalizando o arquivo...')
-
-    options = {
-        # Prefer an MP4 that already contains audio and video; no FFmpeg required.
-        'format': 'best[ext=mp4]', 'noplaylist': True,
-        'paths': {'home': str(folder)},
-        'outtmpl': '%(extractor_key)s - %(title).120B [%(id)s].%(ext)s',
-        'windowsfilenames': True, 'overwrites': False,
-        'quiet': True, 'no_warnings': True, 'logger': _DownloadLogger(),
-        'progress_hooks': [changed], 'socket_timeout': 20, 'retries': 3,
-        'fragment_retries': 3, 'fixup': 'never',
-        'color': 'no_color',
-    }
     for index, source in enumerate(sources):
         try:
-            with factory(options) as downloader:
-                if source == direct:
-                    # This is an already resolved media file, not a webpage.
-                    identifier = hashlib.sha256(source.split('?')[0].encode()).hexdigest()[:16]
-                    if url:
-                        identifier = urlsplit(url).path.rstrip('/').split('/')[-1]
-                    info = {'id': identifier, 'title': f'{platform} {identifier}',
-                            'extractor_key': platform, 'url': source, 'ext': 'mp4',
-                            'http_headers': {'Referer': 'https://www.tiktok.com/' if platform == 'TikTok'
-                                             else 'https://www.instagram.com/'}}
-                else:
-                    info = downloader.extract_info(source, download=False)
-                if not isinstance(info, dict) or info.get('_type') in ('playlist', 'multi_video'):
-                    raise VideoDownloadError('Esse link contém vários itens; não foi possível identificar um vídeo individual.')
-                info = downloader.process_ie_result(info, download=True)
-                path = Path(downloader.prepare_filename(info)).resolve()
-                if not path.is_file():
-                    raise VideoDownloadError('O download terminou sem gerar o arquivo esperado.')
+            existing_media = {
+                path.resolve() for path in folder.iterdir()
+                if path.is_file() and path.suffix.lower() in {'.mp4', '.m4v', '.webm', '.mkv'}
+            }
+            command = [
+                exe_path,
+                # Some Shorts offer only WebM. Prefer MP4, but never reject a
+                # playable, audio-and-video format solely because of its container.
+                '-f', 'best[ext=mp4]/best',
+                '--no-playlist',
+                '-P', str(folder),
+                '-o', '%(extractor_key)s - %(title).120B [%(id)s].%(ext)s',
+                '--windows-filenames',
+                '--no-overwrites',
+                '--newline',
+                '--no-warnings',
+                '--socket-timeout', '20',
+                '--retries', '3',
+                '--fragment-retries', '3',
+                '--fixup', 'never',
+                '--color', 'no_color',
+                '--print', 'after_move:filepath'
+            ]
+
+            if source == direct:
+                identifier = hashlib.sha256(source.split('?')[0].encode()).hexdigest()[:16]
+                if url:
+                    identifier = urlsplit(url).path.rstrip('/').split('/')[-1]
+                
+                command.extend([
+                    '-o', f'{platform} - {platform} {identifier} [{identifier}].mp4'
+                ])
+                
+                referer = 'https://www.tiktok.com/' if platform == 'TikTok' else 'https://www.youtube.com/' if platform == 'YouTube' else 'https://www.instagram.com/'
+                command.extend(['--add-header', f'Referer:{referer}'])
+
+            command.append(source)
+            
+            creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                creationflags=creationflags
+            )
+            
+            final_path = None
+            last_percent = -10
+            output_lines = []
+            
+            for line in process.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                output_lines.append(line)
+                output_lines = output_lines[-12:]
+                match = re.search(r'\[download\]\s+([\d\.]+)%', line)
+                if match:
+                    percent = float(match.group(1))
+                    if percent >= last_percent + 10:
+                        last_percent = int(percent)
+                        progress(f'Baixando vídeo: {last_percent}%.')
+                elif line.startswith('[download] Destination:'):
+                    pass
+                elif line.endswith('.mp4'):
+                    candidate = Path(line)
+                    if candidate.is_absolute() and candidate.is_file():
+                        final_path = candidate
+
+            process.wait()
+            if process.returncode != 0:
+                detail = sanitize(' '.join(output_lines))[:450]
+                raise VideoDownloadError(
+                    'O yt-dlp não conseguiu baixar o vídeo.' + (f' {detail}' if detail else '')
+                )
+            if final_path is None:
+                created_media = [
+                    path for path in folder.iterdir()
+                    if (path.is_file() and path.resolve() not in existing_media
+                        and path.suffix.lower() in {'.mp4', '.m4v', '.webm', '.mkv'})
+                ]
+                if created_media:
+                    final_path = max(created_media, key=lambda path: path.stat().st_mtime)
+            if final_path is None:
+                detail = sanitize(' '.join(output_lines))[:450]
+                raise VideoDownloadError(
+                    'O download terminou sem gerar o arquivo esperado.' + (f' {detail}' if detail else '')
+                )
+
             get_logger().info('Video download completed: platform=%s', platform)
-            return path
+            return final_path
         except Exception as error:
             get_logger().warning('Video download failed: platform=%s kind=%s', platform, type(error).__name__)
             if index + 1 == len(sources):
                 raise VideoDownloadError(download_error(error)) from error
             progress('Tentando outra forma de baixar o vídeo...')
+
+def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):
+    import threading
+    import wx
+    from urllib import request
+    
+    # Lendo configuração
+    try:
+        check = load_download_settings(local_app_data=local_app_data).get('check_ytdlp_updates', True)
+    except (OSError, ValueError, AttributeError):
+        check = True
+        
+    if not check:
+        return
+
+    def update_task():
+        import subprocess
+        import sys
+        
+        frozen = getattr(sys, 'frozen', False)
+        root_dir = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent
+        exe_name = 'yt-dlp.exe' if os.name == 'nt' else 'yt-dlp'
+        exe_path = root_dir / exe_name
+        
+        if not exe_path.is_file():
+            return
+
+        # 1. Obter versão local
+        try:
+            creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            process = subprocess.run([str(exe_path), "--version"], capture_output=True, text=True, creationflags=creationflags)
+            if process.returncode != 0:
+                return
+            local_version = process.stdout.strip()
+        except Exception:
+            return
+            
+        # 2. Obter versão online do github
+        try:
+            req = request.Request("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", headers={"User-Agent": "Accessible Reels Updater"})
+            with request.urlopen(req, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                remote_version = payload.get("tag_name", "").strip()
+        except Exception:
+            return
+            
+        if not remote_version or remote_version <= local_version:
+            return
+            
+        # 3. Perguntar e atualizar
+        def prompt_and_update():
+            if not parent_window:
+                return
+            dlg = wx.MessageDialog(
+                parent_window,
+                f"O motor de downloads tem uma nova versão ({remote_version}). Você tem a versão {local_version}.\n\nDeseja atualizar agora para evitar problemas no download de vídeos?",
+                "Atualização Disponível",
+                wx.YES_NO | wx.ICON_INFORMATION
+            )
+            result = dlg.ShowModal()
+            dlg.Destroy()
+            if result == wx.ID_YES:
+                def run_update_subprocess():
+                    try:
+                        update_ytdlp(exe_path)
+                        wx.CallAfter(
+                            wx.MessageBox,
+                            "Motor de download atualizado com sucesso! Pode voltar a baixar seus vídeos.",
+                            "Atualização Concluída", wx.OK | wx.ICON_INFORMATION, parent_window
+                        )
+                    except Exception as e:
+                        message = sanitize(str(e))[:500]
+                        wx.CallAfter(
+                            wx.MessageBox, f"Não foi possível atualizar o motor de download:\n{message}", "Erro",
+                            wx.OK | wx.ICON_ERROR, parent_window
+                        )
+                
+                threading.Thread(target=run_update_subprocess, daemon=True).start()
+
+        wx.CallAfter(prompt_and_update)
+
+    threading.Thread(target=update_task, daemon=True).start()
+

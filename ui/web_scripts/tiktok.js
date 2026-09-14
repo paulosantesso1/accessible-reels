@@ -134,7 +134,160 @@
       Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
   };
 
-  async function trustedClick(element, scroll = true) {
+  function followState(element) {
+    if (!element) return null;
+    const pressed = element.getAttribute("aria-pressed");
+    if (pressed === "true") return true;
+    if (pressed === "false") return false;
+    const value = [
+      element.getAttribute("aria-label"), element.getAttribute("title"),
+      element.getAttribute("data-state"), element.textContent
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+    if (/deixar de seguir|parar de seguir|\bunfollow\b|\bseguindo\b|\bfollowing\b/.test(value)) return true;
+    if (/\bseguir\b|\bfollow\b/.test(value)) return false;
+    return null;
+  }
+
+  function isExpectedProfile(expectedProfileUrl) {
+    try {
+      const expected = new URL(expectedProfileUrl);
+      const host = value => value.toLowerCase().replace(/^(www\.|m\.)/, "");
+      const path = value => decodeURIComponent(value).replace(/\/+$/, "").toLowerCase();
+      return expected.protocol === "https:" && host(expected.hostname) === "tiktok.com" &&
+        host(location.hostname) === "tiktok.com" && /^\/@[^/]+$/.test(path(expected.pathname)) &&
+        path(location.pathname) === path(expected.pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function profileFollowSnapshot(expectedProfileUrl) {
+    if (!isExpectedProfile(expectedProfileUrl)) return {state: null, target: null, wrongProfile: true};
+    const roots = [...document.querySelectorAll([
+      "[data-e2e='user-page-header']", "[data-e2e='profile-page-header']",
+      "main header", "header", "[class*='DivShareLayoutHeader']",
+      "[class*='ShareLayoutHeader']", "[class*='ProfileHeader']"
+    ].join(","))].filter(visible);
+    const selectors = [
+      "button[data-e2e='follow-button']", "[role=button][data-e2e='follow-button']",
+      "button[data-e2e*='profile-follow' i]", "[role=button][data-e2e*='profile-follow' i]",
+      "button[aria-label*='seguir' i]", "button[aria-label*='follow' i]",
+      "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]"
+    ];
+    for (const root of roots) {
+      for (const element of root.querySelectorAll(selectors.join(","))) {
+        if (!visible(element)) continue;
+        const state = followState(element);
+        if (state !== null) return {state, target: element};
+      }
+    }
+
+    // TikTok currently exposes a person/check icon beside Message on profiles
+    // that are already followed. This is the actionable unfollow control.
+    const unfollowIcon = roots.flatMap(root => [...root.querySelectorAll(
+      "div[class*='DivFollowIcon'], button[class*='DivFollowIcon'], [role=button][class*='DivFollowIcon']"
+    )]).find(visible);
+    if (unfollowIcon) return {state: true, target: unfollowIcon};
+
+    return {state: null, target: null};
+  }
+
+  function interactionBlocked() {
+    if (document.querySelector(".secsdk-captcha-wrapper, [data-e2e*='captcha' i]")) {
+      return "O TikTok exige uma verificação para esta conta. Não foi possível confirmar o seguimento.";
+    }
+    const text = normalizedText(document.body?.innerText).toLowerCase();
+    if (/too many requests|muitas solicita[cç][oõ]es/.test(text)) {
+      return "O TikTok limitou temporariamente esta ação. Tente novamente mais tarde.";
+    }
+    if (/\/login/.test(location.pathname)) {
+      return "É preciso entrar no TikTok. Use F6 para verificar o login e repita a ação.";
+    }
+    return "";
+  }
+
+  async function profileFollowAction(toggle, expectedProfileUrl) {
+    if (!isExpectedProfile(expectedProfileUrl)) {
+      throw new Error("O perfil carregado não corresponde ao autor esperado. Nenhuma ação foi realizada.");
+    }
+    const deadline = Date.now() + 8000;
+    let current = profileFollowSnapshot(expectedProfileUrl);
+    let stableState = current.state;
+    let stableSince = Date.now();
+    while (Date.now() < deadline) {
+      const blocked = interactionBlocked();
+      if (blocked) throw new Error(blocked);
+      if (current.state !== null && Date.now() - stableSince >= 1200) break;
+      await sleep(150);
+      current = profileFollowSnapshot(expectedProfileUrl);
+      if (current.state !== stableState || current.state === null) {
+        stableState = current.state;
+        stableSince = Date.now();
+      }
+    }
+    if (current.state === null || Date.now() - stableSince < 1200) {
+      throw new Error("Não foi possível verificar o estado de seguimento no perfil do TikTok.");
+    }
+    if (!toggle) return {state: current.state};
+    if (!current.target) {
+      throw new Error("O perfil confirma que você segue este autor, mas não oferece um controle seguro para deixar de seguir.");
+    }
+
+    const before = current.state;
+    if (!isExpectedProfile(expectedProfileUrl)) {
+      throw new Error("A página mudou antes do clique. Nenhuma ação de seguimento foi realizada.");
+    }
+    await trustedClick(current.target);
+    if (before) {
+      // Some layouts open a confirmation dialog instead of changing state on
+      // the first click. Only accept an exact unfollow action inside a dialog.
+      const confirmDeadline = Date.now() + 1200;
+      while (Date.now() < confirmDeadline) {
+        const confirm = [...document.querySelectorAll("[role=dialog] button, [role=dialog] [role=button]")]
+          .find(element => visible(element) && /^(deixar de seguir|parar de seguir|unfollow)$/i.test(
+            normalizedText(element.getAttribute("aria-label") || element.textContent)
+          ));
+        if (confirm) {
+          await trustedClick(confirm);
+          break;
+        }
+        await sleep(100);
+      }
+    }
+
+    const changedDeadline = Date.now() + 5000;
+    let changedSince = null;
+    while (Date.now() < changedDeadline) {
+      const blocked = interactionBlocked();
+      if (blocked) throw new Error(blocked);
+      await sleep(150);
+      current = profileFollowSnapshot(expectedProfileUrl);
+      if (current.state !== null && current.state !== before) {
+        if (changedSince === null) changedSince = Date.now();
+        if (Date.now() - changedSince >= 1200) return {state: current.state};
+      } else {
+        changedSince = null;
+      }
+    }
+    throw new Error("O TikTok não confirmou a alteração do estado de seguimento.");
+  }
+
+  function followClickDiagnostic(target, x, y) {
+    const describe = element => element ? {
+      tag: element.tagName.toLowerCase(),
+      role: element.getAttribute("role") || "",
+      data_e2e: element.getAttribute("data-e2e") || "",
+      classes: [...element.classList].slice(0, 4).join(" ")
+    } : null;
+    const hit = document.elementFromPoint(x, y);
+    const path = [];
+    for (let element = hit; element && path.length < 4; element = element.parentElement) {
+      path.push(describe(element));
+    }
+    return {target: describe(target), hit: describe(hit), hit_inside_target: Boolean(hit && target.contains(hit)), path};
+  }
+
+  async function trustedClick(element, scroll = true, diagnostic = false) {
     if (!element || !element.isConnected) throw new Error("O controle desapareceu da página.");
     if (scroll) element.scrollIntoView({block: "center", inline: "center"});
     await sleep(80);
@@ -142,7 +295,9 @@
     const response = await transport.runtime.sendMessage({
       type: "accessible-reels-trusted-click",
       x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2
+      y: rect.top + rect.height / 2,
+      follow_diagnostic: diagnostic ? followClickDiagnostic(element,
+        rect.left + rect.width / 2, rect.top + rect.height / 2) : undefined
     });
     if (!response || response.ok !== true) {
       throw new Error(response && response.error ? response.error : "O navegador recusou o clique.");
@@ -501,7 +656,7 @@
     }
     if (event.shiftKey) return null;
     if (event.key === "F5") return "refresh_info";
-    return ({l: "toggle_like", f: "toggle_favorite"})[key] || null;
+    return null;
   }
 
   function editableTarget(target) {
@@ -546,10 +701,27 @@
       }
       return "";
     };
+    const profile = (() => {
+      for (const root of ancestors) {
+        for (const anchor of root.querySelectorAll("a[href^='/@'], a[href*='tiktok.com/@']")) {
+          try {
+            const raw = anchor.getAttribute("href") || "";
+            const candidate = raw.startsWith("/") ? null : new URL(anchor.href, location.href);
+            const pathname = candidate ? candidate.pathname : raw;
+            const trustedHost = !candidate || candidate.hostname === "tiktok.com" || candidate.hostname.endsWith(".tiktok.com");
+            const match = pathname.match(/^\/@([A-Za-z0-9._-]{1,24})\/?$/);
+            if (trustedHost && match) {
+              return {handle: match[1], url: `https://www.tiktok.com/@${match[1]}`};
+            }
+          } catch (_error) {}
+        }
+      }
+      return null;
+    })();
     let author = query([
       "[data-e2e=video-author-uniqueid]", "[data-e2e=browse-username]",
-      "a[href^='/@']", "a[href*='tiktok.com/@']"
     ]);
+    author ||= profile ? `@${profile.handle}` : "";
     if (author && !author.startsWith("@")) author = `@${author}`;
     const description = query([
       "[data-e2e=video-desc]", "[data-e2e=browse-video-desc]",
@@ -563,13 +735,7 @@
     }
     link ||= canonicalLink(location.href);
     if (!link) {
-      const profile = ancestors.map(root => root.querySelector("a[href^='/@'], a[href*='tiktok.com/@']"))
-        .find(Boolean);
-      let handle = "";
-      try {
-        const profilePath = profile && new URL(profile.href, location.href).pathname;
-        handle = profilePath?.match(/^\/@([A-Za-z0-9._-]+)\/?$/)?.[1] || "";
-      } catch (_error) {}
+      let handle = profile?.handle || "";
       // O feed atual pode expor o @autor em texto acessível, sem um link de
       // perfil ao redor. Ele ainda pertence ao mesmo vídeo já selecionado.
       handle ||= author.match(/@([A-Za-z0-9._-]{1,24})/)?.[1] ||
@@ -578,10 +744,18 @@
       if (handle && videoId) link = `https://www.tiktok.com/@${handle}/video/${videoId}`;
     }
     link ||= stateVideoLink(author, description);
+    
+    let profile_url = profile?.url || "";
+    if (!profile_url) {
+        let handle = author.match(/@([A-Za-z0-9._-]{1,24})/)?.[1] || author.match(/^([A-Za-z0-9._-]{1,24})$/)?.[1] || "";
+        if (handle) profile_url = `https://www.tiktok.com/@${handle}`;
+    }
+
     return {
       author: author || "Autor não encontrado",
       description: description || "Descrição não encontrada",
-      link
+      link,
+      profile_url
     };
   }
 
@@ -723,19 +897,47 @@
       const deadline = Date.now() + 8000;
       while (!activeVideo() && Date.now() < deadline) await sleep(150);
     }
+    if (action === "profile_follow") {
+      return profileFollowAction(Boolean(argument?.toggle), argument?.profile_url || "");
+    }
     const video = activeVideo();
     if (!["diagnostics", "collect_search_results", "close_comments"].includes(action) && !video) {
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") {
-      const deadline = Date.now() + 6000;
+      const deadline = Date.now() + 12000;
+      const collected = new Map();
+      let firstResultAt = 0;
+      let lastGrowthAt = 0;
+      let profileScrolls = 0;
+      const collectingProfile = argument === "profile";
+      const collectingMore = argument?.mode === "more";
+      const requiredSearchScrolls = collectingMore ? 12 : 8;
       do {
         const result = collectSearchResults();
-        if (result.results.length) return result;
+        const before = collected.size;
+        for (const item of result.results) collected.set(item.url, item);
+        const now = Date.now();
+        if (collected.size && !firstResultAt) firstResultAt = now;
+        if (collected.size > before) lastGrowthAt = now;
+        // TikTok virtualizes older cards as more results render. Preserve
+        // every valid card seen during a short settling window.
+        const settledSearch = firstResultAt && profileScrolls >= requiredSearchScrolls && now - lastGrowthAt >= 1200;
+        // Profile grids load more rows only after scrolling.  Do not stop at
+        // the first visible row: keep going until several scrolls produced no
+        // new card, preserving pinned/newest-to-oldest DOM order in the map.
+        const settledProfile = firstResultAt && profileScrolls >= 5 && now - lastGrowthAt >= 1200;
+        if (collected.size >= 50 || (collectingProfile ? settledProfile : settledSearch)) {
+          return {results: [...collected.values()]};
+        }
+        if (collected.size) {
+          window.scrollBy(0, window.innerHeight);
+          profileScrolls += 1;
+        }
         if (/\/login/.test(location.pathname)) throw new Error("Faça login no TikTok pela página (F6).");
-        await sleep(200);
+        await sleep(300);
       } while (Date.now() < deadline);
-      return {results: []};
+      return {results: [...collected.values()]};
     }
     if (action === "seek") {
       if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
@@ -747,6 +949,17 @@
     }
     if (["author", "description", "copy_link", "refresh_info", "download_link"].includes(action)) {
       const info = snapshot();
+      if (action === "author") {
+        const FOLLOW_SELECTORS = [
+          "button[data-e2e=feed-follow]", "button[data-e2e=video-author-follow]",
+          "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]",
+          "[role=button][aria-label*='seguindo' i]", "[role=button][aria-label*='following' i]"
+        ];
+        const btn = findNearVideo(FOLLOW_SELECTORS);
+        const state = followState(btn);
+        info.follow_state = state;
+        info.needs_profile_follow = state === null && Boolean(info.profile_url);
+      }
       if (action === "download_link") return {...info, media_url: downloadMedia(video, info.link || "")};
       if (action === "copy_link" && !info.link) return copyLinkFromTikTok(video);
       return info;
@@ -800,11 +1013,40 @@
     if (action === "toggle" || action === "play") {
       initialPlaybackReleased = true;
       if (video.paused) {
-        applyAudioPreference(video);
-        await Promise.race([video.play(), sleep(5000).then(() => {
-          throw new Error("A reprodução não foi confirmada. Use Reproduzir ou pausar, ou F6 para verificar a página.");
-        })]);
-        scheduleAudioPreference(video);
+        const startPlayback = async candidate => {
+          await Promise.race([candidate.play(), sleep(5000).then(() => {
+            throw new Error("A reprodução não foi confirmada. Use Reproduzir ou pausar, ou F6 para verificar a página.");
+          })]);
+          scheduleAudioPreference(candidate);
+        };
+        try {
+          await startPlayback(video);
+        } catch (error) {
+          // TikTok can briefly expose an empty video while replacing a search
+          // result. Wait for its media source instead of exposing WebView's
+          // "no supported source" error to the user.
+          const isSourceError = value => value?.name === "NotSupportedError" ||
+            /supported source/i.test(String(value?.message || value));
+          if (!isSourceError(error)) throw error;
+          const deadline = Date.now() + 8000;
+          let started = false;
+          while (Date.now() < deadline) {
+            await sleep(150);
+            const candidate = activeVideo();
+            if (!candidate || !candidate.currentSrc ||
+                candidate.readyState < HTMLMediaElement.HAVE_METADATA || candidate.error) continue;
+            try {
+              await startPlayback(candidate);
+              started = true;
+              break;
+            } catch (retryError) {
+              if (!isSourceError(retryError)) throw retryError;
+            }
+          }
+          if (!started && video.paused && activeVideo()?.paused) {
+            throw new Error("O vídeo ainda não disponibilizou uma fonte reproduzível. Aguarde alguns segundos e tente novamente.");
+          }
+        }
       } else if (action === "toggle") video.pause();
       return {paused: video.paused};
     }
@@ -848,6 +1090,41 @@
       });
       await sleep(100);
       return {muted: preferredMuted};
+    }
+
+    if (action === "toggle_follow") {
+      const FOLLOW_SELECTORS = [
+        "button[data-e2e=feed-follow]", "button[data-e2e=video-author-follow]",
+        "[role=button][data-e2e=feed-follow]", "[role=button][data-e2e=video-author-follow]",
+        "[role=button][aria-label*='seguir' i]", "[role=button][aria-label*='follow' i]"
+      ];
+      const video = activeVideo();
+      if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
+      const info = snapshot();
+      if (!info.profile_url) throw new Error("Não foi possível identificar o autor para conferir o seguimento.");
+      if (activeVideo() !== video) throw new Error("O vídeo mudou. Repita a ação no vídeo atual.");
+      let button = findNearVideo(FOLLOW_SELECTORS);
+      if (!button) {
+        for (const ancestor of ancestorsFor(video)) {
+          button = [...ancestor.querySelectorAll("button, [role=button]")].find(element => {
+            const text = normalizedText(element.getAttribute("aria-label") || element.textContent).toLowerCase();
+            return visible(element) && /^(seguir|follow|seguindo|following)\b/.test(text);
+          });
+          if (button) break;
+        }
+      }
+      if (!button) throw new Error("Este vídeo não oferece um botão para seguir ou deixar de seguir.");
+      const visibleState = followState(button);
+      const knownState = typeof argument?.known_follow_state === "boolean" ? argument.known_follow_state : null;
+      if (visibleState === null && knownState === null) {
+        // The feed's icon is actionable but has no accessible state. Ask the
+        // profile only for the state, then come back here for the real click.
+        return {...info, needs_follow_state: true, follow_click_sent: false};
+      }
+      const before = visibleState === null ? knownState : visibleState;
+      await trustedClick(button, true, true);
+      await sleep(1200);
+      return {...info, expected_state: !before, follow_click_sent: true};
     }
     if (action === "toggle_like") {
       return {state: await toggleAction(LIKE_SELECTORS, /descurtir|unlike|remove like/i,

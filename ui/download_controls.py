@@ -16,7 +16,8 @@ class DownloadControlsMixin:
         description = re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', str(result.get('description') or '')).strip(' .')
         suggestion = f'{name} - {description[:100]}' if description else f'{name} - vídeo'
         with wx.FileDialog(self, 'Salvar vídeo como', defaultDir=str(self._download_folder or ''),
-                           defaultFile=suggestion + '.mp4', wildcard='Vídeo MP4 (*.mp4)|*.mp4',
+                           defaultFile=suggestion + '.mp4',
+                           wildcard='Vídeos MP4 ou WebM (*.mp4;*.webm)|*.mp4;*.webm',
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dialog:
             if dialog.ShowModal() != wx.ID_OK:
                 return None
@@ -92,14 +93,21 @@ class DownloadControlsMixin:
         if result.get('media_url'):
             def completed(path, error):
                 if self._closing_app:
+                    if path:
+                        try:
+                            Path(path).unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     return
                 if path:
-                    self._download_finished(path, None)
+                    self._finalize_download(path, target)
                 else:
                     self.status('A transferência pela sessão falhou. Tentando o downloader alternativo...')
                     self._start_download_worker(name, result, folder)
-            self._browser_download = BrowserDownload(self.clients[name], result['media_url'], folder,
-                                                     self._download_progress, completed, destination=target)
+            self._browser_download = BrowserDownload(
+                self.clients[name], result['media_url'], folder,
+                self._download_progress, completed
+            )
             self._browser_download.start()
             return
         self._start_download_worker(name, result, folder)
@@ -110,18 +118,65 @@ class DownloadControlsMixin:
                          daemon=True).start()
 
     def _download_worker(self, name, link, media, folder, destination):
-        path, error = None, None
+        temporary = None
         try:
             # Preserve an existing file until the new download has completed.
-            with tempfile.TemporaryDirectory(prefix='reels-', dir=folder) as temporary:
-                downloaded = download_video(link, name, temporary, self._download_notify, direct_url=media)
-                downloaded.replace(destination)
-                path = Path(destination)
+            temporary = tempfile.TemporaryDirectory(prefix='reels-', dir=folder)
+            downloaded = download_video(
+                link, name, temporary.name, self._download_notify, direct_url=media
+            )
         except Exception as exception:
             from app_logging import sanitize
             error = sanitize(str(exception))[:500]
-        if not self._closing_app:
-            wx.CallAfter(self._download_finished, path, error)
+            if temporary:
+                temporary.cleanup()
+            if not self._closing_app:
+                wx.CallAfter(self._download_finished, None, error)
+            return
+        if self._closing_app:
+            temporary.cleanup()
+            return
+        wx.CallAfter(
+            DownloadControlsMixin._finalize_download,
+            self, downloaded, destination, temporary.cleanup,
+        )
+
+    def _finalize_download(self, downloaded, destination, cleanup=None):
+        path, error = None, None
+        downloaded = Path(downloaded)
+        destination = Path(destination)
+        target = destination.with_suffix(downloaded.suffix)
+        try:
+            # FileDialog confirmed only the exact name selected by the user.
+            # A different container needs its own confirmation before replacing
+            # a same-named file with the actual extension.
+            if target != destination and target.exists():
+                with wx.MessageDialog(
+                    self,
+                    f'O arquivo "{target.name}" já existe. Deseja substituí-lo?',
+                    'Confirmar substituição',
+                    wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+                ) as dialog:
+                    if dialog.ShowModal() != wx.ID_YES:
+                        error = 'Download cancelado; o arquivo existente foi preservado.'
+                        return
+            downloaded.replace(target)
+            path = target
+        except OSError as exception:
+            from app_logging import sanitize
+            error = sanitize(str(exception))[:500]
+        finally:
+            if cleanup:
+                try:
+                    cleanup()
+                except OSError:
+                    pass
+            elif downloaded.exists():
+                try:
+                    downloaded.unlink()
+                except OSError:
+                    pass
+            self._download_finished(path, error)
 
     def _download_notify(self, message):
         if not self._closing_app:

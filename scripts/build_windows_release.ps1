@@ -17,9 +17,12 @@ $architecture = & $PythonExe -c "import platform; print(platform.machine())"
 if ($architecture -ne "AMD64") { throw "O build requer Python x64." }
 $loader = & $PythonExe -c "import wx; from pathlib import Path; print(Path(wx.__file__).parent / 'WebView2Loader.dll')"
 if (!(Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll ausente no wxPython." }
-& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --collect-all yt_dlp --add-binary "$loader;." --add-data "ui\web_scripts;ui\web_scripts" main.py
+$ytDlp = Join-Path $root 'yt-dlp.exe'
+if (!(Test-Path -LiteralPath $ytDlp -PathType Leaf)) { throw "yt-dlp.exe ausente na raiz do projeto." }
+& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --add-binary "$loader;." --add-binary "$ytDlp;." --add-data "ui\web_scripts;ui\web_scripts" main.py
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
 & $PythonExe scripts\verify_web_scripts.py
+if (!(Test-Path -LiteralPath 'dist\Accessible Reels\yt-dlp.exe' -PathType Leaf)) { throw "yt-dlp.exe ausente no pacote gerado." }
 if ($LASTEXITCODE -ne 0) { throw "Os scripts WebView não foram empacotados corretamente." }
 
 & "$PSScriptRoot\prepare_webview2.ps1" -Destination "dist\Accessible Reels"

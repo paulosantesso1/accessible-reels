@@ -24,7 +24,10 @@
           const id = ++clickId;
           const timeout = setTimeout(() => { waiting.delete(id); resolve({ok:false, error:'O clique não respondeu a tempo.'}); }, 5000);
           waiting.set(id, result => { clearTimeout(timeout); resolve(result); });
-          window.reelsHost.postMessage(JSON.stringify({type:'click', token:commandToken, id, x:message.x, y:message.y}));
+          window.reelsHost.postMessage(JSON.stringify({
+            type:'click', token:commandToken, id, x:message.x, y:message.y,
+            follow_diagnostic: message.follow_diagnostic
+          }));
         });
       }
     }
@@ -50,4 +53,13 @@
   document.addEventListener('play', event => {
     if (!globalThis.__accessibleNetworkActive && event.target instanceof HTMLMediaElement) event.target.pause();
   }, true);
+})();
+(() => {
+    // Prevent the web page from stealing our Alt shortcuts!
+    window.addEventListener('keydown', (e) => {
+        if (e.altKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'p', 'P', 'a', 'A', 'd', 'D', 'c', 'C', 'e', 'E', 'l', 'L', 'f', 'F', 's', 'S', 'm', 'M'].includes(e.key)) {
+            // Stop propagation so YouTube/TikTok don't receive it and play sounds/block it
+            e.stopImmediatePropagation();
+        }
+    }, true);
 })();

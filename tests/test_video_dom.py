@@ -37,8 +37,8 @@ def install_embedded_tiktok(page):
           }
         }
       };
-      window.command = action => new Promise(resolve =>
-        window.commandListener({type: 'accessible-reels-command', action}, {}, resolve));
+      window.command = (action, argument) => new Promise(resolve =>
+        window.commandListener({type: 'accessible-reels-command', action, argument}, {}, resolve));
       for (const video of document.querySelectorAll('video')) {
         video.testPaused = video.id !== 'active';
         Object.defineProperty(video, 'paused', {get: () => video.testPaused});
@@ -49,6 +49,13 @@ def install_embedded_tiktok(page):
     page.add_script_tag(content=(
         Path(__file__).resolve().parents[1] / "ui/web_scripts/tiktok.js"
     ).read_text(encoding="utf-8"))
+
+
+def load_tiktok_page(page, path, body):
+    page.route("https://www.tiktok.com/**", lambda route: route.fulfill(
+        status=200, content_type="text/html", body=body
+    ))
+    page.goto("https://www.tiktok.com" + path)
 
 
 def test_download_identifies_active_feed_media_without_search(page):
@@ -130,11 +137,228 @@ def test_initial_details_refresh_waits_for_delayed_video(page):
     assert result['author'] == '@ana'
 
 
+def test_tiktok_follow_status_is_unknown_without_an_explicit_control(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a></article>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("command('author')")
+
+    assert result['ok'] is True
+    assert result['author'] == '@ana'
+    assert result['follow_state'] is None
+    assert result['needs_profile_follow'] is True
+
+
+def test_tiktok_follow_clicks_feed_button_when_it_exposes_a_state(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+      <button data-e2e="feed-follow" aria-label="Seguir @ana" aria-pressed="false"
+        style="width:80px;height:40px"
+        onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'false' ? 'true' : 'false')"></button>
+      </article>''')
+    install_embedded_tiktok(page)
+
+    assert page.evaluate("command('author')")['follow_state'] is False
+    result = page.evaluate("command('toggle_follow')")
+    assert result['follow_click_sent'] is True
+    assert result['expected_state'] is True
+    assert page.evaluate("command('author')")['follow_state'] is True
+
+
+def test_feed_follow_without_accessible_state_uses_profile_toggle(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+      <button data-e2e="feed-follow" style="width:80px;height:40px"
+        onclick="window.clicks=(window.clicks || 0)+1"></button></article>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('toggle_follow')")
+    assert result['needs_follow_state'] is True
+    assert result['follow_click_sent'] is False
+    assert result['profile_url'] == 'https://www.tiktok.com/@ana'
+    assert 'state' not in result
+    assert page.evaluate('window.clicks') is None
+
+
+def test_tiktok_follow_requires_a_feed_button_for_the_real_click(page):
+    page.set_content('''<article><video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+      <button data-e2e="feed-follow" aria-label="Seguir @ana" aria-pressed="false"
+        style="width:80px;height:40px" onclick="this.remove()"></button>
+      </article>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("command('toggle_follow')")
+
+    assert result['follow_click_sent'] is True
+    assert result['expected_state'] is True
+
+
+def test_tiktok_profile_follow_reads_and_changes_explicit_button_state(page):
+    load_tiktok_page(page, '/@ana', '''
+      <aside><button data-e2e="follow-button" style="width:100px;height:40px"
+        onclick="window.wrongProfileClicked=true">Follow suggested account</button></aside>
+      <main style="width:600px;height:400px"><header style="width:500px;height:100px">
+        <button data-e2e="follow-button" aria-label="Seguir @ana" aria-pressed="false"
+          style="width:100px;height:40px"
+          onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'false' ? 'true' : 'false')"></button>
+      </header></main>''')
+    install_embedded_tiktok(page)
+    const_argument = "{toggle:%s, profile_url:'https://www.tiktok.com/@ana'}"
+
+    assert page.evaluate("command('profile_follow', " + const_argument % 'false' + ")") == {'ok': True, 'state': False}
+    assert page.evaluate("command('profile_follow', " + const_argument % 'true' + ")") == {'ok': True, 'state': True}
+    assert page.evaluate("command('profile_follow', " + const_argument % 'true' + ")") == {'ok': True, 'state': False}
+    assert page.evaluate("Boolean(window.wrongProfileClicked)") is False
+
+
+def test_tiktok_profile_message_button_is_not_follow_evidence(page):
+    load_tiktok_page(page, '/@ana', '''<main><header style="width:500px;height:100px">
+      <button style="width:100px;height:40px">Message</button>
+    </header></main>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("""async () => {
+      setTimeout(() => {
+        const follow = document.createElement('button');
+        follow.dataset.e2e = 'follow-button';
+        follow.textContent = 'Follow';
+        follow.style = 'width:100px;height:40px';
+        document.querySelector('header').append(follow);
+      }, 250);
+      return await command('profile_follow', {
+        toggle:false, profile_url:'https://www.tiktok.com/@ana'
+      });
+    }""")
+
+    assert result == {'ok': True, 'state': False}
+
+
+def test_profile_read_waits_for_initial_state_to_settle(page):
+    load_tiktok_page(page, '/@ana', '''<header style="width:500px;height:100px">
+      <button data-e2e="follow-button" style="width:100px;height:40px">Follow</button>
+    </header>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("""async () => {
+      setTimeout(() => document.querySelector('button').textContent = 'Following', 400);
+      return command('profile_follow', {toggle:false, profile_url:'https://www.tiktok.com/@ana'});
+    }""")
+    assert result == {'ok': True, 'state': True}
+
+
+def test_profile_toggle_does_not_confirm_a_brief_optimistic_change(page):
+    load_tiktok_page(page, '/@ana', '''<header style="width:500px;height:100px">
+      <button data-e2e="follow-button" style="width:100px;height:40px"
+        onclick="this.textContent='Following'; setTimeout(() => this.textContent='Follow', 300)">Follow</button>
+    </header>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('profile_follow', {toggle:true, profile_url:'https://www.tiktok.com/@ana'})")
+    assert result['ok'] is False
+    assert 'não confirmou' in result['error']
+
+
+def test_tiktok_profile_unfollow_uses_follow_icon_and_verifies_replacement(page):
+    load_tiktok_page(page, '/@ana', '''<main style="width:600px;height:400px"><header style="width:500px;height:100px">
+      <button style="width:100px;height:40px">Message</button>
+      <div role="button" class="DivFollowIcon-test" aria-label="Unfollow @ana"
+        style="width:40px;height:40px" onclick="this.outerHTML='<button data-e2e=&quot;follow-button&quot; style=&quot;width:100px;height:40px&quot;>Follow</button>'"></div>
+      </header></main>''')
+    install_embedded_tiktok(page)
+
+    argument = "{toggle:%s, profile_url:'https://www.tiktok.com/@ana'}"
+    assert page.evaluate("command('profile_follow', " + argument % 'false' + ")") == {'ok': True, 'state': True}
+    assert page.evaluate("command('profile_follow', " + argument % 'true' + ")") == {'ok': True, 'state': False}
+
+
+def test_tiktok_profile_follow_refuses_a_different_profile(page):
+    load_tiktok_page(page, '/@outra', '''<main><header style="width:500px;height:100px">
+      <button data-e2e="follow-button" style="width:100px;height:40px">Follow</button>
+    </header></main>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("""command('profile_follow', {
+      toggle:true, profile_url:'https://www.tiktok.com/@ana'
+    })""")
+
+    assert result['ok'] is False
+    assert 'não corresponde ao autor esperado' in result['error']
+
+
+def test_tiktok_profile_follow_reports_captcha_without_clicking(page):
+    load_tiktok_page(page, '/@ana', '''<main><header style="width:500px;height:100px">
+      <div class="secsdk-captcha-wrapper" style="width:200px;height:80px">Verify</div>
+    </header></main>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("""command('profile_follow', {
+      toggle:true, profile_url:'https://www.tiktok.com/@ana'
+    })""")
+
+    assert result['ok'] is False
+    assert 'exige uma verificação' in result['error']
+    assert 'Não foi possível confirmar' in result['error']
+
+
+def test_profile_link_ignores_video_permalink_before_author_link(page):
+    page.set_content('''<div>
+      <video id="active" style="width:600px;height:400px"></video>
+      <a href="https://www.tiktok.com/@ana/video/7682105671503990037">Vídeo</a>
+      <a href="https://www.tiktok.com/@ana">@ana</a>
+    </div>''')
+    install_embedded_tiktok(page)
+
+    result = page.evaluate("command('refresh_info')")
+
+    assert result['ok'] is True
+    assert result['profile_url'] == 'https://www.tiktok.com/@ana'
+
+
+def test_search_keeps_cards_that_tiktok_virtualizes_during_collection(page):
+    page.set_content('''<main id="results">
+      <a href="https://www.tiktok.com/@ana/video/123"><img alt="Primeiro resultado"></a>
+    </main>''')
+    install_embedded_tiktok(page)
+    page.evaluate('''() => setTimeout(() => {
+      document.getElementById('results').innerHTML =
+        '<a href="https://www.tiktok.com/@bia/video/456"><img alt="Segundo resultado"></a>';
+    }, 400)''')
+    result = page.evaluate("command('collect_search_results')")
+    assert result['ok'] is True
+    assert [item['url'] for item in result['results']] == [
+        'https://www.tiktok.com/@ana/video/123',
+        'https://www.tiktok.com/@bia/video/456',
+    ]
+
+
 def test_embedded_play_starts_paused_video_and_keeps_playing_video(page):
     page.set_content('<video id="active" style="width:300px;height:300px"></video>')
     install_embedded_tiktok(page)
     page.eval_on_selector('video', 'v => v.pause()')
     assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
+    assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
+
+
+def test_embedded_play_retries_after_tiktok_replaces_an_empty_video_source(page):
+    page.set_content('<video id="active" style="width:300px;height:300px"></video>')
+    install_embedded_tiktok(page)
+    page.evaluate('''() => {
+      const video = document.querySelector('#active');
+      let attempts = 0;
+      Object.defineProperty(video, 'currentSrc', {configurable: true, value: ''});
+      Object.defineProperty(video, 'readyState', {configurable: true, value: 0});
+      video.play = () => {
+        attempts += 1;
+        if (attempts === 1) {
+          setTimeout(() => {
+            Object.defineProperty(video, 'currentSrc', {configurable: true, value: 'https://v.tiktokcdn.com/ready.mp4'});
+            Object.defineProperty(video, 'readyState', {configurable: true, value: HTMLMediaElement.HAVE_METADATA});
+          }, 200);
+          return Promise.reject(new DOMException('Failed to load because no supported source was found.', 'NotSupportedError'));
+        }
+        video.testPaused = false;
+        return Promise.resolve();
+      };
+    }''')
     assert page.evaluate("command('play')") == {'ok': True, 'paused': False}
 
 
@@ -683,6 +907,21 @@ def test_extension_audio_guard_blocks_volume_spike_before_playback(page):
     page.wait_for_function(
         "() => Math.abs(document.querySelector('#new').volume - 0.3) < 0.001"
     )
+
+
+def test_audio_guard_hides_minimize_visibility_event_only_from_active_platform(page):
+    page.set_content("<video></video>")
+    page.evaluate("globalThis.__accessibleNetworkActive = true")
+    guard = (Path(__file__).resolve().parents[1] / "ui" / "web_scripts" / "audio_guard.js").read_text(encoding="utf-8")
+    page.add_script_tag(content=guard)
+    page.evaluate("document.addEventListener('visibilitychange', () => globalThis.visibilityCount = (globalThis.visibilityCount || 0) + 1)")
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    assert page.evaluate("globalThis.visibilityCount || 0") == 0
+    assert page.evaluate("document.hidden") is False
+    assert page.evaluate("document.visibilityState") == "visible"
+    page.evaluate("globalThis.__accessibleNetworkActive = false")
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    assert page.evaluate("globalThis.visibilityCount") == 1
 
 
 def test_real_dom_finds_video_link_in_outer_feed_item_even_when_link_has_no_area(page):

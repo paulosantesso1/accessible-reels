@@ -9,6 +9,41 @@
   const mutedDescriptor = Object.getOwnPropertyDescriptor(mediaPrototype, "muted");
   const nativePlay = mediaPrototype.play;
 
+  // Plataformas podem pausar no visibilitychange, pagehide ou ao consultar
+  // document.hidden. A plataforma ativa continua audível ao minimizar; a troca
+  // real ainda pausa a mídia diretamente por __accessibleSetActive(false).
+  const active = () => globalThis.__accessibleNetworkActive === true;
+  const stopWhenActive = event => {
+    if (active()) event.stopImmediatePropagation();
+  };
+  document.addEventListener("visibilitychange", stopWhenActive, true);
+  document.addEventListener("webkitvisibilitychange", stopWhenActive, true);
+  window.addEventListener("pagehide", stopWhenActive, true);
+  window.addEventListener("freeze", stopWhenActive, true);
+
+  const inheritedDescriptor = name => {
+    let owner = document;
+    while (owner) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+      if (descriptor) return descriptor;
+      owner = Object.getPrototypeOf(owner);
+    }
+    return null;
+  };
+  const maskVisibility = (name, visibleValue) => {
+    const descriptor = inheritedDescriptor(name);
+    if (!descriptor || typeof descriptor.get !== "function") return;
+    try {
+      Object.defineProperty(document, name, {
+        configurable: true,
+        get() { return active() ? visibleValue : descriptor.get.call(document); }
+      });
+    } catch (_error) {}
+  };
+  maskVisibility("hidden", false);
+  maskVisibility("webkitHidden", false);
+  maskVisibility("visibilityState", "visible");
+
   const apply = media => {
     if (!(media instanceof HTMLMediaElement)) return;
     if (preferredVolume !== null && volumeDescriptor) {

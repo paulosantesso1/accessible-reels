@@ -107,6 +107,21 @@
     // Nested role=button wrappers exist around Save. Prefer the actual inner button.
     return candidates.find(el => !candidates.some(other => other !== el && el.contains(other))) || null;
   }
+  function followState(element) {
+    if (!element) return null;
+    const value = clean([
+      element.getAttribute("aria-label"), element.getAttribute("title"), element.textContent
+    ].filter(Boolean).join(" ")).toLowerCase();
+    if (/deixar de seguir|parar de seguir|\bunfollow\b|\bseguindo\b|\bfollowing\b/.test(value)) return true;
+    if (/\bseguir\b|\bfollow\b/.test(value)) {
+      return element.getAttribute("aria-pressed") === "true";
+    }
+    return null;
+  }
+  function followButton(root) {
+    return [...root.querySelectorAll("button, [role='button']")]
+      .find(element => visible(element) && followState(element) !== null) || null;
+  }
   async function click(element) {
     if (!visible(element) || element.disabled || element.getAttribute("aria-disabled") === "true") {
       throw new Error("O controle não está disponível no Instagram.");
@@ -157,7 +172,13 @@
     const description = clean(captions[0]?.textContent).replace(/\s*…?\s*(mais|more)$/i, "").replace(/\s*…$/, "") ||
       clean(root.querySelector("h1")?.textContent) || "Descrição não encontrada";
     const link = anchors.map(a => canonicalLink(a.href)).find(Boolean) || canonicalLink(location.href);
-    return {author, description, link};
+    let profile_url = "";
+    if (profile) {
+        let username = new URL(profile.href).pathname.split("/")[1];
+        if (username) profile_url = `https://www.instagram.com/${username}/reels/`;
+    }
+
+    return {author, description, link, profile_url};
   }
   function commentDialog() {
     return [...document.querySelectorAll('[role="dialog"]')].find(el => visible(el) &&
@@ -234,7 +255,10 @@
   function collectSearchResults() {
     const results = [];
     const seen = new Set();
-    for (const anchor of document.querySelectorAll('main a[href], [role="main"] a[href]')) {
+    // Search cards can be mounted outside <main> while Instagram replaces the
+    // page shell. canonicalLink below keeps this broad selector restricted to
+    // actual Instagram posts and Reels.
+    for (const anchor of document.querySelectorAll('a[href]')) {
       const url = canonicalLink(anchor.href);
       if (!url || seen.has(url)) continue;
       seen.add(url);
@@ -246,18 +270,79 @@
     }
     return {results};
   }
+  function resultMetadata(html) {
+    const document = new DOMParser().parseFromString(html, "text/html");
+    const value = document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "";
+    // Instagram's public description is usually: "likes - author on date:
+    // \"caption\"" (with localized variants for "on").
+    const match = value.match(/-\s+(.+?)\s+(?:no|em|on)\s+.+?:\s*["“]([\s\S]*?)["”](?:\.|$)/i);
+    if (!match) return null;
+    const author = clean(match[1]).replace(/^@/, "");
+    const description = clean(match[2].split(/\n|\.{3}/)[0]);
+    return {author: author ? `@${author}` : "Instagram", description};
+  }
+  async function enrichSearchResults(results) {
+    // Test pages and login shells have no Instagram origin to query. The
+    // visible card data remains the safe fallback in those contexts.
+    if (!/(^|\.)instagram\.com$/i.test(location.hostname) &&
+        globalThis.__accessibleInstagramEnableMetadataTest !== true) return results;
+    const enriched = [...results];
+    const inspect = async index => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      try {
+        const response = await fetch(enriched[index].url, {
+          credentials: "same-origin", signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const metadata = resultMetadata(await response.text());
+        if (metadata?.description) enriched[index] = {...enriched[index], ...metadata};
+      } catch (_error) {
+        // A card without metadata remains available to open.
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    // Limit background requests and run small batches so search stays prompt.
+    for (let index = 0; index < Math.min(enriched.length, 6); index += 3) {
+      await Promise.all([...Array(Math.min(3, enriched.length - index))].map((_, offset) => inspect(index + offset)));
+    }
+    return enriched;
+  }
   async function execute(action, argument) {
     await audioReady;
     if (action === "diagnostics") return {message: `Instagram conectado; ${document.querySelectorAll("video").length} vídeo(s); Reel ativo ${activeVideo() ? "sim" : "não"}.`};
     if (action === "collect_search_results") {
-      const deadline = Date.now() + 6000;
+      const deadline = Date.now() + 12000;
+      const collected = new Map();
+      let firstResultAt = 0;
+      let lastGrowthAt = 0;
+      let profileScrolls = 0;
+      const collectingProfile = argument === "profile";
+      const collectingMore = argument?.mode === "more";
+      const requiredSearchScrolls = collectingMore ? 12 : 8;
       do {
         const result = collectSearchResults();
-        if (result.results.length) return result;
+        const before = collected.size;
+        for (const item of result.results) collected.set(item.url, item);
+        const now = Date.now();
+        if (collected.size && !firstResultAt) firstResultAt = now;
+        if (collected.size > before) lastGrowthAt = now;
+        // Once cards start arriving, allow a short settling period for the
+        // current batch instead of waiting for an arbitrary 50 results.
+        const settledSearch = firstResultAt && profileScrolls >= requiredSearchScrolls && now - lastGrowthAt >= 1200;
+        const settledProfile = firstResultAt && profileScrolls >= 5 && now - lastGrowthAt >= 1200;
+        if (collected.size >= 50 || (collectingProfile ? settledProfile : settledSearch)) {
+          return {results: await enrichSearchResults([...collected.values()])};
+        }
+        if (collected.size) {
+          window.scrollBy(0, window.innerHeight);
+          profileScrolls += 1;
+        }
         if (/\/accounts\//.test(location.pathname)) throw new Error("Faça login no Instagram pelo navegador.");
-        await sleep(200);
+        await sleep(300);
       } while (Date.now() < deadline);
-      return {results: []};
+      return {results: await enrichSearchResults([...collected.values()])};
     }
     if (action === "close_comments") { await closeComments(); return {}; }
     const video = await waitFor(activeVideo, "Abra os Reels e faça login no Instagram pelo navegador.");
@@ -271,6 +356,14 @@
     }
     if (["author", "description", "refresh_info", "copy_link", "download_link"].includes(action)) {
       const info = snapshot();
+      if (action === "author") {
+        let followStatus = " (Não foi possível verificar se você segue)";
+        const root = reelRoot(video);
+        const state = followState(followButton(root));
+        if (state === true) followStatus = " (Você já segue)";
+        else if (state === false) followStatus = " (Não segue)";
+        info.author += followStatus;
+      }
       if (action === "download_link") return {...info, media_url: video.currentSrc || video.src || ""};
       if (action === "copy_link" && !info.link) throw new Error("Não foi possível identificar o link do Reel atual.");
       return info;
@@ -339,6 +432,41 @@
         base + (action === "speed_up" ? (speeds[base] <= current + 0.001 ? 1 : 0) : -1)));
       video.playbackRate = speeds[next];
       return {playbackRate: video.playbackRate};
+    }
+
+    if (action === "toggle_follow") {
+      const video = activeVideo();
+      if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
+      const root = reelRoot(video);
+      let btn = followButton(root);
+      if (!btn) throw new Error("Botão de Seguir não encontrado. Pode ser seu próprio vídeo.");
+
+      const beforeIsFollowing = followState(btn);
+      if (beforeIsFollowing === null) {
+        throw new Error("Não foi possível verificar o estado do botão Seguir. Use F6 para confirmar na página.");
+      }
+      await click(btn);
+      
+      const deadline = Date.now() + 3500;
+      let afterIsFollowing = beforeIsFollowing;
+      while (Date.now() < deadline) {
+        await sleep(150);
+        const currentButton = followButton(root);
+        if (!currentButton || !currentButton.isConnected || !visible(currentButton)) {
+            // Se o botão sumiu e não seguíamos, é porque começamos a seguir.
+            if (!beforeIsFollowing) afterIsFollowing = true;
+        } else {
+            btn = currentButton;
+            const state = followState(btn);
+            if (state !== null) afterIsFollowing = state;
+        }
+        
+        if (afterIsFollowing !== beforeIsFollowing) break;
+      }
+      if (afterIsFollowing === beforeIsFollowing) {
+        throw new Error("A rede não confirmou a alteração de seguimento. Tente novamente.");
+      }
+      return { state: afterIsFollowing };
     }
     if (action === "toggle_like") return toggleSocial(/^(curtir|descurtir|like|unlike)$/i, /^(descurtir|unlike)$/i, "a curtida");
     if (action === "toggle_favorite") return toggleSocial(/^(salvar|remover|remover dos salvos|save|unsave|remove)$/i, /^(remover|remover dos salvos|unsave|remove)$/i, "Salvar");
@@ -412,7 +540,7 @@
     if (event.altKey && event.shiftKey) return ({arrowup: "volume_up", arrowdown: "volume_down", m: "toggle_mute", c: "comments"})[key];
     if (event.altKey) return ({arrowdown: "next", arrowup: "previous", p: "toggle", a: "author", d: "description", c: "copy_link", f12: "diagnostics", e: "search_page"})[key];
     if (event.shiftKey) return null;
-    return ({f5: "refresh_info", l: "toggle_like", f: "toggle_favorite"})[key];
+    return ({f5: "refresh_info"})[key];
   }
   transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "accessible-reels-command" || message.platform !== "instagram") return false;

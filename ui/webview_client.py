@@ -14,35 +14,62 @@ from ui import webview_native
 from ui.video_link import parse_video_link
 from app_logging import get_logger
 
-PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/'}
+PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.instagram.com/reels/', 'YouTube': 'https://www.youtube.com/shorts/'}
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
-           'close_comments', 'toggle_like', 'toggle_favorite',
-           'collect_search_results', 'download_link', 'diagnostics'}
+           'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow',
+           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics'}
 logger = get_logger()
 
 
 def belongs_to_platform(url, platform):
     try:
         parsed = urlsplit(url)
-        domain = 'tiktok.com' if platform == 'TikTok' else 'instagram.com'
-        return (parsed.scheme == 'https' and parsed.hostname in (domain, 'www.' + domain)
+        if platform == 'TikTok':
+            domain = 'tiktok.com'
+        elif platform == 'YouTube':
+            domain = 'youtube.com'
+        else:
+            domain = 'instagram.com'
+        return (parsed.scheme == 'https' and parsed.hostname in (domain, 'www.' + domain, 'm.' + domain)
                 and not parsed.username and not parsed.password and parsed.port in (None, 443))
     except ValueError:
         return False
 
 
+def same_page_target(url, expected_url):
+    """Compare a loaded top-level page with an exact callback destination."""
+    try:
+        current = urlsplit(url)
+        expected = urlsplit(expected_url)
+        current_host = (current.hostname or '').removeprefix('www.').removeprefix('m.')
+        expected_host = (expected.hostname or '').removeprefix('www.').removeprefix('m.')
+        current_path = current.path.rstrip('/').casefold()
+        expected_path = expected.path.rstrip('/').casefold()
+        return (current.scheme == expected.scheme == 'https' and current_host == expected_host
+                and current_path == expected_path and not current.username and not current.password)
+    except (TypeError, ValueError):
+        return False
+
+
 def scripts_for(platform):
     root = Path(__file__).with_name('web_scripts')
-    domain = 'tiktok.com' if platform == 'TikTok' else 'instagram.com'
+    if platform == 'TikTok':
+        domain = 'tiktok.com'
+    elif platform == 'YouTube':
+        domain = 'youtube.com'
+    else:
+        domain = 'instagram.com'
     source = '\n'.join((root / name).read_text(encoding='utf-8') for name in
                        ('transport.js', 'audio_guard.js', 'media_capture.js', platform.lower() + '.js'))
-    return f"if (window === top && ['{domain}', 'www.{domain}'].includes(location.hostname)) {{\n{source}\n}}"
+    return f"if (window === top && ['{domain}', 'www.{domain}', 'm.{domain}'].includes(location.hostname)) {{\n{source}\n}}"
 
 
 class WebViewClient:
-    def __init__(self, view, platform, on_loaded, on_error):
+    def __init__(self, view, platform, on_loaded, on_error, *, prelude='', before_load=None):
         self.view, self.platform = view, platform
+        self.prelude = prelude
+        self.before_load = before_load
         self.on_loaded, self.on_error = on_loaded, on_error
         self.generation = 0
         self.pending = None
@@ -51,6 +78,13 @@ class WebViewClient:
         self.active = True
         self.target_url = PLATFORM_URLS[platform]
         self.after_load = None
+        self._after_load_expected_url = None
+        self._after_load_unexpected = None
+        self._retry_url = None
+        self._retry_after_load = None
+        self._retry_expected_url = None
+        self._retry_unexpected = None
+        self._retry_attempted = False
         view.Bind(wx.PyEventBinder(html2.wxEVT_WEBVIEW_CREATED, 1), self._created)
         view.Bind(html2.EVT_WEBVIEW_NAVIGATING, self._navigating)
         view.Bind(html2.EVT_WEBVIEW_LOADED, self._loaded)
@@ -61,7 +95,10 @@ class WebViewClient:
         """Install scripts after Create; some wx builds emit CREATED before Python binds."""
         if self.ready or getattr(self, '_initialized', False):
             return
-        if not self.view.AddScriptMessageHandler('reelsHost') or not self.view.AddUserScript(scripts_for(self.platform)):
+        if self.before_load:
+            self.before_load()
+        if not self.view.AddScriptMessageHandler('reelsHost') or not self.view.AddUserScript(
+                self.prelude + '\n' + scripts_for(self.platform)):
             self.on_error('Não foi possível preparar os controles da página.')
             return
         self._initialized = True
@@ -75,9 +112,30 @@ class WebViewClient:
         if not event.IsTargetMainFrame():
             event.Skip()
             return
+        if (self.after_load and self._after_load_expected_url
+                and not same_page_target(event.GetURL(), self._after_load_expected_url)):
+            unexpected = self._after_load_unexpected
+            self.after_load = None
+            self._after_load_expected_url = None
+            self._after_load_unexpected = None
+            self._retry_url = None
+            self._retry_after_load = None
+            self._retry_expected_url = None
+            self._retry_unexpected = None
+            if unexpected:
+                wx.CallAfter(unexpected, event.GetURL())
         self.generation += 1
         self.ready = False
-        self._cancel('A página mudou. Confira o vídeo antes de repetir a ação.')
+        logger.info('Main navigation: platform=%s destination=%s action=%s',
+                    self.platform, event.GetURL(), self.pending.get('action') if self.pending else None)
+        # Invalidate immediately, but deliver cancellation after the native
+        # navigation event. Its callback may navigate back to the video.
+        pending, self.pending = self.pending, None
+        if pending:
+            pending['timer'].Stop()
+            wx.CallAfter(lambda: pending['callback']({
+                'ok': False, 'error': 'A página mudou. Confira o vídeo antes de repetir a ação.'
+            }) if self.alive else None)
         event.Skip()
 
     def _loaded(self, event):
@@ -89,14 +147,28 @@ class WebViewClient:
         def checked(value, error):
             if not self.alive or generation != self.generation:
                 return
+            document_ready = value is True and not error
+            if (document_ready and self.after_load and self._after_load_expected_url
+                    and not same_page_target(self.view.GetCurrentURL(), self._after_load_expected_url)):
+                logger.info(
+                    'Ignoring loaded event before checked destination: platform=%s current=%s expected=%s',
+                    self.platform, self.view.GetCurrentURL(), self._after_load_expected_url,
+                )
+                return
             was_ready = self.ready
-            self.ready = value is True and not error
+            self.ready = document_ready
             if self.ready:
                 self.set_active(self.active)
                 if not was_ready:
                     self.on_loaded()
+                self._retry_url = None
+                self._retry_after_load = None
+                self._retry_expected_url = None
+                self._retry_unexpected = None
                 if self.after_load:
                     callback, self.after_load = self.after_load, None
+                    self._after_load_expected_url = None
+                    self._after_load_unexpected = None
                     wx.CallAfter(lambda: callback() if self.alive and generation == self.generation else None)
         webview_native.evaluate(self.view, self._prepare_script() +
                                 "Boolean(window.__accessibleIsReady?.())", checked)
@@ -110,11 +182,59 @@ class WebViewClient:
     def _error(self, event):
         if event.GetTarget() not in ('', '_self', '_top'):
             return
-        self._cancel('Falha ao carregar a página. Tente recarregar.')
+        logger.warning('WebView navigation error: platform=%s url=%s code=%s detail=%s current=%s',
+                       self.platform, event.GetURL(), event.GetInt(), event.GetString(),
+                       self.view.GetCurrentURL())
+        # WebView2 can report a late navigation/resource failure after the top
+        # document is already interactive. At that point the bridge is usable;
+        # treating the event as a page failure would cancel an in-flight social
+        # action and reload a page that is working.
+        current_url = self.view.GetCurrentURL()
+        if self.ready and belongs_to_platform(current_url, self.platform):
+            logger.info(
+                'Ignoring WebView load error after page became ready: platform=%s current=%s target=%s',
+                self.platform, current_url, event.GetTarget(),
+            )
+            return
+        # A platform can transiently reject a direct video URL immediately
+        # after search. Retry that one explicit result navigation once,
+        # retaining its callback and result list on every supported network.
+        if self._retry_url and not self._retry_attempted:
+            self._retry_attempted = True
+            url, after_load = self._retry_url, self._retry_after_load
+            expected_url, unexpected = self._retry_expected_url, self._retry_unexpected
+            retry_generation = self.generation
+            logger.warning('WebView load error: platform=%s; retrying result navigation once', self.platform)
+            def retry():
+                if (self.alive and self.generation == retry_generation
+                        and self._retry_url == url and not self.ready):
+                    self.generation += 1
+                    self.ready = False
+                    self._cancel('Navegação repetida após falha temporária.')
+                    self.after_load = after_load
+                    self._after_load_expected_url = expected_url
+                    self._after_load_unexpected = unexpected
+                    self.view.LoadURL(url)
+            wx.CallLater(1200, retry)
+            return
+        # Clear failed-navigation state before notifying callers, which can
+        # synchronously start a recovery navigation with its own callback.
+        pending, self.pending = self.pending, None
+        self.after_load = None
+        self._after_load_expected_url = None
+        self._after_load_unexpected = None
+        self._retry_url = None
+        self._retry_after_load = None
+        self._retry_expected_url = None
+        self._retry_unexpected = None
         logger.warning('WebView load error: platform=%s target=%s', self.platform, event.GetTarget())
-        self.on_error('Falha ao carregar a página. Tente recarregar.')
+        if pending:
+            pending['timer'].Stop()
+            pending['callback']({'ok': False, 'error': 'Falha ao carregar a página. Tente recarregar.'})
+            return
+        self.on_error('A plataforma recusou carregar esta página. Tente outro resultado ou recarregue.')
 
-    def navigate(self, url, after_load=None):
+    def navigate(self, url, after_load=None, *, expected_url=None, on_unexpected=None):
         if not belongs_to_platform(url, self.platform):
             platform, url = parse_video_link(url)
             if platform != self.platform:
@@ -123,7 +243,15 @@ class WebViewClient:
         self.generation += 1
         self.ready = False
         self._cancel('Navegação solicitada; o comando anterior foi encerrado.')
+        self.target_url = url
         self.after_load = after_load
+        self._after_load_expected_url = expected_url
+        self._after_load_unexpected = on_unexpected
+        self._retry_url = url
+        self._retry_after_load = after_load
+        self._retry_expected_url = expected_url
+        self._retry_unexpected = on_unexpected
+        self._retry_attempted = False
         self.view.LoadURL(url)
 
     def set_active(self, active):
@@ -189,6 +317,13 @@ class WebViewClient:
                 return
         except (TypeError, ValueError, AttributeError):
             return
+        if self.pending['action'] == 'toggle_follow' and isinstance(value.get('follow_diagnostic'), dict):
+            diagnostic = value['follow_diagnostic']
+            logger.info(
+                'TikTok follow click diagnostic: target=%s hit=%s inside_target=%s path=%s',
+                diagnostic.get('target'), diagnostic.get('hit'),
+                diagnostic.get('hit_inside_target'), diagnostic.get('path'),
+            )
         self.pending['clicks'].add(identifier)
         token, generation = self.pending['token'], self.generation
         def valid():
@@ -204,6 +339,8 @@ class WebViewClient:
         self.alive = False
         self.ready = False
         self.after_load = None
+        self._after_load_expected_url = None
+        self._after_load_unexpected = None
         if self.pending:
             self.pending['timer'].Stop()
             self.pending = None

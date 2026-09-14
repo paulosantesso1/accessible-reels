@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import wx
+import pytest
 from unittest.mock import Mock, patch
 from pathlib import Path
 
@@ -11,8 +12,11 @@ from ui.app_frame import (
     keyboard_help_text,
     session_summary,
     video_details_text,
+    webview_browser_arguments,
 )
-from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS
+from ui.shortcuts import (ACCELERATOR_SPECS, DEFAULT_SHORTCUTS,
+                          SEEK_ACCELERATOR_SPECS, load_shortcut_settings,
+                          save_shortcut_settings, shortcut_to_windows)
 
 
 class AcceleratorHarness:
@@ -67,13 +71,68 @@ def test_required_accelerators_are_preserved():
     assert shortcuts["open_comments"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("C"))
     assert shortcuts["toggle_like"] == (wx.ACCEL_ALT, ord("L"))
     assert shortcuts["toggle_favorite"] == (wx.ACCEL_ALT, ord("F"))
+    assert shortcuts["read_follow_status"] == (wx.ACCEL_ALT, ord("G"))
+    assert shortcuts["open_profile"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("P"))
+
+
+def test_shortcut_preferences_are_saved_together(tmp_path):
+    path = tmp_path / "shortcuts.json"
+    values = dict(DEFAULT_SHORTCUTS)
+    values["toggle_playback"] = "Ctrl+Alt+P"
+    save_shortcut_settings(values, {"toggle_playback"}, path)
+    loaded, globals_ = load_shortcut_settings(path)
+    assert loaded["toggle_playback"] == "Ctrl+Alt+P"
+    assert globals_ == {"toggle_playback"}
+
+
+def test_duplicate_shortcuts_are_rejected(tmp_path):
+    values = dict(DEFAULT_SHORTCUTS)
+    values["toggle_playback"] = values["copy_link"]
+    with pytest.raises(ValueError, match="mesmo atalho"):
+        save_shortcut_settings(values, set(), tmp_path / "shortcuts.json")
+
+
+def test_windows_global_hotkey_conversion_uses_virtual_keys():
+    modifiers, key = shortcut_to_windows("Alt+Shift+Left")
+    assert modifiers & 0x0001 and modifiers & 0x0004 and modifiers & 0x4000
+    assert key == 0x25
+
+
+def test_webview_arguments_keep_background_commands_and_existing_options():
+    arguments = webview_browser_arguments('--existing-option=value')
+    assert '--existing-option=value' in arguments
+    assert '--disable-backgrounding-occluded-windows' in arguments
+    assert '--disable-renderer-backgrounding' in arguments
+    assert '--disable-background-timer-throttling' in arguments
+
+
+def test_global_registration_survives_window_activation_changes():
+    frame = type('Frame', (), {})()
+    frame.global_shortcuts = {'next_video'}
+    frame.shortcuts = dict(DEFAULT_SHORTCUTS)
+    frame._registered_hotkeys = set()
+    frame._registered_hotkey_actions = set()
+    frame._system_hotkey_ids = {}
+    frame.RegisterHotKey = Mock(return_value=True)
+    frame.UnregisterHotKey = Mock()
+    frame.status = Mock()
+
+    MainFrame._sync_system_hotkeys(frame, False)
+    MainFrame._sync_system_hotkeys(frame, True)
+    MainFrame._sync_system_hotkeys(frame, False)
+
+    # Alt+Down is registered once and remains registered while the frame loses
+    # focus; only the local F6 registration is removed.
+    next_id = frame._system_hotkey_ids['next_video']
+    assert sum(call.args[0] == next_id for call in frame.RegisterHotKey.call_args_list) == 1
+    assert frame.UnregisterHotKey.call_args.args[0] != next_id
 
 
 def test_accelerators_dispatch_the_current_window_actions():
     harness = AcceleratorHarness()
-    for action in ("toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up"):
+    for action in ("toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up", "open_profile"):
         harness.trigger(action)
-    assert harness.actions == ["toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up"]
+    assert harness.actions == ["toggle_playback", "next_video", "previous_video", "copy_link", "volume_up", "speed_up", "open_profile"]
 
 
 def test_seek_accelerators_dispatch_their_actions():
@@ -131,17 +190,18 @@ def test_global_tab_hook_keeps_comment_navigation_out_of_the_webview():
 
 
 def test_session_summary_describes_open_platforms_without_claiming_login():
-    assert session_summary(()) == 'TikTok: não aberto | Instagram: não aberto'
-    assert session_summary(('TikTok',)) == 'TikTok: aberto | Instagram: não aberto'
+    assert session_summary(()) == 'TikTok: não aberto | Instagram: não aberto | YouTube: não aberto'
+    assert session_summary(('TikTok',)) == 'TikTok: aberto | Instagram: não aberto | YouTube: não aberto'
 
 
 def test_f1_help_lists_focus_and_player_shortcuts():
     help_text = keyboard_help_text()
-    assert 'Shift+< / Shift+> - Diminuir ou aumentar a velocidade' in help_text
-    assert 'Alt+S — Sair\nShift+< / Shift+>' in help_text
-    assert 'F6 — Alternar entre a página' in help_text
+    assert 'Shift+< — Diminuir velocidade' in help_text
+    assert 'Shift+> — Aumentar velocidade' in help_text
+    assert 'Alt+S — Sair' in help_text
+    assert 'F6 — Alternar entre aplicativo e página' in help_text
     assert 'Alt+P — Reproduzir ou pausar' in help_text
-    assert 'Ctrl+1 / Ctrl+2' in help_text
+    assert 'Ctrl+1 — Selecionar TikTok' in help_text
     assert 'Os atalhos de uma letra' not in help_text
 
 
@@ -168,6 +228,11 @@ def test_comments_use_a_short_list_label_and_full_read_only_details():
 
 def test_platform_menu_action_selects_and_opens_the_requested_platform():
     frame = type('Frame', (), {})()
+    frame._tiktok_follow_verification_active = Mock(return_value=False)
+    frame._active_name = 'TikTok'
+    frame.current = Mock(return_value=False)
+    frame.platform_data = {'Instagram': {}}
+    frame.clients = {'Instagram': Mock()}
     frame._select_platform = Mock()
     frame.network = Mock()
     frame.network.GetStringSelection.return_value = 'Instagram'
@@ -183,3 +248,15 @@ def test_webview2_recovery_reports_reinstall_when_backend_fails():
             patch('ui.app_frame.wx.MessageBox') as message:
         MainFrame.install_webview2_runtime(frame)
     assert 'Reinstale o Accessible Reels' in message.call_args.args[0]
+
+
+def test_settings_result_refreshes_the_download_folder():
+    frame = Mock(_download_folder=None)
+    dialog = Mock()
+    dialog.ShowModal.return_value = wx.ID_OK
+    with patch('ui.settings_dialog.SettingsDialog', return_value=dialog), \
+            patch('video_download.load_download_folder', return_value=Path('D:/Videos')):
+        MainFrame.dispatch(frame, 'open_settings')
+
+    assert frame._download_folder == Path('D:/Videos')
+    dialog.Destroy.assert_called_once()

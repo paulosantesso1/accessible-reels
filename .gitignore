@@ -8,10 +8,20 @@ cookies*.txt
 **/__pycache__/
 .pytest_cache/
 pytest-cache-files-*/
+*.py[cod]
 *.log
 .venv/
 venv/
+env/
 build/
 dist/
 .runtime-cache/
 *.spec
+.env
+download-settings.json
+*.tmp
+
+# Protect against a virtual environment accidentally created in the project root.
+Lib/
+Include/
+pyvenv.cfg

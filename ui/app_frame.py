@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import threading
@@ -15,20 +16,74 @@ import wx.html2 as html2
 
 from app_logging import get_logger, log_directory
 from webview_runtime import backend_version
-from ui.webview_focus import EmbeddedFocusMixin, FOCUS_PAGE_HOTKEY
+from ui.webview_focus import EmbeddedFocusMixin
 from ui.download_controls import DownloadControlsMixin
-from ui.webview_client import WebViewClient, PLATFORM_URLS
+from ui.webview_client import WebViewClient, PLATFORM_URLS, belongs_to_platform
 from ui.video_link import parse_video_link
-from ui.shortcuts import ACCELERATOR_SPECS, SEEK_ACCELERATOR_SPECS, SEEK_SECONDS
+from ui.shortcuts import (SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
+                          action_shortcut, load_shortcut_settings,
+                          shortcut_to_windows)
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url
 from instagram.search import normalize_reel_results, validate_reel_url
+from youtube.search import normalize_youtube_results, validate_youtube_url
 from tiktok.video_controls import VideoControlError
 from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
-            'read_author':'author', 'read_description':'description', 'open_comments':'comments'}
+            'read_author':'author', 'read_follow_status':'author', 'read_description':'description', 'open_comments':'comments'}
 logger = get_logger()
+
+# WebView2/Chromium otherwise deprioritizes a renderer whose native window is
+# minimized. Commands received through RegisterHotKey would then wait until the
+# user restores Accessible Reels, which defeats global media controls.
+BACKGROUND_WEBVIEW_ARGUMENTS = (
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+)
+
+
+def webview_browser_arguments(existing: str = '') -> str:
+    """Keep the caller's WebView2 options while enabling background controls."""
+    values = existing.split()
+    for argument in BACKGROUND_WEBVIEW_ARGUMENTS:
+        if argument not in values:
+            values.append(argument)
+    return ' '.join(values)
+
+
+def instagram_fallback_queries(query):
+    """Return a few shorter keyword searches when Instagram rejects a phrase."""
+    words = re.findall(r"[^\W_]+", str(query or ""), flags=re.UNICODE)
+    ignored = {"a", "o", "as", "os", "e", "de", "da", "do", "das", "dos", "em", "no", "na", "um", "uma", "é"}
+    keywords = [word for word in words if word.casefold() not in ignored]
+    original = " ".join(words).casefold()
+    candidates = (
+        " ".join(keywords[:2]),
+        " ".join(keywords[:3]),
+        " ".join(keywords[-2:]),
+    )
+    unique = []
+    for candidate in candidates:
+        if candidate and candidate.casefold() != original and candidate.casefold() not in {item.casefold() for item in unique}:
+            unique.append(candidate)
+    return tuple(unique)
+
+
+def merge_search_results(current, additional):
+    """Append unseen normalized results without changing the current order."""
+    merged = []
+    seen = set()
+    for item in tuple(current or ()) + tuple(additional or ()):
+        url = getattr(item, 'url', None)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        merged.append(item)
+        if len(merged) >= 50:
+            break
+    return tuple(merged)
 
 
 def _copy_text_to_clipboard(text):
@@ -89,7 +144,7 @@ def session_summary(opened_platforms):
     opened = set(opened_platforms)
     return ' | '.join(
         f'{name}: ' + ('aberto' if name in opened else 'não aberto')
-        for name in ('TikTok', 'Instagram')
+        for name in ('TikTok', 'Instagram', 'YouTube')
     )
 
 
@@ -112,34 +167,13 @@ def comment_details_text(index, count, text):
     return f'Comentário {index} de {count}\n\n{str(text or "").strip() or "Sem texto disponível."}'
 
 
-def keyboard_help_text():
-    speed_help = 'Shift+< / Shift+> - Diminuir ou aumentar a velocidade\n'
-    return (
-        'Ajuda rápida de atalhos\n\n'
-        'F6 — Alternar entre a página da plataforma e os controles\n'
-        'Ctrl+1 / Ctrl+2 — Abrir TikTok / Instagram\n'
-        'Ctrl+O — Abrir um link de vídeo\n'
-        'Alt+Seta para cima / baixo — Vídeo anterior / próximo\n'
-        'Alt+P — Reproduzir ou pausar\n'
-        'Alt+Seta para esquerda / direita — Voltar ou avançar 30 segundos\n'
-        'Alt+Shift+Seta para esquerda / direita — Voltar ou avançar 15 segundos\n'
-        'Alt+Shift+Seta para cima / baixo — Aumentar ou diminuir o volume\n'
-        'Alt+Shift+M — Ativar ou desativar o mudo\n'
-        'F5 — Atualizar autor e descrição\n'
-        'Alt+A / Alt+D — Ler autor / descrição\n'
-        'Alt+C — Copiar link\n'
-        'Ctrl+B — Baixar vídeo atual na pasta de downloads\n'
-        'Alt+Shift+C — Comentários\n'
-        'Alt+L — Curtir ou descurtir\n'
-        'Alt+F — Salvar ou remover dos salvos\n'
-        'L — Curtir ou descurtir\n'
-        'F — Salvar ou remover dos salvos\n'
-        'Alt+E — Pesquisar vídeos\n'
-        'Ctrl+R — Voltar aos resultados da pesquisa\n'
-        'Ctrl+Home — Voltar ao feed\n'
-        'Alt+S — Sair\n'
-        + speed_help
-    )
+def keyboard_help_text(shortcuts=None):
+    lines = ['Ajuda rápida de atalhos', '']
+    lines.extend(f'{action_shortcut(item.action, shortcuts)} — {item.label}'
+                 for item in SHORTCUT_DEFINITIONS)
+    lines.extend(['F10 — Abrir a barra de menus',
+                  'Esc — Voltar ao player a partir de comentários ou pesquisa'])
+    return '\n'.join(lines) + '\n'
 
 
 def webview_profile_path(*, local_app_data=None, frozen=None, source_root=None):
@@ -165,20 +199,29 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def __init__(self, *, auto_open=False):
         super().__init__(None, title='Accessible Reels', size=(1180, 850))
         os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(webview_profile_path())
+        os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = webview_browser_arguments(
+            os.environ.get('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', '')
+        )
         self.views, self.clients, self.platform_data = {}, {}, {}
         self._active_name = 'TikTok'
         self._pending_page_focus = None
         self._closing_app = False
+        self._login_windows = set()
         self.initialize_downloads()
         self._update_checking = False
         self._registered_hotkeys = set()
+        self._registered_hotkey_actions = set()
         self._accelerator_ids = {}
+        self._system_hotkey_ids = {}
+        self.shortcuts, self.global_shortcuts = load_shortcut_settings()
         self._results = ()
+        self._search_progress_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self._on_search_progress, self._search_progress_timer)
         self.CreateStatusBar()
         self._build_menu_bar()
         self.panel = wx.Panel(self)
         layout = wx.BoxSizer(wx.VERTICAL)
-        self.network = wx.RadioBox(self.panel, choices=['TikTok', 'Instagram'])
+        self.network = wx.RadioBox(self.panel, choices=['TikTok', 'Instagram', 'YouTube'])
         self.network.Hide()
         session_row = wx.BoxSizer(wx.VERTICAL)
         self.platform_field = wx.StaticText(self.panel, label='')
@@ -198,7 +241,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.activities.SetName('Painel atual: player, comentários ou pesquisa')
         row.Add(self.activities, 0, wx.EXPAND | wx.ALL, 5)
         self.content = wx.BoxSizer(wx.VERTICAL)
-        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram. A sessão salva será reutilizada quando disponível.')
+        self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. A sessão salva será reutilizada quando disponível. F2 abre as Configurações.')
         self.content.Add(self.hint, 0, wx.ALL, 8)
         row.Add(self.content, 1, wx.EXPAND | wx.ALL, 5)
         layout.Add(row, 1, wx.EXPAND)
@@ -210,27 +253,56 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._build_comments()
         self._build_search()
         self._configure_accelerators()
-        self.Bind(wx.EVT_HOTKEY, self.toggle_page_controls, id=FOCUS_PAGE_HOTKEY)
+        self.activities.SetSelection(0)
+        self.Bind(wx.EVT_HOTKEY, self._on_system_hotkey)
         self.Bind(wx.EVT_ACTIVATE, self._activation_changed)
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
+        self.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
         self._refresh_session_controls()
-        self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram. F1 mostra os atalhos.')
+        self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. F1 mostra os atalhos. F2 abre as Configurações.')
         self.details_field.SetFocus()
+        
+        from updater import can_self_update
         if can_self_update():
             wx.CallLater(2000, self._check_for_updates)
+
+        # Adiciona verificação de update do motor de downloads (yt-dlp)
+        from video_download import check_for_ytdlp_updates
+        wx.CallLater(3000, lambda: check_for_ytdlp_updates(self))
+        
         if auto_open:
+            self._select_platform('TikTok')
             wx.CallAfter(self.open_network)
+
+    def _on_search_progress(self, event):
+        if self.search_progress.IsShown():
+            self.search_progress.Pulse()
+
+    def _set_search_loading(self, loading):
+        """Show a non-auditory progress indicator for network collection."""
+        self.search_progress_label.Show(loading)
+        self.search_progress.Show(loading)
+        if loading:
+            self.search_progress.Pulse()
+            self._search_progress_timer.Start(120)
+        else:
+            self._search_progress_timer.Stop()
+        self.search_progress.GetParent().Layout()
 
     def _build_menu_bar(self):
         bar = wx.MenuBar()
+        # Menu accelerators use wx's canonical key names; the settings list and
+        # accessible controls present the localized names separately.
+        key = lambda action: self.shortcuts[action].replace('Comma', ',').replace('Period', '.')
         platform = wx.Menu()
-        self._append_menu_item(platform, 'Abrir ou mostrar TikTok', lambda event: self._open_platform('TikTok'))
-        self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'))
+        self._append_menu_item(platform, 'Abrir ou mostrar TikTok', lambda event: self._open_platform('TikTok'), key('select_tiktok'))
+        self._append_menu_item(platform, 'Abrir ou mostrar Instagram', lambda event: self._open_platform('Instagram'), key('select_instagram'))
+        self._append_menu_item(platform, 'Abrir ou mostrar YouTube', lambda event: self._open_platform('YouTube'), key('select_youtube'))
         platform.AppendSeparator()
-        self._append_menu_item(platform, 'Abrir link...', self.open_link, 'Ctrl+O')
-        self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, 'Ctrl+R')
-        self._append_menu_item(platform, 'Voltar ao feed', self.home, 'Ctrl+Home')
+        self._append_menu_item(platform, 'Abrir link...', self.open_link, key('open_link'))
+        self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, key('return_results'))
+        self._append_menu_item(platform, 'Voltar ao feed', self.home, key('home'))
         self._append_menu_item(platform, 'Recarregar página', self.reload)
         bar.Append(platform, '&Plataforma')
 
@@ -243,7 +315,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Diminuir velocidade', 'speed_down'), ('Aumentar velocidade', 'speed_up'),
             ('Ativar ou desativar mudo', 'toggle_mute'),
         ]:
-            self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a))
+            self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(player, '&Player')
 
         actions = wx.Menu()
@@ -251,23 +323,25 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
             ('Copiar link', 'copy_link'), ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
         ]:
-            self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a))
+            self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(actions, '&Ações')
 
         help_menu = wx.Menu()
-        self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, 'F1')
+        self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, key('show_help'))
         self._append_menu_item(help_menu, 'Verificar atualizações', self.on_check_for_updates)
         self._append_menu_item(help_menu, 'Abrir pasta de logs para suporte', self.open_log_folder)
         help_menu.AppendSeparator()
         self._append_menu_item(help_menu, 'Verificar runtime incluído...', self.install_webview2_runtime)
 
         help_menu.AppendSeparator()
-        self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), 'Alt+S')
-        downloads = wx.Menu()
-        self._append_menu_item(downloads, 'Baixar vídeo atual', self.start_video_download, 'Ctrl+B')
-        self._append_menu_item(downloads, 'Escolher pasta de downloads...', self.choose_download_folder)
-        self._append_menu_item(downloads, 'Abrir pasta de downloads', self.open_download_folder)
-        bar.Append(downloads, '&Downloads')
+        self._append_menu_item(help_menu, 'Sair', lambda event: self.Close(), key('exit'))
+        settings = wx.Menu()
+        self._append_menu_item(settings, 'Abrir configurações...', lambda event: self.dispatch('open_settings'), key('open_settings'))
+        settings.AppendSeparator()
+        self._append_menu_item(settings, 'Baixar vídeo atual', self.start_video_download, key('download_video'))
+        self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
+        self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
+        bar.Append(settings, '&Configurações')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
 
@@ -296,9 +370,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.select_network()
 
     def _open_platform(self, name):
+        was_active = (self._active_name == name and self.current() is not None)
         self._select_platform(name)
         if self.network.GetStringSelection() == name:
-            self.open_network()
+            if was_active:
+                self.platform_data[name]['is_list_mode'] = False
+                self.clients[name].navigate(PLATFORM_URLS[name])
+                self.status('Atualizando feed do ' + name + '...')
+            else:
+                self.open_network()
 
     def _build_video_controls(self):
         page = wx.Panel(self.activities)
@@ -455,6 +535,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.query_field.Bind(wx.EVT_TEXT_ENTER, self.search)
         self.query_field.Bind(wx.EVT_KEY_DOWN, self._query_key_down)
         sizer.Add(self.query_field, 0, wx.EXPAND | wx.ALL, 5)
+        self.search_progress_label = wx.StaticText(page, label='Pesquisa em andamento...')
+        self.search_progress_label.SetName('Pesquisa em andamento')
+        sizer.Add(self.search_progress_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
+        self.search_progress = wx.Gauge(page, range=100, style=wx.GA_HORIZONTAL)
+        self.search_progress.SetName('Progresso da pesquisa, em andamento')
+        sizer.Add(self.search_progress, 0, wx.EXPAND | wx.ALL, 5)
+        self.search_progress_label.Hide()
+        self.search_progress.Hide()
         self.results_list = wx.ListBox(page)
         self.results_list.SetName('Resultados da pesquisa')
         self.results_list.Bind(wx.EVT_LISTBOX_DCLICK, self.open_result)
@@ -462,51 +550,85 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.results_list.Bind(wx.EVT_KEY_DOWN, self._results_key_down)
         sizer.Add(self.results_list, 1, wx.EXPAND | wx.ALL, 5)
         sizer.Add(wx.StaticText(page, label='Seta para baixo entra nos resultados. Use as setas para escolher e Enter para abrir. Ctrl+R volta à lista. Ctrl+Home volta ao feed.'), 0, wx.ALL, 5)
-        open_button = wx.Button(page, label='Abrir resultado')
-        open_button.Bind(wx.EVT_BUTTON, self.open_result)
-        sizer.Add(open_button, 0, wx.ALL, 5)
-        feed_button = wx.Button(page, label='Voltar ao feed')
-        feed_button.Bind(wx.EVT_BUTTON, self.home)
-        sizer.Add(feed_button, 0, wx.ALL, 5)
+        self.load_more_button = wx.Button(page, label='Carregar mais resultados')
+        self.load_more_button.SetName('Carregar mais resultados da pesquisa')
+        self.load_more_button.Bind(wx.EVT_BUTTON, self.load_more_results)
+        self.load_more_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        self.load_more_button.Disable()
+        sizer.Add(self.load_more_button, 0, wx.ALL, 5)
+        self.feed_button = wx.Button(page, label='Voltar ao feed')
+        self.feed_button.Bind(wx.EVT_BUTTON, self.home)
+        self.feed_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        sizer.Add(self.feed_button, 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Pesquisa')
 
     def _configure_accelerators(self):
         entries = []
-        for action, modifiers, key in ACCELERATOR_SPECS + SEEK_ACCELERATOR_SPECS:
+        for action, modifiers, key in accelerator_specs(getattr(self, 'shortcuts', None)):
             identifier = wx.NewIdRef()
             self._accelerator_ids[action] = identifier
-            self.Bind(wx.EVT_MENU, lambda e, a=action: self.dispatch(a), id=identifier)
+            self.Bind(wx.EVT_MENU, lambda e, a=action: MainFrame._invoke_shortcut(self, a), id=identifier)
             entries.append((modifiers, key, identifier))
-        for action, modifiers, callback in [('toggle_page_controls', wx.ACCEL_NORMAL, self.toggle_page_controls)]:
-            identifier = wx.NewIdRef()
-            self._accelerator_ids[action] = identifier
-            self.Bind(wx.EVT_MENU, callback, id=identifier)
-            entries.append((modifiers, wx.WXK_F6, identifier))
-        identifier = wx.NewIdRef()
-        self.Bind(wx.EVT_MENU, getattr(self, 'show_keyboard_help', lambda event: None), id=identifier)
-        entries.append((wx.ACCEL_NORMAL, wx.WXK_F1, identifier))
-        for action, key, handler in [
-            ('select_tiktok', ord('1'), lambda event: self._open_platform('TikTok')),
-            ('select_instagram', ord('2'), lambda event: self._open_platform('Instagram')),
-            ('open_selected_platform', wx.WXK_RETURN, lambda event: self.open_network()),
-            ('open_link', ord('O'), lambda event: self.open_link()),
-            ('download_video', ord('B'), lambda event: self.start_video_download()),
-            ('return_results', ord('R'), lambda event: self.return_to_results()),
-            ('home', wx.WXK_HOME, lambda event: self.home()),
-        ]:
-            identifier = wx.NewIdRef()
-            self._accelerator_ids[action] = identifier
-            self.Bind(wx.EVT_MENU, handler, id=identifier)
-            entries.append((wx.ACCEL_CTRL, key, identifier))
         self.SetAcceleratorTable(wx.AcceleratorTable(entries))
+
+    def _invoke_shortcut(self, action):
+        if action == 'show_help': self.show_keyboard_help(); return
+        if action == 'toggle_page_controls': self.toggle_page_controls(); return
+        if action.startswith('select_'):
+            self._open_platform({'select_tiktok': 'TikTok', 'select_instagram': 'Instagram', 'select_youtube': 'YouTube'}[action]); return
+        if action == 'open_selected_platform': self.open_network(); return
+        if action == 'open_link': self.open_link(); return
+        if action == 'download_video': self.start_video_download(); return
+        if action == 'return_results': self.return_to_results(); return
+        if action == 'home': self.home(); return
+        self.dispatch(action)
+
+    def _on_system_hotkey(self, event):
+        action = next((name for name, identifier in self._system_hotkey_ids.items()
+                       if int(identifier) == event.GetId()), None)
+        if action:
+            logger.info('Global shortcut received: action=%s active=%s', action, self.IsActive())
+            self._invoke_shortcut(action)
+
+    def _activation_changed(self, event):
+        self._sync_system_hotkeys(event.GetActive())
+        event.Skip()
+
+    def _sync_system_hotkeys(self, active):
+        actions = set(self.global_shortcuts)
+        if active and 'toggle_page_controls' not in actions:
+            actions.add('toggle_page_controls')
+        # Global registrations must survive activation changes. Unregistering
+        # and registering every time the window minimizes creates a small but
+        # real gap in which Windows sends Alt+Down nowhere.
+        for action in self._registered_hotkey_actions - actions:
+            identifier = self._system_hotkey_ids[action]
+            self.UnregisterHotKey(identifier)
+            self._registered_hotkeys.discard(identifier)
+        self._registered_hotkey_actions.intersection_update(actions)
+        for action in actions - self._registered_hotkey_actions:
+            identifier = self._system_hotkey_ids.setdefault(action, int(wx.NewIdRef()))
+            modifiers, key = shortcut_to_windows(self.shortcuts[action])
+            if self.RegisterHotKey(identifier, modifiers, key):
+                self._registered_hotkeys.add(identifier)
+                self._registered_hotkey_actions.add(action)
+            else:
+                self.status(f'Não foi possível ativar o atalho global {action_shortcut(action, self.shortcuts)}; ele pode estar em uso por outro programa.')
+
+    def _release_hotkey(self):
+        """Release every Windows registration once, only on close or reconfigure."""
+        for identifier in tuple(self._registered_hotkeys):
+            self.UnregisterHotKey(identifier)
+        self._registered_hotkeys.clear()
+        self._registered_hotkey_actions.clear()
 
     def show_keyboard_help(self, event=None):
         dialog = wx.Dialog(self, title='Ajuda rápida de atalhos', style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         dialog.SetMinSize((520, 380))
         root = wx.BoxSizer(wx.VERTICAL)
         label = wx.StaticText(dialog, label='Ajuda rápida de atalhos')
-        field = wx.TextCtrl(dialog, value=keyboard_help_text(), style=wx.TE_MULTILINE | wx.TE_READONLY)
+        field = wx.TextCtrl(dialog, value=keyboard_help_text(self.shortcuts), style=wx.TE_MULTILINE | wx.TE_READONLY)
         field.SetName('Ajuda rápida de atalhos')
         close = wx.Button(dialog, wx.ID_OK, 'Fechar')
         root.Add(label, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
@@ -521,18 +643,43 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _refresh_session_controls(self):
         opened = self.views.keys()
         name = self.network.GetStringSelection()
-        self.platform_field.SetLabel(f'Plataforma ativa: {name}. Ctrl+1 abre TikTok; Ctrl+2 abre Instagram; F10 menus.')
+        self.platform_field.SetLabel(f'Plataforma ativa: {name}. Ctrl+1 abre TikTok; Ctrl+2 abre Instagram; Ctrl+3 abre YouTube; F10 menus.')
         self.session_field.SetLabel(session_summary(opened))
 
     def _plain_shortcuts(self, event):
-        if event.GetKeyCode() == wx.WXK_ESCAPE and self.activities.GetSelection() != 0:
-            self.focus_controls()
-            return
-        if (event.GetKeyCode() == wx.WXK_TAB and self.activities.GetSelection() == 1
-                and not event.ControlDown() and not event.AltDown()):
-            self._cycle_comment_focus(wx.Window.FindFocus(), event.ShiftDown())
-            return
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            if self.activities.GetSelection() == 2:
+                self._set_search_loading(False)
+                self.home()
+                return
+            elif self.activities.GetSelection() != 0:
+                self.focus_controls()
+                return
         focused = wx.Window.FindFocus()
+        if event.GetKeyCode() == wx.WXK_TAB and not event.ControlDown() and not event.AltDown():
+            if self.activities.GetSelection() == 1:
+                self._cycle_comment_focus(focused, event.ShiftDown())
+                return
+            elif self.activities.GetSelection() == 2:
+                controls = (self.query_field, self.results_list, getattr(self, 'load_more_button', None), getattr(self, 'feed_button', None))
+                controls = tuple(c for c in controls if c is not None)
+                try:
+                    index = controls.index(focused)
+                except ValueError:
+                    if controls and controls[0].IsEnabled():
+                        controls[0].SetFocus()
+                    return
+                offset = -1 if event.ShiftDown() else 1
+                for i in range(1, len(controls) + 1):
+                    next_idx = (index + offset * i) % len(controls)
+                    if controls[next_idx].IsEnabled() and controls[next_idx].IsShown():
+                        controls[next_idx].SetFocus()
+                        break
+                return
+
+        if focused is getattr(self, 'results_list', None) and event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not event.HasAnyModifiers():
+            self.open_result()
+            return
         if (event.HasAnyModifiers() or isinstance(focused, wx.TextCtrl) and focused.IsEditable()
                 or focused is self.current()):
             event.Skip()
@@ -549,8 +696,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         controls = (
             (self.details_field,),
             (),
-            (self.query_field, self.results_list),
+            (self.query_field, self.results_list, self.load_more_button, getattr(self, 'feed_button', None)),
         )[self.activities.GetSelection()]
+        
+        # Filtra caso a aba ainda esteja sendo montada
+        controls = tuple(c for c in controls if c is not None)
+        
         source = event.GetEventObject()
         try:
             index = controls.index(source)
@@ -589,7 +740,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._keep_tab_in_app(event)
 
     def _result_selected(self, event):
-        self.platform_data[self._active_name]['result_index'] = self.results_list.GetSelection()
+        index = self.results_list.GetSelection()
+        self.platform_data[self._active_name]['result_index'] = index
+        if getattr(self, '_results', None) and 0 <= index < len(self._results):
+            item = self._results[index]
+            self.status(f"{item.author}: {item.description}")
 
     def status(self, message):
         if self._closing_app:
@@ -604,6 +759,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def current(self):
         return self.views.get(self.network.GetStringSelection())
+
+    def _tiktok_follow_verification_active(self):
+        return bool(self.platform_data.get('TikTok', {}).get('follow_verification'))
 
     def focus_controls(self, event=None):
         self.activities.SetSelection(0)
@@ -625,7 +783,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._restore_fields()
         self._refresh_session_controls()
         self.panel.Layout()
-        self.status(f'{name} selecionado. Use Ctrl+1 para TikTok ou Ctrl+2 para Instagram.' if not self.current()
+        self.status(f'{name} selecionado. Use Ctrl+1 para TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.' if not self.current()
                     else f'{name} aberto. Use os controles ou F6 para entrar na página.')
 
     def open_network(self, event=None, *, url=None, after_load=None):
@@ -634,7 +792,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         name = self.network.GetStringSelection()
         old = self.clients.get(self._active_name)
         if old and old.pending and name != self._active_name:
-            self.network.SetSelection(0 if self._active_name == 'TikTok' else 1)
+            self.network.SetStringSelection(self._active_name)
             self.status('Aguarde a conclusão da ação antes de trocar de rede.')
             return
         if not html2.WebView.IsBackendAvailable(html2.WebViewBackendEdge):
@@ -679,7 +837,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.status(f'{name} na janela do aplicativo. Use os controles ou F6 para acessar a página.')
 
     def open_link(self, event=None):
-        with wx.TextEntryDialog(self, 'Cole a URL de um vídeo do TikTok ou de um Reel do Instagram:',
+        with wx.TextEntryDialog(self, 'Cole a URL de um vídeo do TikTok, Reel do Instagram ou Short do YouTube:',
                                 'Abrir link a partir de uma URL') as dialog:
             dialog.FindWindow(wx.ID_OK).SetLabel('Abrir vídeo')
             if dialog.ShowModal() != wx.ID_OK:
@@ -696,6 +854,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Aguarde o comando anterior.')
             return
         self.network.SetStringSelection(name)
+        if isinstance(self.platform_data, dict) and name in self.platform_data:
+            self.platform_data[name]['is_list_mode'] = False
         self.open_network(url=url, after_load=lambda: self.dispatch('play')
                           if self._active_name == name and not self._closing_app else None)
         self.focus_controls()
@@ -710,9 +870,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.results_list.Set([item.label for item in self._results])
         if self._results:
             self.results_list.SetSelection(max(0, min(data.get('result_index', 0), len(self._results) - 1)))
+        load_more = getattr(self, 'load_more_button', None)
+        if load_more:
+            load_more.Enable(bool(results and data.get('search_url')))
 
     def _platform_error(self, platform, message):
         logger.warning('Platform error: platform=%s message=%s', platform, message)
+        data = self.platform_data.get(platform, {})
+        data.pop('opening_profile', None)
+        self._set_search_loading(False)
         if platform == self._active_name:
             self.status(message)
 
@@ -734,8 +900,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def home(self, event=None):
         if not self.current():
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
         else:
+            self.platform_data[self._active_name]['is_list_mode'] = False
             self.clients[self._active_name].set_active(True)
             self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
             self.activities.SetSelection(0)
@@ -764,17 +931,74 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if self.current():
             self.current().Reload()
         else:
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
 
     def new_window(self, event):
-        if urlsplit(event.GetURL()).scheme == 'https':
-            event.GetEventObject().LoadURL(event.GetURL())
-        else:
+        url = event.GetURL()
+        if urlsplit(url).scheme != 'https':
             self.status('Esse link exige um aplicativo externo e não foi aberto.')
+            return
+        self._open_login_window(url)
+
+    def _open_login_window(self, url):
+        """Open an OAuth popup without replacing the platform page that requested it."""
+        platform = self._active_name
+        popup = wx.Frame(self, title='Entrar na conta', size=(520, 760))
+        view = html2.WebView.New(backend=html2.WebViewBackendEdge)
+        if view is None or not view.Create(popup):
+            popup.Destroy()
+            self.status('Não foi possível abrir a janela de login.')
+            return
+        content = wx.BoxSizer(wx.VERTICAL)
+        content.Add(view, 1, wx.EXPAND)
+        popup.SetSizer(content)
+        state = {'finished': False}
+        self._login_windows.add(popup)
+
+        def returned_to_platform(loaded_event):
+            if state['finished'] or self._closing_app:
+                loaded_event.Skip()
+                return
+            if belongs_to_platform(view.GetCurrentURL(), platform):
+                state['finished'] = True
+                main_view = self.views.get(platform)
+                if main_view:
+                    main_view.Reload()
+                self.status('Login concluído na página. Atualizando a plataforma...')
+                wx.CallAfter(popup.Close)
+            loaded_event.Skip()
+
+        def closed(close_event):
+            self._login_windows.discard(popup)
+            close_event.Skip()
+
+        view.Bind(html2.EVT_WEBVIEW_NEWWINDOW, self.new_window)
+        view.Bind(html2.EVT_WEBVIEW_LOADED, returned_to_platform)
+        popup.Bind(wx.EVT_CLOSE, closed)
+        popup.Show()
+        view.LoadURL(url)
 
     def dispatch(self, action, argument=None):
         if action == 'exit':
             self.Close()
+            return
+        if action == 'open_settings':
+            from ui.settings_dialog import SettingsDialog
+            from video_download import load_download_folder
+            self._release_hotkey()
+            dlg = SettingsDialog(self)
+            try:
+                if dlg.ShowModal() == wx.ID_OK:
+                    self._download_folder = load_download_folder()
+                    self.shortcuts, self.global_shortcuts = load_shortcut_settings()
+                    self._configure_accelerators()
+                    self._build_menu_bar()
+            finally:
+                dlg.Destroy()
+                self._sync_system_hotkeys(self.IsActive())
+            return
+        if action in ('read_follow_status', 'toggle_follow') and self._tiktok_follow_verification_active():
+            self.status('Aguarde a verificação do estado de seguimento terminar.')
             return
         if action in ('post_comment', 'reply_comment'):
             self.status('A publicação e as respostas a comentários estão desativadas temporariamente.')
@@ -784,11 +1008,59 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.query_field.SetFocus()
             return
         if not self.current():
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
             return
         name = self._active_name
         client = self.clients[name]
+
+        if action == 'open_profile':
+            profile_url = self.platform_data.get(name, {}).get('profile_url')
+            if not profile_url:
+                self.status('Perfil não encontrado para o vídeo atual.')
+                return
+            self.platform_data[name]['results'] = ()
+            self.platform_data[name]['result_index'] = 0
+            self.platform_data[name].pop('search_url', None)
+            # A profile grid is ordered by the network itself: pinned posts
+            # first, then newest to oldest.  Open that sequence as a list.
+            self.platform_data[name]['opening_profile'] = True
+            self.platform_data[name]['is_list_mode'] = False
+            self._restore_fields()
+            client.set_active(True)
+            client.navigate(profile_url, lambda: self.dispatch('collect_search_results', 'profile') if name == self._active_name else None)
+            self.status(f'Carregando perfil no {name}...')
+            self._set_search_loading(True)
+            return
+            
+        is_list_mode = self.platform_data.get(name, {}).get('is_list_mode', False)
+        if is_list_mode:
+            if action == 'next_video':
+                current = self.results_list.GetSelection()
+                if current + 1 < len(self._results):
+                    self.results_list.SetSelection(current + 1)
+                    self.open_result()
+                else:
+                    self.status('Fim da lista de vídeos.')
+                return
+            elif action == 'previous_video':
+                current = self.results_list.GetSelection()
+                if current > 0:
+                    self.results_list.SetSelection(current - 1)
+                    self.open_result()
+                else:
+                    self.status('Início da lista de vídeos.')
+                return
+        
         if client.pending:
+            if action in ('next_video', 'previous_video'):
+                # A global key can arrive while WebView2 finishes the previous
+                # page command. Keep the last requested direction instead of
+                # silently losing it.
+                self.platform_data.setdefault(name, {})['queued_navigation'] = action
+                self.status('Comando de navegação recebido. Ele será executado assim que o vídeo terminar de carregar.')
+                return
+            if action not in ('refresh_info', 'collect_search_results'):
+                self.status('Carregando o vídeo selecionado. Aguarde um instante antes de usar outro atalho.')
             return
         logger.info('Command requested: platform=%s action=%s', name, action)
         focused = wx.Window.FindFocus()
@@ -797,11 +1069,105 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             if self._closing_app:
                 return
             self._result(name, action, argument, result)
+            platform_state = self.platform_data.get(name)
+            queued = platform_state.pop('queued_navigation', None) if isinstance(platform_state, dict) else None
+            if queued and name == self._active_name and self.clients.get(name) is client:
+                wx.CallAfter(self.dispatch, queued)
             if name == self._active_name and self.IsActive() and action not in ('open_comments', 'collect_search_results', 'close_comments'):
                 if restore_focus and wx.Window.FindFocus() is self.current():
                     restore_focus.SetFocus()
-        client.execute('seek' if action in SEEK_SECONDS else COMMANDS.get(action, action),
+        
+
+
+        page_action = 'seek' if action in SEEK_SECONDS else COMMANDS.get(action, action)
+        client.execute(page_action,
                        SEEK_SECONDS.get(action, argument), completed)
+
+    def _start_tiktok_follow_verification(self, action, result):
+        """Keep the player document intact while inspecting the author's profile."""
+        if self._active_name != 'TikTok' or action not in ('read_follow_status', 'toggle_follow'):
+            return False
+        from ui.background_follow import BackgroundFollow
+        data = self.platform_data['TikTok']
+        profile_url = result.get('profile_url')
+        if not profile_url:
+            return False
+        if data.get('follow_verification'):
+            return True
+        context = {
+            'toggle': action == 'toggle_follow',
+            'expected_state': result.get('expected_state'),
+            'author': result.get('author') or 'este autor',
+            'read_for_feed_click': action == 'toggle_follow' and result.get('needs_follow_state'),
+            'status_only': action == 'read_follow_status',
+        }
+        data['follow_verification'] = context
+
+        def completed(result):
+            if data.get('follow_verification') is not context:
+                return
+            self._finish_tiktok_follow_verification(result)
+
+        try:
+            # TikTok accepts the social gesture in the visible feed, not in
+            # a hidden WebView. The profile is used only to read a missing
+            # state; the actual click always returns to the active video.
+            worker = BackgroundFollow(self, profile_url, False, completed)
+            context['worker'] = worker
+            worker.start()
+        except Exception:
+            logger.exception('Could not start background follow verification')
+            completed({'ok': False, 'error': 'Não foi possível consultar o seguimento.'})
+        return True
+
+    def _finish_tiktok_follow_verification(self, result):
+        context = self.platform_data['TikTok'].pop('follow_verification', None)
+        if not context:
+            return
+        worker = context.get('worker')
+        if worker:
+            worker.close()
+        author = context['author']
+        state = result.get('state')
+        if context.get('status_only'):
+            if result.get('ok') is True and isinstance(state, bool):
+                message = f'Você segue {author}.' if state else f'Você não segue {author}.'
+            else:
+                message = result.get('error') or 'Não foi possível confirmar o estado de seguimento.'
+            self.platform_data['TikTok']['last_follow_message'] = message
+            if not self._closing_app:
+                self.status(message)
+            return
+        if context.get('read_for_feed_click'):
+            if result.get('ok') is not True or not isinstance(state, bool):
+                message = result.get('error') or 'Não foi possível confirmar o estado de seguimento.'
+            else:
+                client = self.clients.get('TikTok')
+                if client and not client.pending:
+                    client.execute('toggle_follow', {'known_follow_state': state},
+                                   lambda response: self._result('TikTok', 'toggle_follow', None, response))
+                    return
+                message = 'O vídeo ainda está carregando. Tente novamente em alguns instantes.'
+            self.platform_data['TikTok']['last_follow_message'] = message
+            if not self._closing_app:
+                self.status(message)
+            return
+        if result.get('ok') is True and isinstance(state, bool):
+            if context['toggle']:
+                if state is context.get('expected_state'):
+                    message = (f'Você começou a seguir {author}.' if state
+                               else f'Você deixou de seguir {author}.')
+                else:
+                    message = f'O TikTok não confirmou a alteração de seguimento de {author}.'
+            else:
+                message = (f'Você segue {author}.' if state
+                           else f'Você não segue {author}.')
+        else:
+            message = result.get('error') or 'Não foi possível confirmar o estado de seguimento.'
+        logger.info('Background follow result: %s', message)
+        self.platform_data['TikTok']['last_follow_message'] = message
+        if not self._closing_app:
+            self.status(message)
 
     # Compatibility hooks retained for callers of the former native window.
     def _dispatch_shortcut(self, action):
@@ -813,22 +1179,47 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _result(self, name, action, argument, result):
         if result.get('ignored'):
             return
+        if name == 'TikTok' and action == 'profile_follow':
+            if result.get('ok') is True:
+                logger.info('TikTok profile follow verification completed: state=%s', result.get('state'))
+            else:
+                logger.warning('TikTok profile follow verification failed: %s', result.get('error'))
+            self._finish_tiktok_follow_verification(result)
+            return
         if result.get('ok') is not True:
             logger.warning('Command failed: platform=%s action=%s message=%s', name, action, result.get('error'))
             self._platform_error(name, result.get('error') or 'A rede não confirmou o comando.')
             return
         logger.info('Command completed: platform=%s action=%s', name, action)
         data = self.platform_data[name]
-        for field in ('author', 'description', 'link', 'comments'):
+        for field in ('author', 'description', 'link', 'comments', 'profile_url'):
             if field in result:
                 data[field] = result[field]
         active = name == self._active_name
         if 'results' in result:
-            normalize = normalize_search_results if name == 'TikTok' else normalize_reel_results
-            data['results'] = normalize(result['results'])
-            data['result_index'] = 0
+            if name == 'TikTok':
+                normalize = normalize_search_results
+            elif name == 'YouTube':
+                normalize = normalize_youtube_results
+            else:
+                normalize = normalize_reel_results
+            normalized = normalize(result['results'])
+            if isinstance(argument, dict) and argument.get('mode') == 'more':
+                data['results'] = merge_search_results(data.get('results'), normalized)
+            else:
+                data['results'] = normalized
+                data['result_index'] = 0
         if active:
             self._restore_fields()
+        if name == 'TikTok' and action == 'read_follow_status':
+            if self._start_tiktok_follow_verification(action, result):
+                self.status('Um momento, consultando se você segue.')
+                return
+        if (name == 'TikTok' and action == 'toggle_follow'
+                and self._start_tiktok_follow_verification(action, result)):
+            self.status('Um momento, alterando o seguimento de ' +
+                        data.get('author', 'este autor') + '.')
+            return
         message = 'Comando concluído.'
         if action in SEEK_SECONDS:
             position = round(result.get('position', 0))
@@ -837,6 +1228,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = None
         elif action == 'read_author':
             message = 'Autor: ' + data.get('author', 'Não encontrado')
+        elif action == 'read_follow_status':
+            message = 'Status de seguimento: ' + data.get('author', 'Não encontrado')
         elif action == 'read_description':
             message = 'Descrição: ' + data.get('description', 'Não encontrada')
         elif action == 'copy_link' and active:
@@ -847,6 +1240,11 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         elif action in ('toggle_playback', 'play'):
             message = 'Vídeo pausado.' if result.get('paused') else 'Reproduzindo vídeo.'
+            # A list item opens in a fresh document.  Playback confirms that
+            # its player exists; only then can the page return the matching
+            # author, description and profile URL.
+            if action == 'play' and data.pop('refresh_after_play', False) and active:
+                self.dispatch('refresh_info')
         elif action in ('volume_up', 'volume_down'):
             message = f"Volume: {round(result.get('volume', 0) * 100)}%."
         elif action in ('speed_up', 'speed_down'):
@@ -858,6 +1256,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = 'Curtida adicionada.' if result.get('state') else 'Curtida removida.'
         elif action == 'toggle_favorite':
             message = 'Vídeo salvo.' if result.get('state') else 'Vídeo removido dos salvos.'
+        elif action == 'toggle_follow' and name == 'TikTok':
+            message = 'Não foi possível identificar o perfil para confirmar o seguimento.'
+        elif action == 'toggle_follow':
+            message = 'Você começou a seguir este autor.' if result.get('state') else 'Você deixou de seguir este autor.'
         elif action == 'open_comments' and active:
             self.activities.SetSelection(1)
             self.current().SetCanFocus(False)
@@ -867,14 +1269,34 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.focus_controls()
             return
         elif action == 'collect_search_results' and active:
-            self.clients[name].set_active(False)
-            self.activities.SetSelection(2)
-            if self._results:
-                self.results_list.SetFocus()
-                message = f'{len(self._results)} resultados. Selecione um e pressione Enter para abrir.'
-            else:
+            opening_profile = data.pop('opening_profile', False)
+            if opening_profile and self._results:
+                # The first profile card is the pinned video when one exists;
+                # otherwise it is the most recent post.  List navigation then
+                # advances through the remaining cards in visual order.
+                data['result_index'] = 0
+                data['is_list_mode'] = True
+                self._set_search_loading(False)
+                self.results_list.SetSelection(0)
+                self.open_result()
+                return
+            if opening_profile:
+                data['is_list_mode'] = False
+                self._set_search_loading(False)
                 self.query_field.SetFocus()
-                message = 'Nenhum vídeo encontrado. Tente outro termo ou use F6 para verificar se a plataforma pede login.'
+                message = 'Nenhum vídeo foi encontrado neste perfil. Verifique se a plataforma pede login (F6).'
+            elif name == 'Instagram' and not self._results and self._try_instagram_search_fallback(data):
+                return
+            else:
+                self._set_search_loading(False)
+                self.clients[name].set_active(False)
+                self.activities.SetSelection(2)
+                if self._results:
+                    self.results_list.SetFocus()
+                    message = f'Carregamento concluído. {len(self._results)} vídeos na lista. Selecione um e pressione Enter para abrir.'
+                else:
+                    self.query_field.SetFocus()
+                    message = 'Nenhum vídeo encontrado. Verifique sua pesquisa ou se a plataforma pede login (F6).'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
         if active and message:
@@ -882,7 +1304,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _copy_link(self, name, value):
         try:
-            link = (validate_search_result_url if name == 'TikTok' else validate_reel_url)(value)
+            if name == 'TikTok':
+                link = validate_search_result_url(value)
+            elif name == 'YouTube':
+                link = validate_youtube_url(value)
+            else:
+                link = validate_reel_url(value)
         except (ValueError, VideoControlError):
             self.status('Não foi possível identificar um link válido para o vídeo.')
             return
@@ -895,19 +1322,75 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Digite o que deseja pesquisar.')
             return
         if not self.current():
-            self.status('Use Ctrl+1 para abrir TikTok ou Ctrl+2 para abrir Instagram.')
+            self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
             return
         name = self._active_name
         if self.clients[name].pending:
             self.status('Aguarde o comando anterior.')
             return
-        url = search_url(query) if name == 'TikTok' else 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
+        self.platform_data[name].pop('opening_profile', None)
+        if name == 'TikTok':
+            url = search_url(query)
+        elif name == 'YouTube':
+            # YouTube's Shorts search filter keeps ordinary long-form videos
+            # out of the results that this player can open.
+            url = 'https://www.youtube.com/results?search_query=' + quote_plus(query) + '&sp=EgIYAQ%253D%253D'
+        else:
+            url = 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
         self.platform_data[name]['results'] = ()
         self.platform_data[name]['result_index'] = 0
+        self.platform_data[name]['search_url'] = url
+        self.platform_data[name]['instagram_search_fallbacks'] = (
+            list(instagram_fallback_queries(query)) if name == 'Instagram' else []
+        )
         self._restore_fields()
         self.clients[name].set_active(True)
         self.clients[name].navigate(url, lambda: self.dispatch('collect_search_results') if name == self._active_name else None)
         self.status('Carregando pesquisa no ' + name + '...')
+        self._set_search_loading(True)
+
+    def load_more_results(self, event=None):
+        """Return to the saved query and append its next visible result batch."""
+        name = self._active_name
+        data = self.platform_data.get(name, {})
+        url = data.get('search_url')
+        client = self.clients.get(name)
+        if not url or not client:
+            self.status('Faça uma pesquisa antes de carregar mais resultados.')
+            return
+        if client.pending:
+            self.status('Aguarde o comando anterior.')
+            return
+        if len(data.get('results', ())) >= 50:
+            self.status('A lista já contém o máximo de 50 resultados.')
+            return
+        data['is_list_mode'] = False
+        client.set_active(True)
+        client.navigate(
+            url,
+            lambda: self.dispatch('collect_search_results', {'mode': 'more'})
+            if name == self._active_name else None,
+        )
+        self.activities.SetSelection(2)
+        self._set_search_loading(True)
+        self.status('Carregando mais resultados...')
+
+    def _try_instagram_search_fallback(self, data):
+        fallbacks = data.get('instagram_search_fallbacks', [])
+        if not fallbacks:
+            return False
+        query = fallbacks.pop(0)
+        data['results'] = ()
+        data['result_index'] = 0
+        self._restore_fields()
+        self.clients['Instagram'].set_active(True)
+        url = 'https://www.instagram.com/explore/search/keyword/?q=' + quote_plus(query)
+        self.clients['Instagram'].navigate(
+            url, lambda: self.dispatch('collect_search_results')
+            if self._active_name == 'Instagram' else None,
+        )
+        self.status(f'Não houve resultado para a frase inteira. Tentando no Instagram: {query}.')
+        return True
 
     def open_result(self, event=None):
         index = self.results_list.GetSelection()
@@ -919,6 +1402,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         name = self._active_name
         self.platform_data[name]['result_index'] = index
+        self.platform_data[name]['is_list_mode'] = True
+        self.platform_data[name]['refresh_after_play'] = True
         self.clients[name].set_active(True)
         self.clients[name].navigate(self._results[index].url,
                                     lambda: self.dispatch('play') if name == self._active_name else None)
@@ -928,9 +1413,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _closing(self, event):
         self._closing_app = True
+        for popup in tuple(self._login_windows):
+            popup.Destroy()
+        self._login_windows.clear()
         transfer = getattr(self, '_browser_download', None)
         if transfer:
             transfer.finish(None, 'Aplicativo fechado.')
+        context = self.platform_data.get('TikTok', {}).pop('follow_verification', None)
+        if context and context.get('worker'):
+            context['worker'].close()
         self._release_hotkey()
         for client in self.clients.values():
             client.close()
