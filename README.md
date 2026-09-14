@@ -206,6 +206,14 @@ sem exigir uma instalação separada do FFmpeg.
 
 ## Atalhos e acessibilidade
 
+## Novidades e histórico de versões
+
+Na primeira abertura de cada versão, o Accessible Reels mostra a janela
+**Novidades e histórico**. Ela usa texto somente leitura, já recebe o foco e
+mantém todas as versões anteriores no mesmo histórico. Depois, abra **Ajuda**
+e escolha **Novidades e histórico de versões** para consultar novamente sem
+precisar esperar uma atualização.
+
 Pressione **F2** ou abra o menu **Configurações**. Na guia **Atalhos**, todos os
 comandos aparecem em uma única lista. Selecione um comando e use **Alterar atalho**
 para capturar uma nova combinação. Marque a linha para tornar aquele atalho global,

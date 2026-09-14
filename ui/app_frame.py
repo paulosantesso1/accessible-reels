@@ -29,6 +29,8 @@ from instagram.search import normalize_reel_results, validate_reel_url
 from youtube.search import normalize_youtube_results, validate_youtube_url
 from tiktok.video_controls import VideoControlError
 from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
+from app_version import APP_VERSION
+from release_notes import has_seen_current_release, load_release_history, mark_current_release_seen
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_follow_status':'author', 'read_description':'description', 'open_comments':'comments'}
@@ -195,6 +197,26 @@ def webview_profile_path(*, local_app_data=None, frozen=None, source_root=None):
     return profile
 
 
+class ReleaseNotesDialog(wx.Dialog):
+    """A readable, persistent history for keyboard and screen-reader users."""
+
+    def __init__(self, parent, text):
+        super().__init__(parent, title=f'Novidades e histórico — {APP_VERSION}', size=(680, 560))
+        root = wx.BoxSizer(wx.VERTICAL)
+        self.notes = wx.TextCtrl(self, value=text, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
+        self.notes.SetName(f'Novidades e histórico de versões, começando pela versão {APP_VERSION}')
+        self.notes.SetInsertionPoint(0)
+        close = wx.Button(self, wx.ID_OK, '&Fechar novidades')
+        close.SetName('Fechar novidades')
+        close.SetDefault()
+        self.SetEscapeId(wx.ID_OK)
+        root.Add(self.notes, 1, wx.EXPAND | wx.ALL, 10)
+        root.Add(close, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.SetSizer(root)
+        self.CentreOnParent()
+        self.notes.SetFocus()
+
+
 class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def __init__(self, *, auto_open=False):
         super().__init__(None, title='Accessible Reels', size=(1180, 850))
@@ -267,6 +289,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if can_self_update():
             wx.CallLater(2000, self._check_for_updates)
 
+        wx.CallLater(600, self._show_new_release_notes_if_needed)
+
         # Adiciona verificação de update do motor de downloads (yt-dlp)
         from video_download import check_for_ytdlp_updates
         wx.CallLater(3000, lambda: check_for_ytdlp_updates(self))
@@ -328,6 +352,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
         help_menu = wx.Menu()
         self._append_menu_item(help_menu, 'Ajuda rápida de atalhos', self.show_keyboard_help, key('show_help'))
+        self._append_menu_item(help_menu, 'Novidades e histórico de versões', self.show_release_notes)
         self._append_menu_item(help_menu, 'Verificar atualizações', self.on_check_for_updates)
         self._append_menu_item(help_menu, 'Abrir pasta de logs para suporte', self.open_log_folder)
         help_menu.AppendSeparator()
@@ -639,6 +664,27 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         field.SetFocus()
         dialog.ShowModal()
         dialog.Destroy()
+
+    def _show_new_release_notes_if_needed(self):
+        if not self.IsBeingDeleted() and not has_seen_current_release():
+            self.show_release_notes()
+
+    def show_release_notes(self, event=None):
+        try:
+            text = load_release_history()
+        except (OSError, UnicodeError) as error:
+            wx.MessageBox(f'Não foi possível abrir as novidades desta versão.\n\n{error}',
+                          'Novidades', wx.OK | wx.ICON_ERROR, self)
+            return
+        dialog = ReleaseNotesDialog(self, text)
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+        try:
+            mark_current_release_seen()
+        except OSError as error:
+            self.status(f'Não foi possível registrar a leitura das novidades: {error}')
 
     def _refresh_session_controls(self):
         opened = self.views.keys()
