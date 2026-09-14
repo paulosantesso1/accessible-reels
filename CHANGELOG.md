@@ -1,6 +1,6 @@
 # Histórico de versões
 
-## 1.0.10 — 2026-09-14
+## 1.1.0 — 2026-09-14
 
 Esta versão amplia o Accessible Reels para YouTube Shorts, melhora o controle
 dos perfis e torna os atalhos mais flexíveis para uso com leitor de telas.
