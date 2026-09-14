@@ -80,7 +80,7 @@ class SettingsDialog(wx.Dialog):
         box.Add(wx.StaticText(panel, label="Pasta de download dos vídeos:"), 0, wx.ALL, 5)
         row = wx.BoxSizer(wx.HORIZONTAL)
         self.folder_text = wx.TextCtrl(panel, value=str(self.current_folder), style=wx.TE_READONLY)
-        browse = wx.Button(panel, label="&Alterar pasta...")
+        browse = wx.Button(panel, label="&Alterar pasta de downloads...")
         browse.Bind(wx.EVT_BUTTON, self.on_browse)
         row.Add(self.folder_text, 1, wx.RIGHT, 5); row.Add(browse)
         box.Add(row, 0, wx.EXPAND | wx.ALL, 5)
