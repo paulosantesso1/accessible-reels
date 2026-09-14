@@ -21,6 +21,9 @@ class BackgroundFollow:
         self.completed = completed
         self.done = False
         self.started = False
+        self.expected_state = None
+        self.confirming = False
+        self.confirmation_worker = None
         self.profile_url = profile_url
         self.toggle = toggle
         self.host = wx.Panel(parent, size=(1000, 800))
@@ -39,7 +42,7 @@ class BackgroundFollow:
         self.client.after_load = self.loaded
         self.client._after_load_expected_url = self.profile_url
         self.client._after_load_unexpected = self.redirected
-        self.timer = wx.CallLater(30000, self.failed,
+        self.timer = wx.CallLater(45000, self.failed,
                                   'Não foi possível confirmar o seguimento a tempo. Tente novamente.')
         if not self.view.Create(self.host, size=(1000, 800)):
             self.failed('Não foi possível abrir a consulta de seguimento.')
@@ -53,8 +56,47 @@ class BackgroundFollow:
         self.started = True
         self.view.RunScriptAsync(SILENT_PAGE)
         self.client.execute('profile_follow', {
-            'toggle': self.toggle, 'profile_url': self.profile_url,
-        }, self.finish)
+            'toggle': self.toggle and not self.confirming, 'profile_url': self.profile_url,
+        }, self.observed)
+
+    def observed(self, result):
+        if self.done:
+            return
+        state = result.get('state')
+        if result.get('ok') is not True or not isinstance(state, bool):
+            self.finish({'ok': False, 'error': result.get('error') or
+                         'Não foi possível confirmar o estado de seguimento.'})
+            return
+        if self.confirming:
+            if state != self.expected_state:
+                self.finish({'ok': False, 'error':
+                    'O TikTok não manteve a alteração. O seguimento não foi confirmado.'})
+            else:
+                self.finish(result)
+            return
+        if not self.toggle:
+            self.finish(result)
+            return
+        # A changed button can be optimistic. Keep its document alive to let
+        # the request finish, then independently read a newly loaded profile.
+        # Never repeat the social click during confirmation.
+        self.expected_state = state
+        self.confirming = True
+        wx.CallLater(2000, self.confirm)
+
+    def confirm(self):
+        if self.done:
+            return
+        # A separate WebView cannot mistake an old LOADED event or the
+        # optimistic DOM for the freshly fetched profile. Keep the original
+        # document alive until the independent read completes.
+        try:
+            self.confirmation_worker = BackgroundFollow(
+                self.host.GetParent(), self.profile_url, False, self.observed,
+            )
+            self.confirmation_worker.start()
+        except Exception:
+            self.failed('Não foi possível abrir a conferência independente do perfil.')
 
     def redirected(self, url):
         self.failed('O TikTok redirecionou a consulta. Verifique o login na página com F6 e tente novamente.')
@@ -72,6 +114,8 @@ class BackgroundFollow:
         if self.done:
             return
         self.done = True
+        if self.confirmation_worker:
+            self.confirmation_worker.close()
         if self.timer:
             self.timer.Stop()
         self.client.close()

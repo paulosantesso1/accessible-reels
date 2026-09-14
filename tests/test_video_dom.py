@@ -221,6 +221,29 @@ def test_tiktok_profile_message_button_is_not_follow_evidence(page):
     assert result == {'ok': True, 'state': False}
 
 
+def test_profile_read_waits_for_initial_state_to_settle(page):
+    load_tiktok_page(page, '/@ana', '''<header style="width:500px;height:100px">
+      <button data-e2e="follow-button" style="width:100px;height:40px">Follow</button>
+    </header>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("""async () => {
+      setTimeout(() => document.querySelector('button').textContent = 'Following', 400);
+      return command('profile_follow', {toggle:false, profile_url:'https://www.tiktok.com/@ana'});
+    }""")
+    assert result == {'ok': True, 'state': True}
+
+
+def test_profile_toggle_does_not_confirm_a_brief_optimistic_change(page):
+    load_tiktok_page(page, '/@ana', '''<header style="width:500px;height:100px">
+      <button data-e2e="follow-button" style="width:100px;height:40px"
+        onclick="this.textContent='Following'; setTimeout(() => this.textContent='Follow', 300)">Follow</button>
+    </header>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('profile_follow', {toggle:true, profile_url:'https://www.tiktok.com/@ana'})")
+    assert result['ok'] is False
+    assert 'não confirmou' in result['error']
+
+
 def test_tiktok_profile_unfollow_uses_follow_icon_and_verifies_replacement(page):
     load_tiktok_page(page, '/@ana', '''<main style="width:600px;height:400px"><header style="width:500px;height:100px">
       <button style="width:100px;height:40px">Message</button>

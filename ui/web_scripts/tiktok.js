@@ -212,13 +212,20 @@
     }
     const deadline = Date.now() + 8000;
     let current = profileFollowSnapshot(expectedProfileUrl);
-    while (current.state === null && Date.now() < deadline) {
+    let stableState = current.state;
+    let stableSince = Date.now();
+    while (Date.now() < deadline) {
       const blocked = interactionBlocked();
       if (blocked) throw new Error(blocked);
+      if (current.state !== null && Date.now() - stableSince >= 1200) break;
       await sleep(150);
       current = profileFollowSnapshot(expectedProfileUrl);
+      if (current.state !== stableState || current.state === null) {
+        stableState = current.state;
+        stableSince = Date.now();
+      }
     }
-    if (current.state === null) {
+    if (current.state === null || Date.now() - stableSince < 1200) {
       throw new Error("Não foi possível verificar o estado de seguimento no perfil do TikTok.");
     }
     if (!toggle) return {state: current.state};
@@ -249,12 +256,18 @@
     }
 
     const changedDeadline = Date.now() + 5000;
+    let changedSince = null;
     while (Date.now() < changedDeadline) {
       const blocked = interactionBlocked();
       if (blocked) throw new Error(blocked);
       await sleep(150);
       current = profileFollowSnapshot(expectedProfileUrl);
-      if (current.state !== null && current.state !== before) return {state: current.state};
+      if (current.state !== null && current.state !== before) {
+        if (changedSince === null) changedSince = Date.now();
+        if (Date.now() - changedSince >= 1200) return {state: current.state};
+      } else {
+        changedSince = null;
+      }
     }
     throw new Error("O TikTok não confirmou a alteração do estado de seguimento.");
   }
