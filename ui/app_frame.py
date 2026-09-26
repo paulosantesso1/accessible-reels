@@ -28,7 +28,9 @@ from tiktok.search import search_url, normalize_search_results, validate_search_
 from instagram.search import normalize_reel_results, validate_reel_url
 from youtube.search import normalize_youtube_results, validate_youtube_url
 from tiktok.video_controls import VideoControlError
-from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
+from updater import (UpdateError, announced_version, can_self_update, check_for_update, download_update,
+                     launch_installer, mark_announced, normalize_version, remember_whats_new,
+                     take_whats_new)
 
 COMMANDS = {'next_video':'next', 'previous_video':'previous', 'toggle_playback':'toggle',
             'read_author':'author', 'read_follow_status':'author', 'read_description':'description', 'open_comments':'comments'}
@@ -271,6 +273,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         from video_download import check_for_ytdlp_updates
         wx.CallLater(3000, lambda: check_for_ytdlp_updates(self))
         
+        wx.CallAfter(self.show_whats_new)
+
         if auto_open:
             self._select_platform('TikTok')
             wx.CallAfter(self.open_network)
@@ -462,19 +466,36 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 wx.MessageBox('Há uma nova versão no GitHub. A instalação automática está disponível no aplicativo instalado para Windows.',
                               'Atualizações', wx.OK | wx.ICON_INFORMATION, self)
             return
-        message = f'Versão {info.latest_version} disponível.\n\n{info.notes}\n\nDeseja baixar e instalar agora?'
+        # The update is offered once per version. Later launches only note it in
+        # the status bar, so opening the app goes straight to the home screen.
+        if not manual and announced_version() == normalize_version(info.latest_version):
+            self.status(f'Versão {info.latest_version} disponível. Use Ajuda, Verificar atualizações para instalar.')
+            return
+        mark_announced(info.latest_version)
+        message = (f'Versão {info.latest_version} disponível.\n\nDeseja baixar e instalar agora? '
+                   'As novidades serão exibidas na primeira abertura depois da instalação.')
         if wx.MessageBox(message, 'Atualizações', wx.YES_NO | wx.ICON_INFORMATION, self) == wx.YES:
             threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
+
+    def show_whats_new(self):
+        """Show the changelog once, on the first launch after an update was installed."""
+        entry = take_whats_new()
+        if entry:
+            version, notes = entry
+            body = notes or 'Sem notas para esta versão.'
+            wx.MessageBox(f'Novidades da versão {version}\n\n{body}',
+                          'Novidades', wx.OK | wx.ICON_INFORMATION, self)
 
     def _download_update_worker(self, info):
         try:
             wx.CallAfter(self.status, 'Baixando e validando a atualização...')
             installer = download_update(info)
-            wx.CallAfter(self._launch_update, installer)
+            wx.CallAfter(self._launch_update, installer, info)
         except UpdateError as error:
             wx.CallAfter(wx.MessageBox, str(error), 'Atualizações', wx.OK | wx.ICON_ERROR, self)
 
-    def _launch_update(self, installer):
+    def _launch_update(self, installer, info):
+        remember_whats_new(info)
         try:
             launch_installer(installer)
         except UpdateError as error:
