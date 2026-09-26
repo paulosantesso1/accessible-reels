@@ -29,6 +29,7 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("open_selected_platform", "Abrir plataforma selecionada", "Ctrl+Enter"),
     ShortcutDefinition("open_link", "Abrir link", "Ctrl+O"),
     ShortcutDefinition("download_video", "Baixar vídeo", "Ctrl+B"),
+    ShortcutDefinition("download_audio", "Baixar áudio", "Ctrl+Shift+B"),
     ShortcutDefinition("return_results", "Voltar aos resultados", "Ctrl+R"),
     ShortcutDefinition("home", "Ir para o início", "Ctrl+Home"),
     ShortcutDefinition("next_video", "Próximo vídeo", "Alt+Down"),

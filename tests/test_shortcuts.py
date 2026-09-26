@@ -314,3 +314,11 @@ def test_webview_stops_handling_media_keys_and_keeps_other_disabled_features():
     assert webview_browser_arguments(webview_browser_arguments('')) == webview_browser_arguments('')
 
 
+def test_audio_download_has_its_own_shortcut_and_command():
+    keys = {action: (modifiers, key) for action, modifiers, key in ACCELERATOR_SPECS}
+    assert keys['download_audio'] == (wx.ACCEL_CTRL | wx.ACCEL_SHIFT, ord('B'))
+    assert keys['download_audio'] != keys['download_video']
+    frame = type('Frame', (), {})()
+    frame.start_audio_download = Mock()
+    MainFrame._invoke_shortcut(frame, 'download_audio')
+    frame.start_audio_download.assert_called_once_with()

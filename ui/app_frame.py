@@ -360,6 +360,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(settings, 'Abrir configurações...', lambda event: self.dispatch('open_settings'), key('open_settings'))
         settings.AppendSeparator()
         self._append_menu_item(settings, 'Baixar vídeo atual', self.start_video_download, key('download_video'))
+        self._append_menu_item(settings, 'Baixar áudio do vídeo atual', self.start_audio_download, key('download_audio'))
         self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
         self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
         settings.AppendSeparator()
@@ -648,6 +649,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if action == 'open_selected_platform': self.open_network(); return
         if action == 'open_link': self.open_link(); return
         if action == 'download_video': self.start_video_download(); return
+        if action == 'download_audio': self.start_audio_download(); return
         if action == 'return_results': self.return_to_results(); return
         if action == 'home': self.home(); return
         self.dispatch(MEDIA_ACTIONS.get(action, action))

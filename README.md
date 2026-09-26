@@ -190,6 +190,15 @@ O Windows pede confirmação ao substituir um arquivo existente; o arquivo anter
 é preservado até o novo download terminar. O menu **Configurações** permite baixar,
 trocar ou abrir essa pasta.
 
+### Baixar só o áudio
+
+Pressione **Ctrl+Shift+B** (ou use **Configurações, Baixar áudio do vídeo atual**) para salvar apenas o 
+áudio do vídeo ativo, com a mesma janela **Salvar como** e a mesma pasta do download de vídeo. 
+O arquivo sai em **M4A** (AAC), sem reencodar, então não há perda de qualidade. No YouTube Shorts vem 
+direto o melhor fluxo de áudio (M4A ou, se não houver, Opus/WebM). No TikTok e no Instagram, o áudio é 
+copiado da trilha do vídeo baixado por um extrator próprio (`audio_extract.py`), que não precisa do ffmpeg; 
+o vídeo temporário é apagado. Não há conversão para MP3.
+
 O download tenta primeiro transferir o MP4 pelo WebView2, usando a sessão aberta,
 sem depender do yt-dlp. O motor faz parte do runtime já incluído no instalador.
 Arquivos incompletos são descartados; a transferência pela sessão tem limite
