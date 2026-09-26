@@ -324,3 +324,18 @@ na estrutura de qualquer plataforma podem exigir atualização dos seletores.
 ## Privacidade
 
 Valores de cookies e tokens não são exibidos nem registrados. Arquivos `cookies*.json`, `cookies*.txt` e o perfil persistente são ignorados pelo Git. Ainda assim, trate o arquivo exportado como um segredo e armazene-o em local seguro.
+
+
+## Abrir links do WhatsApp direto no aplicativo
+
+O instalador registra o Accessible Reels na lista de aplicativos padrão do Windows, mas
+não o define como navegador sozinho. Use **Configurações > Abrir links de vídeo neste
+aplicativo...** e, em Aplicativos padrão, escolha Accessible Reels para HTTP e HTTPS.
+
+Depois disso, links de vídeo do TikTok, Reels e Shorts abrem na janela do aplicativo,
+reaproveitando a janela já aberta. Qualquer outro link é repassado ao navegador que era o
+padrão antes (o aplicativo o guarda em `%LOCALAPPDATA%\Accessible Reels\default_browser.json`
+a cada abertura, enquanto ele ainda é o padrão). Se esse navegador sumir, usa outro navegador
+instalado. Abrir o aplicativo uma segunda vez apenas traz a janela existente para frente.
+Ao desinstalar, o registro é removido e o Windows volta a pedir um navegador padrão.
+

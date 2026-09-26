@@ -341,9 +341,39 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(settings, 'Baixar vídeo atual', self.start_video_download, key('download_video'))
         self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
         self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
+        settings.AppendSeparator()
+        self._append_menu_item(settings, 'Abrir links de vídeo neste aplicativo...', self.open_default_apps)
         bar.Append(settings, '&Configurações')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
+
+    def open_default_apps(self, event=None):
+        """Let the user choose Accessible Reels as browser so shared video links open here."""
+        from link_router import open_default_apps_settings
+        try:
+            open_default_apps_settings()
+        except OSError:
+            logger.exception('Could not open default apps settings')
+            self.status('Não foi possível abrir as configurações de aplicativos padrão do Windows.')
+            return
+        self.status('Em Aplicativos padrão, escolha Accessible Reels para os protocolos HTTP e HTTPS. '
+                    'Links que não forem de vídeo continuam abrindo no seu navegador anterior.')
+
+    def attach_link_server(self, server):
+        """Receive links sent by other launches, such as a link clicked in WhatsApp."""
+        self._link_server = server
+        if server:
+            server.set_handler(lambda message: wx.CallAfter(self.receive_external_request, message))
+
+    def receive_external_request(self, message):
+        if self._closing_app:
+            return
+        if self.IsIconized():
+            self.Iconize(False)
+        self.Show()
+        self.Raise()
+        if message.get('action') == 'open':
+            self.open_video_link(message.get('url', ''))
 
     def open_log_folder(self, event=None):
         """Open the local, user-controlled diagnostic files for sharing."""
@@ -1423,6 +1453,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if context and context.get('worker'):
             context['worker'].close()
         self._release_hotkey()
+        if getattr(self, '_link_server', None):
+            self._link_server.close()
         for client in self.clients.values():
             client.close()
         event.Skip()
