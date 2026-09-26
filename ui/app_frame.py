@@ -20,7 +20,7 @@ from ui.webview_focus import EmbeddedFocusMixin
 from ui.download_controls import DownloadControlsMixin
 from ui.webview_client import WebViewClient, PLATFORM_URLS, belongs_to_platform
 from ui.video_link import parse_video_link
-from ui.shortcuts import (SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
+from ui.shortcuts import (MEDIA_ACTIONS, SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
                           action_shortcut, load_shortcut_settings,
                           shortcut_to_windows)
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
@@ -46,12 +46,28 @@ BACKGROUND_WEBVIEW_ARGUMENTS = (
 )
 
 
+DISABLED_WEBVIEW_FEATURES = ('HardwareMediaKeyHandling',)
+
+
 def webview_browser_arguments(existing: str = '') -> str:
-    """Keep the caller's WebView2 options while enabling background controls."""
+    """Keep the caller's WebView2 options while enabling background controls.
+
+    Chromium's own media key handling is turned off: Accessible Reels registers those
+    keys itself, and both reacting to one press would pause the video and skip it.
+    """
     values = existing.split()
     for argument in BACKGROUND_WEBVIEW_ARGUMENTS:
         if argument not in values:
             values.append(argument)
+    prefix = '--disable-features='
+    index = next((i for i, value in enumerate(values) if value.startswith(prefix)), None)
+    features = values[index][len(prefix):].split(',') if index is not None else []
+    features += [feature for feature in DISABLED_WEBVIEW_FEATURES if feature not in features]
+    combined = prefix + ','.join(feature for feature in features if feature)
+    if index is None:
+        values.append(combined)
+    else:
+        values[index] = combined
     return ' '.join(values)
 
 
@@ -634,7 +650,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if action == 'download_video': self.start_video_download(); return
         if action == 'return_results': self.return_to_results(); return
         if action == 'home': self.home(); return
-        self.dispatch(action)
+        self.dispatch(MEDIA_ACTIONS.get(action, action))
 
     def _on_system_hotkey(self, event):
         action = next((name for name, identifier in self._system_hotkey_ids.items()

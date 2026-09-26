@@ -340,3 +340,14 @@ a cada abertura, enquanto ele ainda é o padrão). Se esse navegador sumir, usa 
 instalado. Abrir o aplicativo uma segunda vez apenas traz a janela existente para frente.
 Ao desinstalar, o registro é removido e o Windows volta a pedir um navegador padrão.
 
+## Teclas de mídia e botões do fone
+
+As teclas de mídia funcionam em todo o Windows, com o aplicativo em segundo plano: **próxima faixa**
+passa para o próximo vídeo, **faixa anterior** volta e **reproduzir/pausar** pausa ou retoma. Em muitos
+teclados de notebook elas ficam em Fn+F8 e vizinhas; a maioria dos fones sem fio envia as mesmas teclas.
+Já vêm ligadas. Em **F2, Atalhos**, é possível desmarcar cada uma (deixando de valer fora do aplicativo)
+ou trocar a tecla. Enquanto o aplicativo está aberto, ele recebe essas teclas no lugar de outros
+reprodutores, como o Spotify. O tratamento próprio de teclas de mídia do WebView2 é desativado para que uma
+pressão não aja duas vezes. Fones que só se comunicam pelo controle de mídia do Windows, sem enviar teclas,
+não são atendidos por este recurso.
+
