@@ -251,6 +251,7 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
 - `Alt+G`: informar se você segue ou não o autor;
+- `Alt+Shift+N`: marcar o vídeo atual como “Não tenho interesse”. Usa a opção do menu de três pontos da própria plataforma: funciona no TikTok (logado); no Instagram só existe para anúncios (“Ocultar anúncio”), pois a versão web não oferece a opção em Reels comuns; no YouTube Shorts depende do menu do vídeo. Quando a opção não existe, o aplicativo avisa;
 - `Esc`: voltar dos comentários ao player;
 - `F2`: abrir a janela de configurações;
 - `F5`: atualizar autor e descrição;

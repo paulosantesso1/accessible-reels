@@ -236,6 +236,48 @@
     await click(reply);
     return clean(element.innerText);
   }
+  const NOT_INTERESTED = /^(não tenho interesse|não me interessa|não estou interessado|not interested|ocultar anúncio|hide ad)\b/i;
+  function findNotInterestedItem() {
+    const matches = [...document.querySelectorAll("[role=menuitem], button, [role=button], li, a")]
+      .filter(el => visible(el) && NOT_INTERESTED.test(clean(el.getAttribute("aria-label") || el.textContent)));
+    return matches.find(el => !matches.some(other => other !== el && el.contains(other))) || null;
+  }
+  // The platform may move on by itself after a mark; only ask for a skip when the same Reel is still there.
+  async function afterMark(video, link, extra = {}) {
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      await sleep(150);
+      if (activeVideo() !== video || snapshot().link !== link) return extra;
+    }
+    return {...extra, advance: true};
+  }
+  async function markNotInterested() {
+    const video = activeVideo();
+    if (!video) throw new Error("Não foi possível localizar o Reel atual.");
+    try {
+      let item = findNotInterestedItem();
+      if (!item) {
+        const more = buttonNamed(reelRoot(video), /^(mais|more|mais opções|more options|opções|options)$/i);
+        if (!more) throw new Error("Não foi possível localizar o menu Mais no Reel atual.");
+        await click(more);
+        item = await waitFor(findNotInterestedItem,
+          "Este Reel não oferece a opção Não tenho interesse. Use F6 para acessar a página.", 3000);
+      }
+      const isAd = /^(ocultar anúncio|hide ad)/i.test(clean(item.getAttribute("aria-label") || item.textContent));
+      const link = snapshot().link;
+      await click(item);
+      await waitFor(() => !item.isConnected || !visible(item),
+        "O Instagram não confirmou a marcação. Confira na página (F6).", 3000);
+      return afterMark(video, link, isAd ? {ad: true} : {});
+    } catch (error) {
+      error.details = {controls: [...reelRoot(video).querySelectorAll("button,[role=button],svg[aria-label]")]
+        .filter(visible).slice(0, 60).map(el => `${el.tagName.toLowerCase()}|${label(el)}`),
+        popups: [...document.querySelectorAll("[role=menu],[role=dialog]")].filter(visible)
+          .map(el => clean(el.textContent).slice(0, 120))};
+      document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+      throw error;
+    }
+  }
   async function toggleSocial(pattern, undoPattern, name) {
     const video = activeVideo();
     const button = buttonNamed(reelRoot(video), pattern);
@@ -468,6 +510,7 @@
       }
       return { state: afterIsFollowing };
     }
+    if (action === "not_interested") return markNotInterested();
     if (action === "toggle_like") return toggleSocial(/^(curtir|descurtir|like|unlike)$/i, /^(descurtir|unlike)$/i, "a curtida");
     if (action === "toggle_favorite") return toggleSocial(/^(salvar|remover|remover dos salvos|save|unsave|remove)$/i, /^(remover|remover dos salvos|unsave|remove)$/i, "Salvar");
     if (action === "comments") {
@@ -545,7 +588,7 @@
   transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "accessible-reels-command" || message.platform !== "instagram") return false;
     enqueue(message.action, message.argument).then(result => sendResponse({ok: true, ...result}))
-      .catch(error => sendResponse({ok: false, error: error.message || "Falha no Instagram."}));
+      .catch(error => sendResponse({ok: false, error: error.message || "Falha no Instagram.", details: error.details}));
     return true;
   });
 })();

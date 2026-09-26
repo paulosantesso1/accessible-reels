@@ -946,3 +946,126 @@ def test_real_dom_finds_video_link_in_outer_feed_item_even_when_link_has_no_area
     assert controller.current_url() == (
         "https://www.tiktok.com/@autor-externo/video/987654"
     )
+
+
+NOT_INTERESTED_PAGE = """
+<style>
+  article, video { width:500px; height:350px; }
+  [role="button"], button { display:block; width:120px; height:30px; }
+  #menu { position:fixed; left:600px; top:50px; width:180px; background:white; }
+</style>
+<article>
+  <video id="active"></video>
+  %s
+</article>
+<script>
+  window.pressed = null;
+  function openMenu(items) {
+    const menu = document.createElement('div');
+    menu.id = 'menu';
+    menu.setAttribute('role', 'menu');
+    for (const text of items) {
+      const item = document.createElement('div');
+      item.setAttribute('role', 'menuitem');
+      item.style.cssText = 'height:30px';
+      item.textContent = text;
+      item.onclick = () => { window.pressed = text; menu.remove(); };
+      menu.append(item);
+    }
+    document.body.append(menu);
+  }
+</script>
+"""
+
+
+def test_tiktok_not_interested_uses_the_more_button(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div role="button" data-e2e="more-menu-icon" aria-label="Mais opções"
+        onclick="openMenu(['Copiar link', 'Não tenho interesse', 'Denunciar'])">Mais</div>""")
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('not_interested')") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "Não tenho interesse"
+
+
+def test_tiktok_not_interested_falls_back_to_the_context_menu(page):
+    page.set_content(NOT_INTERESTED_PAGE % "")
+    page.evaluate("""document.querySelector('video').addEventListener('contextmenu',
+      () => openMenu(['Not interested', 'Report']))""")
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('not_interested')") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "Not interested"
+
+
+def test_tiktok_not_interested_reports_a_menu_without_the_option(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div role="button" data-e2e="more-menu-icon" aria-label="Mais opções"
+        onclick="openMenu(['Copiar link', 'Denunciar'])">Mais</div>""")
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('not_interested')")
+    assert result["ok"] is False and "Não tenho interesse" in result["error"]
+    assert page.evaluate("window.pressed") is None
+
+
+def test_tiktok_not_interested_reveals_the_hover_only_more_button(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div role="button" id="more" data-e2e="more-menu-icon" style="display:none"
+        onclick="openMenu(['Velocidade', 'Não tenho interesse'])">Mais</div>""")
+    page.evaluate("""document.querySelector('article').addEventListener('mouseover',
+      () => { document.querySelector('#more').style.display = 'block'; })""")
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('not_interested')") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "Não tenho interesse"
+
+
+def test_tiktok_not_interested_clicks_a_more_button_that_never_becomes_visible(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div role="button" data-e2e="more-menu-icon" style="display:none"
+        onclick="openMenu(['Velocidade', 'Não tenho interesse'])">Mais</div>""")
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('not_interested')") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "Não tenho interesse"
+
+
+def test_tiktok_not_interested_finds_plain_text_items_in_the_menu(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div role="button" data-e2e="more-menu-icon" aria-label="Mais opções"
+        onclick="const m=document.createElement('div');m.setAttribute('role','menu');m.id='menu';
+          m.innerHTML='<div><span>Velocidade</span></div><div id=ni><span>Não tenho interesse</span></div>';
+          m.querySelector('#ni').onclick=()=>{window.pressed='ni';m.remove()};document.body.append(m)">Mais</div>""")
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('not_interested')") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "ni"
+
+
+def test_tiktok_failure_report_lists_menus_and_account_controls(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div data-e2e="top-login-button" style="width:50px;height:20px">Entrar</div>
+      <div role="button" data-e2e="more-menu-icon" aria-label="Mais opções"
+        onclick="openMenu(['Velocidade', 'Copiar link'])">Mais</div>""")
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('not_interested')")
+    assert result["ok"] is False
+    details = result["details"]
+    assert any("Copiar link" in popup for popup in details["popups"])
+    assert "visible|top-login-button" in details["account"]
+
+
+def test_tiktok_not_interested_does_not_skip_when_the_feed_already_moved_on(page):
+    page.set_content(NOT_INTERESTED_PAGE % """
+      <div role="button" data-e2e="more-menu-icon" aria-label="Mais opções"
+        onclick="openMenu(['Não tenho interesse'])">Mais</div>""")
+    page.evaluate('''() => {
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node.id === 'menu') {
+            node.firstChild.addEventListener('click', () => {
+              const next = document.createElement('video');
+              next.id = 'next';
+              document.querySelector('#active').replaceWith(next);
+            });
+          }
+        }
+      }).observe(document.body, {childList: true});
+    }''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('not_interested')") == {"ok": True}

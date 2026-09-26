@@ -50,6 +50,7 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("open_comments", "Abrir comentários", "Alt+Shift+C"),
     ShortcutDefinition("toggle_like", "Curtir ou descurtir", "Alt+L"),
     ShortcutDefinition("toggle_favorite", "Favoritar ou desfavoritar", "Alt+F"),
+    ShortcutDefinition("not_interested", "Marcar como não tenho interesse", "Alt+Shift+N"),
     ShortcutDefinition("open_profile", "Abrir perfil", "Alt+Shift+P"),
     ShortcutDefinition("search", "Pesquisar", "Alt+E"),
     ShortcutDefinition("exit", "Sair", "Alt+S"),

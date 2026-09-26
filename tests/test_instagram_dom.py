@@ -313,3 +313,46 @@ def test_instagram_playback_toggle_uses_current_video(page):
     }''')
     assert command(page, "toggle")["paused"] is False
     assert command(page, "toggle")["paused"] is True
+
+
+NOT_INTERESTED_MENU = '''(items) => {
+  const more = document.createElement('div');
+  more.setAttribute('role', 'button');
+  more.id = 'more';
+  more.innerHTML = '<svg aria-label="Mais"></svg>';
+  more.onclick = () => {
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'dialog');
+    menu.style.cssText = 'position:fixed;left:650px;top:100px;width:200px;background:white';
+    for (const [id, text] of items) {
+      const button = document.createElement('button');
+      button.id = id;
+      button.textContent = text;
+      button.onclick = () => { window.pressed = id; menu.remove(); };
+      menu.append(button);
+    }
+    document.body.append(menu);
+  };
+  document.querySelector('#active').append(more);
+}'''
+
+
+def test_instagram_not_interested_opens_the_menu_and_confirms(page):
+    page.evaluate(NOT_INTERESTED_MENU, [["report", "Denunciar"], ["ni", "Não tenho interesse"]])
+    assert command(page, "not_interested") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "ni"
+    assert page.evaluate("window.igClicks") == ["more", "ni"]
+
+
+def test_instagram_not_interested_reports_a_menu_without_the_option(page):
+    page.evaluate(NOT_INTERESTED_MENU, [["report", "Denunciar"]])
+    result = command(page, "not_interested")
+    assert result["ok"] is False and "Não tenho interesse" in result["error"]
+    assert page.evaluate("window.pressed") is None
+
+
+def test_instagram_not_interested_hides_an_ad_with_its_own_menu(page):
+    page.evaluate(NOT_INTERESTED_MENU, [["why", "Por que você está vendo esse anúncio?"],
+                                        ["hide", "Ocultar anúncio"], ["report", "Denunciar anúncio"]])
+    assert command(page, "not_interested") == {"ok": True, "ad": True, "advance": True}
+    assert page.evaluate("window.pressed") == "hide"

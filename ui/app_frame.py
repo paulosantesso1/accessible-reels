@@ -325,7 +325,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         actions = wx.Menu()
         for label, action in [
             ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
-            ('Copiar link', 'copy_link'), ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
+            ('Copiar link', 'copy_link'), ('Não tenho interesse', 'not_interested'),
+            ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
         ]:
             self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(actions, '&Ações')
@@ -1238,7 +1239,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._finish_tiktok_follow_verification(result)
             return
         if result.get('ok') is not True:
-            logger.warning('Command failed: platform=%s action=%s message=%s', name, action, result.get('error'))
+            logger.warning('Command failed: platform=%s action=%s message=%s details=%s',
+                           name, action, result.get('error'), result.get('details'))
             self._platform_error(name, result.get('error') or 'A rede não confirmou o comando.')
             return
         logger.info('Command completed: platform=%s action=%s', name, action)
@@ -1307,6 +1309,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = 'Curtida adicionada.' if result.get('state') else 'Curtida removida.'
         elif action == 'toggle_favorite':
             message = 'Vídeo salvo.' if result.get('state') else 'Vídeo removido dos salvos.'
+        elif action == 'not_interested':
+            message = 'Anúncio ocultado.' if result.get('ad') else 'Vídeo marcado como não tenho interesse.'
+            if result.get('follow_up'):
+                message = ('Marcado como não tenho interesse. A plataforma abriu um painel para escolher o motivo; '
+                           'use F6 para escolher ou fechar.')
+            elif result.get('advance') and active:
+                # Some platforms skip the video themselves; the page reports when it did not.
+                message += ' Passando ao próximo vídeo.'
+                wx.CallAfter(self.dispatch, 'next_video')
         elif action == 'toggle_follow' and name == 'TikTok':
             message = 'Não foi possível identificar o perfil para confirmar o seguimento.'
         elif action == 'toggle_follow':
@@ -1350,6 +1361,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     message = 'Nenhum vídeo encontrado. Verifique sua pesquisa ou se a plataforma pede login (F6).'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
+            report = result.get('report') or message
+            logger.info('Diagnostics report: platform=%s %s', name, report)
+            if active and _copy_text_to_clipboard(report):
+                message += ' Diagnóstico copiado para a área de transferência.'
         if active and message:
             self.status(message)
 

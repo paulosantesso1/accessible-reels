@@ -188,6 +188,103 @@
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+    const NOT_INTERESTED = /^(não tenho interesse|não me interessa|não estou interessado|not interested)\b/i;
+    function findNotInterestedItem() {
+        const matches = [...document.querySelectorAll(
+            "[role=menuitem], button, [role=button], li, a, tp-yt-paper-item, ytd-menu-service-item-renderer, yt-list-item-view-model")]
+            .filter(el => visible(el) &&
+                NOT_INTERESTED.test((el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim()));
+        return matches.find(el => !matches.some(other => other !== el && el.contains(other))) || null;
+    }
+    // Text of every open menu or dialog; a change means the click moved the page to its next step.
+    function openPanelsText() {
+        return [...document.querySelectorAll("[role=menu], [role=dialog], tp-yt-paper-listbox, yt-dialog, tp-yt-paper-dialog")]
+            .filter(visible).map(el => (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 300)).join(" ¦ ");
+    }
+    // Close the reason panel YouTube opens after a mark, trying a close button, Escape and the backdrop.
+    async function closePanels(baseline) {
+        const attempts = [
+            () => {
+                const button = [...document.querySelectorAll("[role=dialog] button, yt-dialog button, tp-yt-paper-dialog button, [role=dialog] [role=button]")]
+                    .filter(visible).find(el => /^(fechar|close|cancelar|cancel)$/i.test((el.getAttribute("aria-label") || el.textContent || "").trim()));
+                if (button) button.click();
+                return Boolean(button);
+            },
+            () => {
+                for (const target of [document.activeElement, document.body, document]) {
+                    target?.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true}));
+                }
+                return true;
+            },
+            () => {
+                const backdrop = document.querySelector("tp-yt-iron-overlay-backdrop");
+                if (backdrop) backdrop.click();
+                return Boolean(backdrop);
+            }
+        ];
+        for (const attempt of attempts) {
+            if (!attempt()) continue;
+            await sleep(400);
+            if (openPanelsText() === baseline) return true;
+        }
+        return openPanelsText() === baseline;
+    }
+    // Only ask for a skip when the same Short is still on screen after the mark.
+    async function afterMark(video, link, extra = {}) {
+        const deadline = Date.now() + 1500;
+        while (Date.now() < deadline) {
+            await sleep(150);
+            if (activeVideo() !== video || snapshot().link !== link) return extra;
+        }
+        return {...extra, advance: true};
+    }
+    async function markNotInterested() {
+        const video = activeVideo();
+        if (!video) throw new Error("Vídeo não encontrado.");
+        const container = video.closest('ytd-reel-video-renderer') || video.parentElement;
+        const trace = {};
+        const baseline = openPanelsText();
+        try {
+            let item = findNotInterestedItem();
+            if (!item) {
+                const more = container.querySelector(
+                    '#menu-button button, ytd-menu-renderer button, button[aria-label*="Mais ações" i], ' +
+                    'button[aria-label*="More actions" i], button[aria-label*="Mais opções" i], button[aria-label*="More options" i]');
+                if (!more) throw new Error("Botão de mais opções não encontrado na tela.");
+                more.click();
+                const deadline = Date.now() + 3000;
+                while (!item && Date.now() < deadline) {
+                    await sleep(150);
+                    item = findNotInterestedItem();
+                }
+            }
+            if (!item) throw new Error("Este vídeo não oferece a opção Não tenho interesse. Use F6 para acessar a página.");
+            trace.clicked = `${item.tagName.toLowerCase()}|${(item.getAttribute("aria-label") || item.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60)}`;
+            trace.before = openPanelsText();
+            const link = snapshot().link;
+            item.click();
+            const deadline = Date.now() + 3000;
+            while (Date.now() < deadline) {
+                await sleep(150);
+                if (!item.isConnected || !visible(item)) return afterMark(video, link);
+                // YouTube may keep a panel open asking for a reason after registering the choice.
+                if (openPanelsText() !== trace.before) {
+                    const closed = await closePanels(baseline);
+                    return afterMark(video, link, closed ? {} : {follow_up: true});
+                }
+            }
+            throw new Error("O YouTube não confirmou a marcação. Confira na página (F6).");
+        } catch (error) {
+            trace.after = openPanelsText();
+            error.details = {trace, controls: [...container.querySelectorAll("button, [role=button], [role=menuitem]")]
+                .slice(0, 60).map(el => `${el.tagName.toLowerCase()}|${el.id}|${el.getAttribute("aria-label") || ""}`),
+                popups: [...document.querySelectorAll("[role=menu], [role=dialog], tp-yt-paper-listbox")]
+                    .filter(visible).map(el => (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120))};
+            document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+            throw error;
+        }
+    }
+
     async function execute(action, argument) {
         if (action === "play" || action === "toggle") {
             let video = activeVideo();
@@ -453,6 +550,9 @@
             }
             throw new Error("Botão de curtir não encontrado na tela.");
         }
+        else if (action === "not_interested") {
+            return markNotInterested();
+        }
         else if (action === "toggle_favorite") {
             throw new Error("O YouTube Shorts não possui um botão de salvar rápido nativo na tela. Use F6 para abrir opções.");
         }
@@ -463,7 +563,7 @@
     transport.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         execute(message.action, message.argument)
             .then(result => sendResponse({ok: true, ...result}))
-            .catch(error => sendResponse({ok: false, error: error.message}));
+            .catch(error => sendResponse({ok: false, error: error.message, details: error.details}));
         return true;
     });
 })();
