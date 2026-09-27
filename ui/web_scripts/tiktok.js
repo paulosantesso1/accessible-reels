@@ -335,6 +335,26 @@
     lastActiveSource = selected?.currentSrc || "";
     return lastActiveVideo;
   }
+  // Resolves once the same video has kept its source and position for three
+  // consecutive samples, that is, the feed finished scrolling onto it.
+  async function waitUntilSettled(deadline) {
+    let previous = null;
+    let steady = 0;
+    while (Date.now() < deadline) {
+      const video = activeVideo();
+      const state = video && {
+        video,
+        top: Math.round(video.getBoundingClientRect().top),
+        source: video.currentSrc || video.getAttribute("src")
+      };
+      const same = state && previous && state.video === previous.video &&
+        state.top === previous.top && state.source === previous.source;
+      steady = same ? steady + 1 : 0;
+      previous = state;
+      if (steady >= 3) return;
+      await sleep(150);
+    }
+  }
   let initialPlaybackReleased = false;
   function startInitialPlaybackWhenReady() {
     const deadline = Date.now() + 12000;
@@ -1100,14 +1120,20 @@
           behavior: "smooth"
         });
       }
+      const moved = current => current && (current !== video ||
+        (current.currentSrc || current.getAttribute("src")) !== source ||
+        snapshot().link !== link);
       const deadline = Date.now() + 4500;
       while (Date.now() < deadline) {
         await sleep(150);
         stabilizeAudio();
-        const current = activeVideo();
-        if (current && (current !== video ||
-            (current.currentSrc || current.getAttribute("src")) !== source ||
-            snapshot().link !== link)) return snapshot();
+        if (!moved(activeVideo())) continue;
+        // O vídeo seguinte já cobre a maior parte da tela enquanto a rolagem
+        // ainda anima, e ela pode voltar ao vídeo anterior. Só lemos os
+        // detalhes depois que o feed para de se mexer.
+        await waitUntilSettled(deadline + 1500);
+        stabilizeAudio();
+        if (moved(activeVideo())) return snapshot();
       }
       throw new Error("O TikTok não mudou de vídeo. Tente novamente ou use F6 para acessar a página.");
     }

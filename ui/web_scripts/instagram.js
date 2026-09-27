@@ -435,7 +435,19 @@
       }
       await waitFor(() => {const active = activeVideo(); return active && (active !== video || active.currentSrc !== before);},
         "O Instagram não mudou de Reel; você pode estar no início ou fim da lista.", 4000);
-      await sleep(350);
+      // Espera o feed parar de rolar antes de ler os detalhes; o Reel seguinte
+      // já cobre a maior parte da tela enquanto a rolagem ainda anima.
+      let previous = null, steady = 0;
+      const settleBy = Date.now() + 3000;
+      while (Date.now() < settleBy && steady < 3) {
+        await sleep(150);
+        const active = activeVideo();
+        const state = active && {active, top: Math.round(active.getBoundingClientRect().top),
+          source: active.currentSrc};
+        steady = state && previous && state.active === previous.active &&
+          state.top === previous.top && state.source === previous.source ? steady + 1 : 0;
+        previous = state;
+      }
       stabilizeAudio();
       return snapshot();
     }

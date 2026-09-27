@@ -498,11 +498,24 @@
             while (Date.now() < deadline) {
                 await sleep(150);
                 const current = activeVideo();
-                if (current && (current !== video ||
-                    (current.currentSrc || current.getAttribute("src")) !== source ||
-                    snapshot().link !== link)) {
-                        await sleep(400); // Aguarda o DOM do YouTube renderizar os novos textos
-                        return snapshot();
+                const moved = candidate => candidate && (candidate !== video ||
+                    (candidate.currentSrc || candidate.getAttribute("src")) !== source ||
+                    snapshot().link !== link);
+                if (moved(current)) {
+                    // A rolagem pode ainda estar animando; espera o feed parar
+                    // e o DOM do YouTube renderizar os novos textos.
+                    let previous = null, steady = 0;
+                    const settleBy = deadline + 1500;
+                    while (Date.now() < settleBy && steady < 3) {
+                        await sleep(150);
+                        const active = activeVideo();
+                        const state = active && {active, top: Math.round(active.getBoundingClientRect().top),
+                            source: active.currentSrc || active.getAttribute("src")};
+                        steady = state && previous && state.active === previous.active &&
+                            state.top === previous.top && state.source === previous.source ? steady + 1 : 0;
+                        previous = state;
+                    }
+                    if (moved(activeVideo())) return snapshot();
                 }
             }
             throw new Error("O YouTube não mudou de vídeo a tempo. Tente novamente ou use F6 para acessar a página.");
