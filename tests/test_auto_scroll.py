@@ -47,6 +47,12 @@ def test_start_dynamic_timer(frame):
         # stopping auto-scroll from continuing in the background.
         assert "setInterval(" not in script
         assert "'timeupdate'" in script
+        # The platform loops the video itself right as it nears the end
+        # instead of firing a real 'ended'; asking to advance in the
+        # middle of that caught next/previous mid-transition and it
+        # handled that unreliably, especially in the background. Give it
+        # a moment to settle first.
+        assert "setTimeout(() => window.chrome.webview.postMessage('auto_scroll_next')" in script
         # Advances while the video is still playing, the same state a
         # manual next/previous always runs against. An earlier version
         # paused the video and fought the platform resuming it, which put

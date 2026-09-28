@@ -487,17 +487,19 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     if (video.dataset.autoScrolled || video.duration <= 0) return;
                     if ((video.duration - video.currentTime) > 0.2) return;
                     video.dataset.autoScrolled = 'true';
-                    // Ask the app to advance while the video is still
-                    // playing, the same state a manual next/previous
-                    // always runs against -- next/previous itself needs
-                    // the page to actually process the transition, which
-                    // it can already do reliably in that state. Pausing
-                    // the video here first (an earlier version of this)
-                    // put it in a state next/previous handled much less
-                    // reliably, especially while the app window was in
-                    // the background: it could take several failed
-                    // attempts, or hang until the window regained focus.
-                    window.chrome.webview.postMessage('auto_scroll_next');
+                    // The platform loops this video itself right at this
+                    // point rather than firing a real 'ended' (that's why
+                    // this watches for the video nearing its end instead
+                    // of a plain 'ended' listener). Asking to advance in
+                    // the middle of that, especially while the app window
+                    // is in the background, caught next/previous while the
+                    // page was still mid-transition and it handled that far
+                    // less reliably than a request arriving a moment later
+                    // -- a manual next/previous pressed right after this
+                    // one failed and got queued behind it succeeded as
+                    // soon as its turn came. Give the platform a moment to
+                    // settle its own loop first.
+                    setTimeout(() => window.chrome.webview.postMessage('auto_scroll_next'), 500);
                 };
 
                 const watched = new WeakSet();
