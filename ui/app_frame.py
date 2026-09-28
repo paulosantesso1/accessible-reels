@@ -235,6 +235,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.initialize_downloads()
         self._update_checking = False
         self.auto_scroll_enabled = False
+        self._restore_position = None
         self.Bind(html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._on_webview_message)
         self._registered_hotkeys = set()
         self._registered_hotkey_actions = set()
@@ -283,6 +284,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.activities.SetSelection(0)
         self.Bind(wx.EVT_HOTKEY, self._on_system_hotkey)
         self.Bind(wx.EVT_ACTIVATE, self._activation_changed)
+        self.Bind(wx.EVT_ICONIZE, self._on_iconize)
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
         self.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
@@ -402,6 +404,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         if self.IsIconized():
             self.Iconize(False)
+        self._restore_offscreen_position()
         self.Show()
         self.Raise()
         if message.get('action') == 'open':
@@ -775,6 +778,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         active = event.GetActive()
         self._sync_system_hotkeys(active)
         if active:
+            self._restore_offscreen_position()
             # The embedded page can be suspended by the browser engine while
             # the window is unfocused/occluded, and any DOM changes it made
             # in that state (the feed swapping in a new <video> element) can
@@ -784,6 +788,38 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             # retoggles it.
             self._start_dynamic_timer()
         event.Skip()
+
+    def _on_iconize(self, event):
+        # WebView2 is a child window and does not reliably get notified
+        # when the top-level window is minimized/restored (a documented
+        # WebView2 limitation), which left it unable to reliably process
+        # commands -- including next/previous, and by extension auto-scroll
+        # -- until the window was brought back. Alt+Tab-ing to another
+        # window (which only covers this one, never truly minimizing it)
+        # doesn't hit this; only a real minimize (the taskbar button, or
+        # Windows+D) does.
+        #
+        # Intercept the real minimize and move the window off-screen
+        # instead: from Windows' and WebView2's perspective it stays a
+        # normal, restored (never iconized) window, so nothing suspends
+        # its renderer, while the user sees the same result -- the window
+        # is gone from view, and its taskbar button brings it back.
+        if event.IsIconized():
+            wx.CallAfter(self._replace_minimize_with_offscreen)
+        event.Skip()
+
+    def _replace_minimize_with_offscreen(self):
+        if self._closing_app or not self.IsIconized():
+            return
+        if self._restore_position is None:
+            self._restore_position = self.GetPosition()
+        self.Iconize(False)
+        self.SetPosition(wx.Point(-32000, -32000))
+
+    def _restore_offscreen_position(self):
+        if self._restore_position is not None:
+            self.SetPosition(self._restore_position)
+            self._restore_position = None
 
     def _sync_system_hotkeys(self, active):
         actions = set(self.global_shortcuts)

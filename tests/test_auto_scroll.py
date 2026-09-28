@@ -145,6 +145,70 @@ def test_window_losing_focus_does_not_rearm_auto_scroll(frame):
 
         start_timer.assert_not_called()
 
+def test_iconize_schedules_offscreen_replacement(frame):
+    # WebView2 is a child window and does not reliably get notified when
+    # the top-level window is minimized/restored (a documented WebView2
+    # limitation), which left it unable to reliably process commands --
+    # including next/previous, and auto-scroll by extension -- until the
+    # window was brought back. Moving off-screen instead keeps it a
+    # normal, restored (never iconized) window from WebView2's
+    # perspective, so nothing suspends its renderer.
+    event = Mock()
+    event.IsIconized.return_value = True
+
+    with patch('wx.CallAfter') as call_after:
+        frame._on_iconize(event)
+
+    call_after.assert_called_once_with(frame._replace_minimize_with_offscreen)
+    event.Skip.assert_called_once()
+
+def test_restoring_from_iconize_does_not_schedule_offscreen_replacement(frame):
+    event = Mock()
+    event.IsIconized.return_value = False
+
+    with patch('wx.CallAfter') as call_after:
+        frame._on_iconize(event)
+
+    call_after.assert_not_called()
+    event.Skip.assert_called_once()
+
+def test_replace_minimize_with_offscreen_moves_window_and_remembers_position(frame):
+    frame._restore_position = None
+
+    with patch.object(frame, 'IsIconized', return_value=True), \
+         patch.object(frame, 'GetPosition', return_value=wx.Point(50, 60)), \
+         patch.object(frame, 'Iconize') as iconize, \
+         patch.object(frame, 'SetPosition') as set_position:
+        frame._replace_minimize_with_offscreen()
+
+    iconize.assert_called_once_with(False)
+    set_position.assert_called_once_with(wx.Point(-32000, -32000))
+    assert frame._restore_position == wx.Point(50, 60)
+
+def test_replace_minimize_with_offscreen_is_noop_once_restored(frame):
+    with patch.object(frame, 'IsIconized', return_value=False), \
+         patch.object(frame, 'SetPosition') as set_position:
+        frame._replace_minimize_with_offscreen()
+
+    set_position.assert_not_called()
+
+def test_restore_offscreen_position_puts_window_back(frame):
+    frame._restore_position = wx.Point(10, 20)
+
+    with patch.object(frame, 'SetPosition') as set_position:
+        frame._restore_offscreen_position()
+
+    set_position.assert_called_once_with(wx.Point(10, 20))
+    assert frame._restore_position is None
+
+def test_restore_offscreen_position_is_noop_when_not_offscreen(frame):
+    frame._restore_position = None
+
+    with patch.object(frame, 'SetPosition') as set_position:
+        frame._restore_offscreen_position()
+
+    set_position.assert_not_called()
+
 def test_dispatch_intercepts_for_manual_scroll(frame):
     frame.auto_scroll_enabled = True
 
