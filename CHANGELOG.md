@@ -1,5 +1,26 @@
 # Histórico de versões
 
+## 1.2.0 — 2026-09-28
+
+- Rolagem automática dos vídeos: ativada, ela avança para o próximo vídeo
+  sozinha quando o atual termina. Funciona com a janela do aplicativo em
+  primeiro plano; em segundo plano, não funciona, por limitações do WebView2
+  e das próprias plataformas — nesse caso, avance normalmente. Obrigado,
+  @rafaela-sborges, pela contribuição e implementação.
+- Controle de reprodução pelas teclas de mídia: pausar, retroceder e avançar
+  os vídeos, tanto pelas teclas do teclado quanto pelas do fone de ouvido,
+  quando disponíveis. Obrigado, @Davy, pela sugestão.
+- Download de áudio: além do vídeo completo, agora também é possível baixar
+  apenas o áudio. Obrigado, @Sasu, pela sugestão.
+- Abertura de links direto pelo aplicativo: definindo o Accessible Reels
+  como aplicativo padrão no Windows, links de TikTok, Instagram e YouTube
+  Shorts abrem direto no app; qualquer outro tipo de link continua abrindo
+  no seu navegador padrão.
+- Corrigido o diálogo de atualizações: as novidades da versão aparecem uma
+  única vez após atualizar, e essa mensagem não é exibida de novo depois.
+
+Obrigado a todos pelas contribuições e sugestões!
+
 ## 1.1.1 — 2026-09-14
 
 - Corrigido o empacotamento do motor de downloads para as versões atuais do
