@@ -307,11 +307,23 @@ def test_media_key_accelerators_are_accepted_by_wx():
 
 
 def test_webview_stops_handling_media_keys_and_keeps_other_disabled_features():
-    assert webview_browser_arguments('').endswith('--disable-features=HardwareMediaKeyHandling')
+    assert webview_browser_arguments('').endswith(
+        '--disable-features=HardwareMediaKeyHandling,CalculateNativeWinOcclusion')
     merged = webview_browser_arguments('--other --disable-features=Foo,Bar').split()
-    assert '--disable-features=Foo,Bar,HardwareMediaKeyHandling' in merged
+    assert '--disable-features=Foo,Bar,HardwareMediaKeyHandling,CalculateNativeWinOcclusion' in merged
     assert sum(value.startswith('--disable-features=') for value in merged) == 1
     assert webview_browser_arguments(webview_browser_arguments('')) == webview_browser_arguments('')
+
+
+def test_webview_disables_native_window_occlusion():
+    # On Windows, Chromium separately tracks whether the host window is
+    # fully covered by another native window and, when it is, treats the
+    # page as a background tab regardless of the other background flags:
+    # rendering stops and script is throttled. That let next/previous
+    # (which needs the page to actually render to confirm the feed
+    # advanced) time out, and the active video visibly freeze, whenever the
+    # window was minimized or covered.
+    assert 'CalculateNativeWinOcclusion' in webview_browser_arguments('')
 
 
 def test_audio_download_has_its_own_shortcut_and_command():

@@ -46,7 +46,14 @@ BACKGROUND_WEBVIEW_ARGUMENTS = (
 )
 
 
-DISABLED_WEBVIEW_FEATURES = ('HardwareMediaKeyHandling',)
+# On Windows, Chromium separately tracks whether the host window is fully
+# covered by another native window ("native window occlusion") and, when it
+# is, treats the page as if it were a background tab regardless of the flags
+# above: rendering stops and script is throttled. That's what let next/
+# previous (which needs the page to actually render to confirm the feed
+# advanced) time out, and the active video visibly freeze, whenever the
+# window was minimized or covered -- not just unfocused.
+DISABLED_WEBVIEW_FEATURES = ('HardwareMediaKeyHandling', 'CalculateNativeWinOcclusion')
 
 
 def webview_browser_arguments(existing: str = '') -> str:
