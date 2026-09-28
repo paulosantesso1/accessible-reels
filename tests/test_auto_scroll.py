@@ -35,12 +35,18 @@ def test_start_dynamic_timer(frame):
         mock_client.RunScript.assert_called_once()
         script = mock_client.RunScript.call_args[0][0]
         assert "document.querySelectorAll('video')" in script
-        assert "setInterval" in script
+        # 'timeupdate' is driven by the media pipeline itself, not a JS
+        # timer, so detection keeps working while the window is backgrounded
+        # -- unlike the setInterval polling this replaced, which Chromium
+        # throttles (or stalls) once the app isn't focused, silently
+        # stopping auto-scroll from continuing in the background.
+        assert "setInterval(" not in script
+        assert "'timeupdate'" in script
         # Re-pauses the video if the platform (e.g. TikTok's scroll rebound)
         # resumes it while the app is still settling on the next post --
         # otherwise it plays a sliver, loops to 0 and "repeats a second".
         assert "resumeGuard" in script
-        assert "v.pause()" in script
+        assert "video.pause()" in script
         # ...but only while it's still the same clip: some platforms reuse
         # this element for the next post, and that legitimate playback must
         # not be paused by mistake.
