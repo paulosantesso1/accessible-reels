@@ -142,6 +142,28 @@ def test_window_losing_focus_does_not_rearm_auto_scroll(frame):
         frame._activation_changed(event)
 
         start_timer.assert_not_called()
+
+def test_activation_change_broadcasts_real_focus_state_to_every_view(frame):
+    # document.hasFocus() does not reliably reflect whether THIS APP'S
+    # WINDOW is the Windows foreground window -- WebView2 can keep
+    # reporting page focus regardless, which let next/previous keep
+    # attempting (and hanging on) a native click that needs real OS
+    # foreground status. Push the real wx-level state into every embedded
+    # platform instead (not just the currently selected one, since the
+    # user can switch platforms while the window stays unfocused).
+    view_a, view_b = Mock(), Mock()
+    frame.views = {'TikTok': view_a, 'Instagram': view_b}
+    event = Mock()
+    event.GetActive.return_value = False
+
+    with patch.object(frame, '_sync_system_hotkeys'), \
+         patch.object(frame, '_start_dynamic_timer'):
+        frame._activation_changed(event)
+
+    for view in (view_a, view_b):
+        view.RunScriptAsync.assert_called_once()
+        script = view.RunScriptAsync.call_args[0][0]
+        assert '__accessibleWindowFocused' in script and 'false' in script
         event.Skip.assert_called_once()
 
 def test_dispatch_intercepts_for_manual_scroll(frame):

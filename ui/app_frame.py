@@ -1,6 +1,7 @@
 """Accessible controls and embedded social pages in one application window."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -787,8 +788,21 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._invoke_shortcut(action)
 
     def _activation_changed(self, event):
-        self._sync_system_hotkeys(event.GetActive())
-        if event.GetActive():
+        active = event.GetActive()
+        self._sync_system_hotkeys(active)
+        # document.hasFocus() does not reliably reflect whether THIS APP'S
+        # WINDOW is the Windows foreground window -- WebView2 can keep
+        # reporting page focus even while the app is minimized or another
+        # window covers it, which made next/previous keep attempting (and
+        # hanging on) the native click that needs real OS foreground status.
+        # Tell every embedded page the real state directly instead.
+        script = f'window.__accessibleWindowFocused = {json.dumps(active)};'
+        for view in self.views.values():
+            try:
+                view.RunScriptAsync(script)
+            except Exception:
+                pass
+        if active:
             # The embedded page can be suspended by the browser engine while
             # the window is unfocused/occluded, and any DOM changes it made
             # in that state (the feed swapping in a new <video> element) can

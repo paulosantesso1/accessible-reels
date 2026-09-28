@@ -528,7 +528,7 @@ def test_embedded_navigation_skips_trusted_click_without_window_focus(page):
       <article><video></video></article></div>
     ''')
     install_embedded_tiktok(page)
-    page.evaluate("() => { document.hasFocus = () => false; }")
+    page.evaluate("() => { window.__accessibleWindowFocused = false; }")
     assert page.evaluate("command('next')")['ok'] is True
     assert page.evaluate("window.navigated") is not True
     page.wait_for_function("Math.abs(document.querySelector('#feed').scrollTop - 400) < 2")

@@ -291,7 +291,7 @@ def test_instagram_skips_trusted_click_without_window_focus(page):
     # previous would hang waiting for a click that never registers. Go
     # straight to the scroll fallback in that case, even with a navigation
     # button present and otherwise clickable.
-    page.evaluate("() => { document.hasFocus = () => false; }")
+    page.evaluate("() => { window.__accessibleWindowFocused = false; }")
     assert command(page, "next")["author"] == "@errado"
     assert page.evaluate("window.igClicks") == []
 
