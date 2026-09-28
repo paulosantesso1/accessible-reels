@@ -1,5 +1,11 @@
 # Histórico de versões
 
+## 1.2.1 — 2026-09-28
+
+- Corrigido o empacotamento do instalador: o arquivo com o histórico de
+  versões não estava incluído, e o diálogo de novidades falhava ao abrir
+  logo após atualizar para a 1.2.0.
+
 ## 1.2.0 — 2026-09-28
 
 - Rolagem automática dos vídeos: ativada, ela avança para o próximo vídeo

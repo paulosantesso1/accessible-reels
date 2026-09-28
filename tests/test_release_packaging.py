@@ -28,3 +28,14 @@ def test_release_build_embeds_external_ytdlp_executable():
     assert '--add-binary "$ytDlp;."' in build
     assert "dist\\Accessible Reels\\_internal\\yt-dlp.exe" in build
     assert '--collect-all yt_dlp' not in build
+
+
+def test_release_build_embeds_the_changelog():
+    # release_notes.load_release_history() reads CHANGELOG.md from right
+    # next to release_notes.py (Path(__file__).with_name(...)), which only
+    # exists in the packaged app if PyInstaller is told to bundle it --
+    # otherwise the "what's new" dialog fails with "O histórico de versões
+    # não foi encontrado." in the installed app, even though it works fine
+    # running from source.
+    build = (ROOT / 'scripts' / 'build_windows_release.ps1').read_text(encoding='utf-8')
+    assert '--add-data "CHANGELOG.md;."' in build

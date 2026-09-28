@@ -19,7 +19,7 @@ $loader = & $PythonExe -c "import wx; from pathlib import Path; print(Path(wx.__
 if (!(Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll ausente no wxPython." }
 $ytDlp = Join-Path $root 'yt-dlp.exe'
 if (!(Test-Path -LiteralPath $ytDlp -PathType Leaf)) { throw "yt-dlp.exe ausente na raiz do projeto." }
-& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --add-binary "$loader;." --add-binary "$ytDlp;." --add-data "ui\web_scripts;ui\web_scripts" main.py
+& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Accessible Reels" --collect-all accessible_output2 --add-binary "$loader;." --add-binary "$ytDlp;." --add-data "ui\web_scripts;ui\web_scripts" --add-data "CHANGELOG.md;." main.py
 if ($LASTEXITCODE -ne 0) { throw "Falha ao gerar o executável." }
 & $PythonExe scripts\verify_web_scripts.py
 $packagedYtDlp = @('dist\Accessible Reels\yt-dlp.exe', 'dist\Accessible Reels\_internal\yt-dlp.exe') |
