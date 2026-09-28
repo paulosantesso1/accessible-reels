@@ -73,6 +73,7 @@ def test_required_accelerators_are_preserved():
     assert shortcuts["toggle_favorite"] == (wx.ACCEL_ALT, ord("F"))
     assert shortcuts["read_follow_status"] == (wx.ACCEL_ALT, ord("G"))
     assert shortcuts["open_profile"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("P"))
+    assert shortcuts["not_interested"] == (wx.ACCEL_ALT | wx.ACCEL_SHIFT, ord("N"))
 
 
 def test_shortcut_preferences_are_saved_together(tmp_path):
@@ -260,3 +261,64 @@ def test_settings_result_refreshes_the_download_folder():
 
     assert frame._download_folder == Path('D:/Videos')
     dialog.Destroy.assert_called_once()
+
+
+MEDIA_GLOBALS = {'media_next', 'media_previous', 'media_play_pause'}
+
+
+def test_media_keys_are_global_by_default_and_registered_without_modifiers(tmp_path):
+    from ui.shortcuts import can_be_global, display_shortcut
+
+    shortcuts, globals_ = load_shortcut_settings(tmp_path / 'missing.json')
+    assert globals_ == MEDIA_GLOBALS
+    assert all(can_be_global(shortcuts[action]) for action in MEDIA_GLOBALS)
+    codes = {action: shortcut_to_windows(shortcuts[action]) for action in MEDIA_GLOBALS}
+    # No modifiers (only MOD_NOREPEAT) and the Windows virtual keys for next, previous, play/pause.
+    assert codes == {'media_next': (0x4000, 0xB0), 'media_previous': (0x4000, 0xB1),
+                     'media_play_pause': (0x4000, 0xB3)}
+    assert display_shortcut(shortcuts['media_next']) == 'Próxima faixa'
+
+
+def test_settings_saved_before_media_keys_existed_get_them_switched_on(tmp_path):
+    path = tmp_path / 'shortcuts.json'
+    path.write_text('{"shortcuts": {}, "global": ["next_video"]}', encoding='utf-8')
+    assert load_shortcut_settings(path)[1] == {'next_video'} | MEDIA_GLOBALS
+
+
+def test_media_keys_switched_off_by_the_user_stay_off(tmp_path):
+    path = tmp_path / 'shortcuts.json'
+    save_shortcut_settings(dict(DEFAULT_SHORTCUTS), {'next_video'}, path)
+    assert load_shortcut_settings(path)[1] == {'next_video'}
+
+
+def test_media_keys_control_the_videos():
+    frame = type('Frame', (), {})()
+    frame.dispatch = Mock()
+    for key, action in (('media_next', 'next_video'), ('media_previous', 'previous_video'),
+                        ('media_play_pause', 'toggle_playback')):
+        MainFrame._invoke_shortcut(frame, key)
+        frame.dispatch.assert_called_with(action)
+
+
+def test_media_key_accelerators_are_accepted_by_wx():
+    keys = {action: (modifiers, key) for action, modifiers, key in ACCELERATOR_SPECS}
+    assert keys['media_next'] == (wx.ACCEL_NORMAL, wx.WXK_MEDIA_NEXT_TRACK)
+    wx.AcceleratorTable([(modifiers, key, wx.NewIdRef()) for modifiers, key in keys.values()])
+
+
+def test_webview_stops_handling_media_keys_and_keeps_other_disabled_features():
+    assert webview_browser_arguments('').endswith('--disable-features=HardwareMediaKeyHandling')
+    merged = webview_browser_arguments('--other --disable-features=Foo,Bar').split()
+    assert '--disable-features=Foo,Bar,HardwareMediaKeyHandling' in merged
+    assert sum(value.startswith('--disable-features=') for value in merged) == 1
+    assert webview_browser_arguments(webview_browser_arguments('')) == webview_browser_arguments('')
+
+
+def test_audio_download_has_its_own_shortcut_and_command():
+    keys = {action: (modifiers, key) for action, modifiers, key in ACCELERATOR_SPECS}
+    assert keys['download_audio'] == (wx.ACCEL_CTRL | wx.ACCEL_SHIFT, ord('B'))
+    assert keys['download_audio'] != keys['download_video']
+    frame = type('Frame', (), {})()
+    frame.start_audio_download = Mock()
+    MainFrame._invoke_shortcut(frame, 'download_audio')
+    frame.start_audio_download.assert_called_once_with()

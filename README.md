@@ -190,6 +190,15 @@ O Windows pede confirmação ao substituir um arquivo existente; o arquivo anter
 é preservado até o novo download terminar. O menu **Configurações** permite baixar,
 trocar ou abrir essa pasta.
 
+### Baixar só o áudio
+
+Pressione **Ctrl+Shift+B** (ou use **Configurações, Baixar áudio do vídeo atual**) para salvar apenas o 
+áudio do vídeo ativo, com a mesma janela **Salvar como** e a mesma pasta do download de vídeo. 
+O arquivo sai em **M4A** (AAC), sem reencodar, então não há perda de qualidade. No YouTube Shorts vem 
+direto o melhor fluxo de áudio (M4A ou, se não houver, Opus/WebM). No TikTok e no Instagram, o áudio é 
+copiado da trilha do vídeo baixado por um extrator próprio (`audio_extract.py`), que não precisa do ffmpeg; 
+o vídeo temporário é apagado. Não há conversão para MP3.
+
 O download tenta primeiro transferir o MP4 pelo WebView2, usando a sessão aberta,
 sem depender do yt-dlp. O motor faz parte do runtime já incluído no instalador.
 Arquivos incompletos são descartados; a transferência pela sessão tem limite
@@ -259,6 +268,7 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;
 - `Alt+G`: informar se você segue ou não o autor;
+- `Alt+Shift+N`: marcar o vídeo atual como “Não tenho interesse”. Usa a opção do menu de três pontos da própria plataforma: funciona no TikTok (logado); no Instagram só existe para anúncios (“Ocultar anúncio”), pois a versão web não oferece a opção em Reels comuns; no YouTube Shorts depende do menu do vídeo. Quando a opção não existe, o aplicativo avisa;
 - `Esc`: voltar dos comentários ao player;
 - `F2`: abrir a janela de configurações;
 - `F5`: atualizar autor e descrição;
@@ -332,3 +342,29 @@ na estrutura de qualquer plataforma podem exigir atualização dos seletores.
 ## Privacidade
 
 Valores de cookies e tokens não são exibidos nem registrados. Arquivos `cookies*.json`, `cookies*.txt` e o perfil persistente são ignorados pelo Git. Ainda assim, trate o arquivo exportado como um segredo e armazene-o em local seguro.
+
+
+## Abrir links do WhatsApp direto no aplicativo
+
+O instalador registra o Accessible Reels na lista de aplicativos padrão do Windows, mas
+não o define como navegador sozinho. Use **Configurações > Abrir links de vídeo neste
+aplicativo...** e, em Aplicativos padrão, escolha Accessible Reels para HTTP e HTTPS.
+
+Depois disso, links de vídeo do TikTok, Reels e Shorts abrem na janela do aplicativo,
+reaproveitando a janela já aberta. Qualquer outro link é repassado ao navegador que era o
+padrão antes (o aplicativo o guarda em `%LOCALAPPDATA%\Accessible Reels\default_browser.json`
+a cada abertura, enquanto ele ainda é o padrão). Se esse navegador sumir, usa outro navegador
+instalado. Abrir o aplicativo uma segunda vez apenas traz a janela existente para frente.
+Ao desinstalar, o registro é removido e o Windows volta a pedir um navegador padrão.
+
+## Teclas de mídia e botões do fone
+
+As teclas de mídia funcionam em todo o Windows, com o aplicativo em segundo plano: **próxima faixa**
+passa para o próximo vídeo, **faixa anterior** volta e **reproduzir/pausar** pausa ou retoma. Em muitos
+teclados de notebook elas ficam em Fn+F8 e vizinhas; a maioria dos fones sem fio envia as mesmas teclas.
+Já vêm ligadas. Em **F2, Atalhos**, é possível desmarcar cada uma (deixando de valer fora do aplicativo)
+ou trocar a tecla. Enquanto o aplicativo está aberto, ele recebe essas teclas no lugar de outros
+reprodutores, como o Spotify. O tratamento próprio de teclas de mídia do WebView2 é desativado para que uma
+pressão não aja duas vezes. Fones que só se comunicam pelo controle de mídia do Windows, sem enviar teclas,
+não são atendidos por este recurso.
+

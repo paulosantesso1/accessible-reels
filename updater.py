@@ -67,6 +67,59 @@ def release_from_payload(payload: dict, *, current_version: str = APP_VERSION) -
                       int(installer.get("size") or 0), checksum_url)
 
 
+def _state_path() -> Path:
+    root = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    return root / APP_NAME / "update_state.json"
+
+
+def _load_state() -> dict:
+    try:
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def announced_version() -> str:
+    """Version whose update prompt was already shown, so later launches stay quiet."""
+    return normalize_version(_load_state().get("announced_version", ""))
+
+
+def mark_announced(version: str) -> None:
+    _save_state({**_load_state(), "announced_version": normalize_version(version)})
+
+
+def remember_whats_new(info: UpdateInfo) -> None:
+    """Keep the changelog of the version being installed for its first launch."""
+    _save_state({**_load_state(), "whats_new": {"version": normalize_version(info.latest_version),
+                                                "notes": info.notes}})
+
+
+def take_whats_new(current_version: str = APP_VERSION) -> tuple[str, str] | None:
+    """Return (version, notes) once, on the first launch after installing that version."""
+    state = _load_state()
+    entry = state.get("whats_new")
+    if not isinstance(entry, dict):
+        return None
+    version = normalize_version(entry.get("version", ""))
+    if version and is_newer_version(version, current_version):
+        return None  # that version is not installed yet
+    del state["whats_new"]
+    _save_state(state)
+    if version != normalize_version(current_version):
+        return None
+    return version, str(entry.get("notes") or "").strip()
+
+
 def check_for_update() -> UpdateInfo | None:
     return release_from_payload(_fetch_json(API_URL))
 

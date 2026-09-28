@@ -20,7 +20,7 @@ from ui.webview_focus import EmbeddedFocusMixin
 from ui.download_controls import DownloadControlsMixin
 from ui.webview_client import WebViewClient, PLATFORM_URLS, belongs_to_platform
 from ui.video_link import parse_video_link
-from ui.shortcuts import (SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
+from ui.shortcuts import (MEDIA_ACTIONS, SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
                           action_shortcut, load_shortcut_settings,
                           shortcut_to_windows)
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
@@ -28,7 +28,9 @@ from tiktok.search import search_url, normalize_search_results, validate_search_
 from instagram.search import normalize_reel_results, validate_reel_url
 from youtube.search import normalize_youtube_results, validate_youtube_url
 from tiktok.video_controls import VideoControlError
-from updater import UpdateError, can_self_update, check_for_update, download_update, launch_installer
+from updater import (UpdateError, announced_version, can_self_update, check_for_update, download_update,
+                     launch_installer, mark_announced, normalize_version, remember_whats_new,
+                     take_whats_new)
 from app_version import APP_VERSION
 from release_notes import has_seen_current_release, load_release_history, mark_current_release_seen
 
@@ -46,12 +48,28 @@ BACKGROUND_WEBVIEW_ARGUMENTS = (
 )
 
 
+DISABLED_WEBVIEW_FEATURES = ('HardwareMediaKeyHandling',)
+
+
 def webview_browser_arguments(existing: str = '') -> str:
-    """Keep the caller's WebView2 options while enabling background controls."""
+    """Keep the caller's WebView2 options while enabling background controls.
+
+    Chromium's own media key handling is turned off: Accessible Reels registers those
+    keys itself, and both reacting to one press would pause the video and skip it.
+    """
     values = existing.split()
     for argument in BACKGROUND_WEBVIEW_ARGUMENTS:
         if argument not in values:
             values.append(argument)
+    prefix = '--disable-features='
+    index = next((i for i, value in enumerate(values) if value.startswith(prefix)), None)
+    features = values[index][len(prefix):].split(',') if index is not None else []
+    features += [feature for feature in DISABLED_WEBVIEW_FEATURES if feature not in features]
+    combined = prefix + ','.join(feature for feature in features if feature)
+    if index is None:
+        values.append(combined)
+    else:
+        values[index] = combined
     return ' '.join(values)
 
 
@@ -295,6 +313,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         from video_download import check_for_ytdlp_updates
         wx.CallLater(3000, lambda: check_for_ytdlp_updates(self))
         
+        wx.CallAfter(self.show_whats_new)
+
         if auto_open:
             self._select_platform('TikTok')
             wx.CallAfter(self.open_network)
@@ -345,7 +365,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         actions = wx.Menu()
         for label, action in [
             ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
-            ('Copiar link', 'copy_link'), ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
+            ('Copiar link', 'copy_link'), ('Não tenho interesse', 'not_interested'),
+            ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
         ]:
             self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(actions, '&Ações')
@@ -364,11 +385,42 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(settings, 'Abrir configurações...', lambda event: self.dispatch('open_settings'), key('open_settings'))
         settings.AppendSeparator()
         self._append_menu_item(settings, 'Baixar vídeo atual', self.start_video_download, key('download_video'))
+        self._append_menu_item(settings, 'Baixar áudio do vídeo atual', self.start_audio_download, key('download_audio'))
         self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
         self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
+        settings.AppendSeparator()
+        self._append_menu_item(settings, 'Abrir links de vídeo neste aplicativo...', self.open_default_apps)
         bar.Append(settings, '&Configurações')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
+
+    def open_default_apps(self, event=None):
+        """Let the user choose Accessible Reels as browser so shared video links open here."""
+        from link_router import open_default_apps_settings
+        try:
+            open_default_apps_settings()
+        except OSError:
+            logger.exception('Could not open default apps settings')
+            self.status('Não foi possível abrir as configurações de aplicativos padrão do Windows.')
+            return
+        self.status('Em Aplicativos padrão, escolha Accessible Reels para os protocolos HTTP e HTTPS. '
+                    'Links que não forem de vídeo continuam abrindo no seu navegador anterior.')
+
+    def attach_link_server(self, server):
+        """Receive links sent by other launches, such as a link clicked in WhatsApp."""
+        self._link_server = server
+        if server:
+            server.set_handler(lambda message: wx.CallAfter(self.receive_external_request, message))
+
+    def receive_external_request(self, message):
+        if self._closing_app:
+            return
+        if self.IsIconized():
+            self.Iconize(False)
+        self.Show()
+        self.Raise()
+        if message.get('action') == 'open':
+            self.open_video_link(message.get('url', ''))
 
     def open_log_folder(self, event=None):
         """Open the local, user-controlled diagnostic files for sharing."""
@@ -457,19 +509,36 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 wx.MessageBox('Há uma nova versão no GitHub. A instalação automática está disponível no aplicativo instalado para Windows.',
                               'Atualizações', wx.OK | wx.ICON_INFORMATION, self)
             return
-        message = f'Versão {info.latest_version} disponível.\n\n{info.notes}\n\nDeseja baixar e instalar agora?'
+        # The update is offered once per version. Later launches only note it in
+        # the status bar, so opening the app goes straight to the home screen.
+        if not manual and announced_version() == normalize_version(info.latest_version):
+            self.status(f'Versão {info.latest_version} disponível. Use Ajuda, Verificar atualizações para instalar.')
+            return
+        mark_announced(info.latest_version)
+        message = (f'Versão {info.latest_version} disponível.\n\nDeseja baixar e instalar agora? '
+                   'As novidades serão exibidas na primeira abertura depois da instalação.')
         if wx.MessageBox(message, 'Atualizações', wx.YES_NO | wx.ICON_INFORMATION, self) == wx.YES:
             threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
+
+    def show_whats_new(self):
+        """Show the changelog once, on the first launch after an update was installed."""
+        entry = take_whats_new()
+        if entry:
+            version, notes = entry
+            body = notes or 'Sem notas para esta versão.'
+            wx.MessageBox(f'Novidades da versão {version}\n\n{body}',
+                          'Novidades', wx.OK | wx.ICON_INFORMATION, self)
 
     def _download_update_worker(self, info):
         try:
             wx.CallAfter(self.status, 'Baixando e validando a atualização...')
             installer = download_update(info)
-            wx.CallAfter(self._launch_update, installer)
+            wx.CallAfter(self._launch_update, installer, info)
         except UpdateError as error:
             wx.CallAfter(wx.MessageBox, str(error), 'Atualizações', wx.OK | wx.ICON_ERROR, self)
 
-    def _launch_update(self, installer):
+    def _launch_update(self, installer, info):
+        remember_whats_new(info)
         try:
             launch_installer(installer)
         except UpdateError as error:
@@ -605,9 +674,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if action == 'open_selected_platform': self.open_network(); return
         if action == 'open_link': self.open_link(); return
         if action == 'download_video': self.start_video_download(); return
+        if action == 'download_audio': self.start_audio_download(); return
         if action == 'return_results': self.return_to_results(); return
         if action == 'home': self.home(); return
-        self.dispatch(action)
+        self.dispatch(MEDIA_ACTIONS.get(action, action))
 
     def _on_system_hotkey(self, event):
         action = next((name for name, identifier in self._system_hotkey_ids.items()
@@ -1233,7 +1303,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._finish_tiktok_follow_verification(result)
             return
         if result.get('ok') is not True:
-            logger.warning('Command failed: platform=%s action=%s message=%s', name, action, result.get('error'))
+            logger.warning('Command failed: platform=%s action=%s message=%s details=%s',
+                           name, action, result.get('error'), result.get('details'))
             self._platform_error(name, result.get('error') or 'A rede não confirmou o comando.')
             return
         logger.info('Command completed: platform=%s action=%s', name, action)
@@ -1302,6 +1373,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = 'Curtida adicionada.' if result.get('state') else 'Curtida removida.'
         elif action == 'toggle_favorite':
             message = 'Vídeo salvo.' if result.get('state') else 'Vídeo removido dos salvos.'
+        elif action == 'not_interested':
+            message = 'Anúncio ocultado.' if result.get('ad') else 'Vídeo marcado como não tenho interesse.'
+            if result.get('follow_up'):
+                message = ('Marcado como não tenho interesse. A plataforma abriu um painel para escolher o motivo; '
+                           'use F6 para escolher ou fechar.')
+            elif result.get('advance') and active:
+                # Some platforms skip the video themselves; the page reports when it did not.
+                message += ' Passando ao próximo vídeo.'
+                wx.CallAfter(self.dispatch, 'next_video')
         elif action == 'toggle_follow' and name == 'TikTok':
             message = 'Não foi possível identificar o perfil para confirmar o seguimento.'
         elif action == 'toggle_follow':
@@ -1345,6 +1425,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     message = 'Nenhum vídeo encontrado. Verifique sua pesquisa ou se a plataforma pede login (F6).'
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
+            report = result.get('report') or message
+            logger.info('Diagnostics report: platform=%s %s', name, report)
+            if active and _copy_text_to_clipboard(report):
+                message += ' Diagnóstico copiado para a área de transferência.'
         if active and message:
             self.status(message)
 
@@ -1469,6 +1553,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if context and context.get('worker'):
             context['worker'].close()
         self._release_hotkey()
+        if getattr(self, '_link_server', None):
+            self._link_server.close()
         for client in self.clients.values():
             client.close()
         event.Skip()

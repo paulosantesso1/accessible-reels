@@ -7,7 +7,7 @@ import wx
 
 from video_download import (bundled_ytdlp_path, load_download_settings,
                             save_download_settings, settings_path, update_ytdlp)
-from .shortcuts import (DEFAULT_SHORTCUTS, SHORTCUT_DEFINITIONS, can_be_global,
+from .shortcuts import (DEFAULT_GLOBAL_ACTIONS, DEFAULT_SHORTCUTS, SHORTCUT_DEFINITIONS, can_be_global,
                         display_shortcut, load_shortcut_settings,
                         save_shortcut_settings, shortcut_from_event)
 
@@ -162,7 +162,7 @@ class SettingsDialog(wx.Dialog):
 
     def on_restore_all(self, event):
         self.shortcuts = dict(DEFAULT_SHORTCUTS)
-        self.global_shortcuts.clear()
+        self.global_shortcuts = set(DEFAULT_GLOBAL_ACTIONS)
         self._refresh_shortcut_list(0)
 
     def on_browse(self, event):

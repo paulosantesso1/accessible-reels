@@ -7,17 +7,20 @@ from pathlib import Path
 
 import wx
 
+from audio_extract import AudioExtractError, extract_m4a
 from video_download import download_video, load_download_folder, save_download_folder
 from ui.browser_download import BrowserDownload
 
 
 class DownloadControlsMixin:
-    def choose_download_file(self, name, result):
+    def choose_download_file(self, name, result, audio=False):
         description = re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', str(result.get('description') or '')).strip(' .')
-        suggestion = f'{name} - {description[:100]}' if description else f'{name} - vídeo'
-        with wx.FileDialog(self, 'Salvar vídeo como', defaultDir=str(self._download_folder or ''),
-                           defaultFile=suggestion + '.mp4',
-                           wildcard='Vídeos MP4 ou WebM (*.mp4;*.webm)|*.mp4;*.webm',
+        suggestion = f'{name} - {description[:100]}' if description else f'{name} - {"áudio" if audio else "vídeo"}'
+        with wx.FileDialog(self, 'Salvar áudio como' if audio else 'Salvar vídeo como',
+                           defaultDir=str(self._download_folder or ''),
+                           defaultFile=suggestion + ('.m4a' if audio else '.mp4'),
+                           wildcard=('Áudio M4A, Opus ou WebM (*.m4a;*.opus;*.webm)|*.m4a;*.opus;*.webm' if audio else
+                                     'Vídeos MP4 ou WebM (*.mp4;*.webm)|*.mp4;*.webm'),
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dialog:
             if dialog.ShowModal() != wx.ID_OK:
                 return None
@@ -54,7 +57,10 @@ class DownloadControlsMixin:
         except OSError:
             self.status('Não foi possível abrir a pasta de downloads.')
 
-    def start_video_download(self, event=None):
+    def start_audio_download(self, event=None):
+        self.start_video_download(audio=True)
+
+    def start_video_download(self, event=None, audio=False):
         if self._download_busy:
             self.status('Já existe um download em andamento. Aguarde a conclusão.')
             return
@@ -64,33 +70,34 @@ class DownloadControlsMixin:
             return
         client = self.clients[name]
         if client.pending:
-            self.status('Aguarde a operação atual e pressione Ctrl+B novamente.')
+            self.status('Aguarde a operação atual e tente o download novamente.')
             return
         self._download_busy = True
-        self.status('Identificando o vídeo para download...')
+        self.status('Identificando o vídeo para baixar o áudio...' if audio else 'Identificando o vídeo para download...')
         if self.activities.GetSelection() == 2:
             index = self.results_list.GetSelection()
             if 0 <= index < len(self._results):
-                self._download_resolved(name, {'ok': True, 'link': self._results[index].url})
+                self._download_resolved(name, {'ok': True, 'link': self._results[index].url}, audio)
                 return
-        client.execute('download_link', None, lambda result: self._download_resolved(name, result))
+        client.execute('download_link', None, lambda result: self._download_resolved(name, result, audio))
 
-    def _download_resolved(self, name, result):
+    def _download_resolved(self, name, result, audio=False):
         if self._closing_app:
             return
         if not result.get('ok'):
             self._download_busy = False
             self.status(result.get('error') or 'Não foi possível identificar o vídeo ativo.')
             return
-        target = self.choose_download_file(name, result)
+        target = self.choose_download_file(name, result, audio)
         if target is None:
             self._download_busy = False
             self.status('Download cancelado.')
             return
-        self.status('Iniciando download do vídeo...')
+        self.status('Iniciando download do áudio...' if audio else 'Iniciando download do vídeo...')
         result = {**result, '_save_path': target}
         folder = target.parent
-        if result.get('media_url'):
+        # A YouTube page stream may hold video only, so audio always goes through the downloader.
+        if result.get('media_url') and not (audio and name == 'YouTube'):
             def completed(path, error):
                 if self._closing_app:
                     if path:
@@ -99,31 +106,54 @@ class DownloadControlsMixin:
                         except OSError:
                             pass
                     return
-                if path:
+                if path and audio:
+                    self._extract_audio_then_finalize(path, target, name, result, folder)
+                elif path:
                     self._finalize_download(path, target)
                 else:
                     self.status('A transferência pela sessão falhou. Tentando o downloader alternativo...')
-                    self._start_download_worker(name, result, folder)
+                    self._start_download_worker(name, result, folder, audio)
             self._browser_download = BrowserDownload(
                 self.clients[name], result['media_url'], folder,
                 self._download_progress, completed
             )
             self._browser_download.start()
             return
-        self._start_download_worker(name, result, folder)
+        self._start_download_worker(name, result, folder, audio)
 
-    def _start_download_worker(self, name, result, folder):
+    def _extract_audio_then_finalize(self, video_path, target, name, result, folder):
+        """Copy the audio track out of a downloaded video file, off the interface thread."""
+        def work():
+            audio_path = Path(video_path).with_suffix('.m4a')
+            try:
+                self._download_notify('Extraindo o áudio...')
+                extract_m4a(video_path, audio_path)
+            except AudioExtractError:
+                Path(video_path).unlink(missing_ok=True)
+                if not self._closing_app:
+                    wx.CallAfter(self.status, 'Não foi possível extrair o áudio. Tentando o downloader alternativo...')
+                    wx.CallAfter(self._start_download_worker, name, result, folder, True)
+                return
+            Path(video_path).unlink(missing_ok=True)
+            if self._closing_app:
+                audio_path.unlink(missing_ok=True)
+                return
+            wx.CallAfter(self._finalize_download, audio_path, target)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _start_download_worker(self, name, result, folder, audio=False):
         threading.Thread(target=self._download_worker,
-                         args=(name, result.get('link'), result.get('media_url'), folder, result['_save_path']),
+                         args=(name, result.get('link'), result.get('media_url'), folder,
+                               result['_save_path'], audio),
                          daemon=True).start()
 
-    def _download_worker(self, name, link, media, folder, destination):
+    def _download_worker(self, name, link, media, folder, destination, audio=False):
         temporary = None
         try:
             # Preserve an existing file until the new download has completed.
             temporary = tempfile.TemporaryDirectory(prefix='reels-', dir=folder)
             downloaded = download_video(
-                link, name, temporary.name, self._download_notify, direct_url=media
+                link, name, temporary.name, self._download_notify, direct_url=media, audio=audio
             )
         except Exception as exception:
             from app_logging import sanitize

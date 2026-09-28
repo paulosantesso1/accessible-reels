@@ -65,7 +65,7 @@ def test_ctrl_b_resolves_fresh_feed_video(platform):
     assert client.execute.call_args.args[:2] == ('download_link', None)
     result = {'ok': True, 'link': 'fresh-video'}
     client.execute.call_args.args[2](result)
-    frame._download_resolved.assert_called_once_with(platform, result)
+    frame._download_resolved.assert_called_once_with(platform, result, False)
 
 
 def test_cancel_folder_releases_download():
@@ -224,3 +224,93 @@ def test_changed_extension_requires_confirmation_before_overwrite(tmp_path):
     assert path is None
     assert 'preservado' in error
 from unittest.mock import patch
+
+
+def audio_process(*lines, returncode=0):
+    process = Mock()
+    process.stdout = [f"{line}\n" for line in lines]
+    process.returncode = returncode
+    return process
+
+
+def test_audio_download_asks_for_the_best_audio_stream_and_reports_audio_progress(tmp_path):
+    from video_download import AUDIO_FORMAT
+    output = tmp_path / "Short.m4a"
+    output.touch()
+    progress = Mock()
+    with patch("subprocess.Popen", return_value=audio_process("[download]  40.0% of 1MiB", str(output))) as popen:
+        result = download_video("https://www.youtube.com/shorts/AbCdEfGhI_j", "YouTube", tmp_path, progress, audio=True)
+    command = popen.call_args.args[0]
+    assert command[command.index("-f") + 1] == AUDIO_FORMAT
+    progress.assert_any_call("Baixando áudio: 40%.")
+    assert result == output
+
+
+def test_audio_of_a_muxed_video_is_extracted_and_the_video_removed(tmp_path):
+    from test_audio_extract import synthetic_mp4
+    video = tmp_path / "TikTok - clip [1].mp4"
+    expected_audio = synthetic_mp4(video)
+    progress = Mock()
+    with patch("subprocess.Popen", return_value=audio_process(str(video))):
+        result = download_video("https://www.tiktok.com/@ana/video/1234567890123456789", "TikTok",
+                               tmp_path, progress, audio=True)
+    assert result == tmp_path / "TikTok - clip [1].m4a" and result.is_file()
+    assert not video.exists()
+    assert expected_audio in result.read_bytes()
+    progress.assert_any_call("Extraindo o áudio...")
+
+
+def test_audio_that_cannot_be_extracted_reports_a_clear_error(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not an mp4 at all")
+    with patch("subprocess.Popen", return_value=audio_process(str(video))):
+        with pytest.raises(VideoDownloadError, match="áudio"):
+            download_video("https://www.instagram.com/reel/ABC/", "Instagram", tmp_path, audio=True)
+
+
+def test_youtube_audio_never_uses_the_page_stream_that_may_be_video_only(tmp_path):
+    output = tmp_path / "Short.m4a"
+    output.touch()
+    with patch("subprocess.Popen", return_value=audio_process(str(output))) as popen:
+        download_video("https://www.youtube.com/shorts/AbCdEfGhI_j", "YouTube", tmp_path,
+                       direct_url="https://rr1---sn-x.googlevideo.com/videoplayback?id=1", audio=True)
+    assert "googlevideo" not in " ".join(popen.call_args.args[0])
+    assert popen.call_args.args[0][-1].startswith("https://www.youtube.com/shorts/")
+
+
+def test_audio_errors_talk_about_audio():
+    assert download_error("boom", audio=True).startswith("Não foi possível baixar o áudio.")
+    assert download_error("boom").startswith("Não foi possível baixar o vídeo.")
+
+
+def test_audio_download_command_reaches_the_dialog_and_the_worker(tmp_path):
+    frame = Mock(_download_busy=False, _active_name="TikTok")
+    frame.activities.GetSelection.return_value = 0
+    client = Mock(pending=None)
+    frame.clients = {"TikTok": client}
+    DownloadControlsMixin.start_audio_download(frame)
+    frame.start_video_download.assert_called_once_with(audio=True)
+
+    frame = Mock(_closing_app=False, _download_busy=True)
+    frame.choose_download_file.return_value = tmp_path / "escolhido.m4a"
+    DownloadControlsMixin._download_resolved(frame, "YouTube", {"ok": True, "link": "l", "media_url": "https://x"}, True)
+    frame.choose_download_file.assert_called_once_with("YouTube", {"ok": True, "link": "l", "media_url": "https://x"}, True)
+    assert frame._start_download_worker.call_args.args[-1] is True  # YouTube audio skips the page stream
+
+
+def test_audio_flag_reaches_the_download_engine(tmp_path):
+    frame = Mock(_closing_app=False)
+    destination = tmp_path / "Áudio.m4a"
+
+    def fake_download(_link, _name, folder, *_args, **kwargs):
+        assert kwargs["audio"] is True
+        downloaded = Path(folder) / "Short.m4a"
+        downloaded.touch()
+        return downloaded
+
+    with patch("ui.download_controls.download_video", side_effect=fake_download), \
+         patch("ui.download_controls.wx.CallAfter", side_effect=lambda callback, *args: callback(*args)):
+        DownloadControlsMixin._download_worker(frame, "YouTube", "https://www.youtube.com/shorts/AbCdEfGhI_j",
+                                               None, tmp_path, destination, True)
+
+    frame._download_finished.assert_called_once_with(tmp_path / "Áudio.m4a", None)

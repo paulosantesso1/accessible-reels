@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from app_logging import get_logger, sanitize
+from audio_extract import AudioExtractError, extract_m4a
 from instagram.search import validate_reel_url
 from tiktok.search import validate_search_result_url
 from tiktok.video_controls import VideoControlError
@@ -29,6 +30,12 @@ def bundled_ytdlp_path(exe_name: str) -> Path:
         if candidate.is_file():
             return candidate
     return roots[0] / exe_name
+
+
+MEDIA_SUFFIXES = {'.mp4', '.m4v', '.webm', '.mkv', '.m4a', '.opus', '.mp3', '.ogg'}
+# Audio-only streams first (YouTube); TikTok and Instagram only offer video with sound, whose
+# audio track is then copied out by audio_extract.
+AUDIO_FORMAT = 'bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best'
 
 
 def settings_path(local_app_data=None):
@@ -112,13 +119,13 @@ def media_url(value, platform):
     return None
 
 
-def download_error(error):
+def download_error(error, audio=False):
     message = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', str(error))
     if 'Unexpected response from webpage request' in message:
         return ('O TikTok não forneceu os dados do vídeo ao downloader. '
                 'Não foi possível baixar também pelo endereço de reprodução. '
                 'Deixe o vídeo tocar por alguns segundos e tente Ctrl+B novamente.')
-    return 'Não foi possível baixar o vídeo. ' + sanitize(message)[:450]
+    return f'Não foi possível baixar {"o áudio" if audio else "o vídeo"}. ' + sanitize(message)[:450]
 
 
 class _DownloadLogger:
@@ -127,7 +134,7 @@ class _DownloadLogger:
     def error(self, message): pass
 
 
-def download_video(url, platform, folder, progress=lambda message: None, *, direct_url=None):
+def download_video(url, platform, folder, progress=lambda message: None, *, direct_url=None, audio=False):
     import subprocess
     import sys
     sources = []
@@ -135,7 +142,8 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
         sources.append(video_url(url, platform))
     except VideoControlError:
         pass
-    direct = media_url(direct_url, platform)
+    # A direct YouTube stream may carry video only; audio downloads use the downloader's format choice.
+    direct = None if audio and platform == 'YouTube' else media_url(direct_url, platform)
     get_logger().info('Video download source: platform=%s direct_available=%s direct_accepted=%s',
                       platform, bool(direct_url), bool(direct))
     if direct:
@@ -162,13 +170,13 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
         try:
             existing_media = {
                 path.resolve() for path in folder.iterdir()
-                if path.is_file() and path.suffix.lower() in {'.mp4', '.m4v', '.webm', '.mkv'}
+                if path.is_file() and path.suffix.lower() in MEDIA_SUFFIXES
             }
             command = [
                 exe_path,
                 # Some Shorts offer only WebM. Prefer MP4, but never reject a
                 # playable, audio-and-video format solely because of its container.
-                '-f', 'best[ext=mp4]/best',
+                '-f', AUDIO_FORMAT if audio else 'best[ext=mp4]/best',
                 '--no-playlist',
                 '-P', str(folder),
                 '-o', '%(extractor_key)s - %(title).120B [%(id)s].%(ext)s',
@@ -222,10 +230,10 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
                     percent = float(match.group(1))
                     if percent >= last_percent + 10:
                         last_percent = int(percent)
-                        progress(f'Baixando vídeo: {last_percent}%.')
+                        progress(f'Baixando {"áudio" if audio else "vídeo"}: {last_percent}%.')
                 elif line.startswith('[download] Destination:'):
                     pass
-                elif line.endswith('.mp4'):
+                elif Path(line).suffix.lower() in MEDIA_SUFFIXES:
                     candidate = Path(line)
                     if candidate.is_absolute() and candidate.is_file():
                         final_path = candidate
@@ -240,7 +248,7 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
                 created_media = [
                     path for path in folder.iterdir()
                     if (path.is_file() and path.resolve() not in existing_media
-                        and path.suffix.lower() in {'.mp4', '.m4v', '.webm', '.mkv'})
+                        and path.suffix.lower() in MEDIA_SUFFIXES)
                 ]
                 if created_media:
                     final_path = max(created_media, key=lambda path: path.stat().st_mtime)
@@ -250,12 +258,22 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
                     'O download terminou sem gerar o arquivo esperado.' + (f' {detail}' if detail else '')
                 )
 
-            get_logger().info('Video download completed: platform=%s', platform)
+            if audio and final_path.suffix.lower() in {'.mp4', '.m4v'}:
+                # Video with sound: keep only its audio track, without re-encoding.
+                progress('Extraindo o áudio...')
+                try:
+                    audio_path = extract_m4a(final_path, final_path.with_suffix('.m4a'))
+                except AudioExtractError as error:
+                    raise VideoDownloadError(str(error)) from error
+                final_path.unlink(missing_ok=True)
+                final_path = audio_path
+
+            get_logger().info('%s download completed: platform=%s', 'Audio' if audio else 'Video', platform)
             return final_path
         except Exception as error:
             get_logger().warning('Video download failed: platform=%s kind=%s', platform, type(error).__name__)
             if index + 1 == len(sources):
-                raise VideoDownloadError(download_error(error)) from error
+                raise VideoDownloadError(download_error(error, audio)) from error
             progress('Tentando outra forma de baixar o vídeo...')
 
 def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):

@@ -29,11 +29,15 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("open_selected_platform", "Abrir plataforma selecionada", "Ctrl+Enter"),
     ShortcutDefinition("open_link", "Abrir link", "Ctrl+O"),
     ShortcutDefinition("download_video", "Baixar vídeo", "Ctrl+B"),
+    ShortcutDefinition("download_audio", "Baixar áudio", "Ctrl+Shift+B"),
     ShortcutDefinition("return_results", "Voltar aos resultados", "Ctrl+R"),
     ShortcutDefinition("home", "Ir para o início", "Ctrl+Home"),
     ShortcutDefinition("next_video", "Próximo vídeo", "Alt+Down"),
     ShortcutDefinition("previous_video", "Vídeo anterior", "Alt+Up"),
     ShortcutDefinition("toggle_playback", "Reproduzir ou pausar", "Alt+P"),
+    ShortcutDefinition("media_next", "Tecla de mídia: próximo vídeo", "Medianext"),
+    ShortcutDefinition("media_previous", "Tecla de mídia: vídeo anterior", "Mediaprevious"),
+    ShortcutDefinition("media_play_pause", "Tecla de mídia: reproduzir ou pausar", "Mediaplaypause"),
     ShortcutDefinition("seek_back_15", "Voltar 15 segundos", "Alt+Shift+Left"),
     ShortcutDefinition("seek_forward_15", "Avançar 15 segundos", "Alt+Shift+Right"),
     ShortcutDefinition("seek_back_30", "Voltar 30 segundos", "Alt+Left"),
@@ -50,12 +54,18 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("open_comments", "Abrir comentários", "Alt+Shift+C"),
     ShortcutDefinition("toggle_like", "Curtir ou descurtir", "Alt+L"),
     ShortcutDefinition("toggle_favorite", "Favoritar ou desfavoritar", "Alt+F"),
+    ShortcutDefinition("not_interested", "Marcar como não tenho interesse", "Alt+Shift+N"),
     ShortcutDefinition("open_profile", "Abrir perfil", "Alt+Shift+P"),
     ShortcutDefinition("search", "Pesquisar", "Alt+E"),
     ShortcutDefinition("exit", "Sair", "Alt+S"),
 )
 
 DEFAULT_SHORTCUTS = {item.action: item.default for item in SHORTCUT_DEFINITIONS}
+# Media keys (keyboard Fn+F8 and most wireless headset buttons) drive the videos, so they work
+# system-wide from the first run. The user can still switch them off in the settings.
+MEDIA_ACTIONS = {"media_next": "next_video", "media_previous": "previous_video",
+                 "media_play_pause": "toggle_playback"}
+DEFAULT_GLOBAL_ACTIONS = frozenset(MEDIA_ACTIONS)
 SEEK_SECONDS = {"seek_back_15": -15, "seek_forward_15": 15,
                 "seek_back_30": -30, "seek_forward_30": 30}
 
@@ -63,10 +73,14 @@ _KEY_NAMES = {
     "UP": wx.WXK_UP, "DOWN": wx.WXK_DOWN, "LEFT": wx.WXK_LEFT,
     "RIGHT": wx.WXK_RIGHT, "HOME": wx.WXK_HOME, "ENTER": wx.WXK_RETURN,
     "COMMA": ord(","), "PERIOD": ord("."),
+    "MEDIANEXT": wx.WXK_MEDIA_NEXT_TRACK, "MEDIAPREVIOUS": wx.WXK_MEDIA_PREV_TRACK,
+    "MEDIAPLAYPAUSE": wx.WXK_MEDIA_PLAY_PAUSE,
 }
+_MEDIA_KEYS = ("Medianext", "Mediaprevious", "Mediaplaypause")
 _DISPLAY_NAMES = {"Up": "Seta para cima", "Down": "Seta para baixo",
                   "Left": "Seta para esquerda", "Right": "Seta para direita",
-                  "Comma": "<", "Period": ">"}
+                  "Comma": "<", "Period": ">", "Medianext": "Próxima faixa",
+                  "Mediaprevious": "Faixa anterior", "Mediaplaypause": "Reproduzir ou pausar (mídia)"}
 
 
 def settings_path() -> Path:
@@ -129,7 +143,8 @@ def shortcut_to_windows(value: str) -> tuple[int, int]:
     modifiers = (0x0002 if "Ctrl" in parts else 0) | (0x0001 if "Alt" in parts else 0) | (0x0004 if "Shift" in parts else 0)
     key_name = parts[-1]
     special = {"Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28,
-               "Home": 0x24, "Enter": 0x0D, "Comma": 0xBC, "Period": 0xBE}
+               "Home": 0x24, "Enter": 0x0D, "Comma": 0xBC, "Period": 0xBE,
+               "Medianext": 0xB0, "Mediaprevious": 0xB1, "Mediaplaypause": 0xB3}
     if key_name in special:
         key = special[key_name]
     elif key_name.startswith("F") and key_name[1:].isdigit():
@@ -159,7 +174,8 @@ def shortcut_from_event(event) -> str | None:
 
 def can_be_global(value: str) -> bool:
     parts = normalize_shortcut(value).split("+")
-    return len(parts) > 1 or (parts[-1].startswith("F") and parts[-1][1:].isdigit())
+    return (len(parts) > 1 or (parts[-1].startswith("F") and parts[-1][1:].isdigit())
+            or parts[-1] in _MEDIA_KEYS)
 
 
 def load_shortcut_settings(path: Path | None = None) -> tuple[dict[str, str], set[str]]:
@@ -170,8 +186,10 @@ def load_shortcut_settings(path: Path | None = None) -> tuple[dict[str, str], se
             if action in shortcuts:
                 shortcuts[action] = normalize_shortcut(shortcut)
         globals_ = {action for action in value.get("global", []) if action in shortcuts and can_be_global(shortcuts[action])}
+        # Actions the file has never listed keep their default; a listed but unchecked one stays off.
+        globals_ |= DEFAULT_GLOBAL_ACTIONS - set(value.get("configured", []))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        globals_ = set()
+        globals_ = set(DEFAULT_GLOBAL_ACTIONS)
     return shortcuts, globals_
 
 
@@ -186,7 +204,8 @@ def save_shortcut_settings(shortcuts: dict[str, str], globals_: set[str], path: 
     destination = path or settings_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"shortcuts": normalized, "global": sorted(globals_)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(json.dumps({"shortcuts": normalized, "global": sorted(globals_),
+                                           "configured": sorted(DEFAULT_GLOBAL_ACTIONS)}, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(destination)
 
 

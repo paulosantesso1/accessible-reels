@@ -131,3 +131,99 @@ def test_youtube_follow_uses_explicit_accessible_state(page):
     assert command(page, 'toggle_follow') == {'ok': True, 'state': True}
     assert command(page, 'author')['author'].endswith('(Você já segue)')
     assert command(page, 'toggle_follow') == {'ok': True, 'state': False}
+
+
+def add_shorts_menu(page, items):
+    page.evaluate('''items => {
+      const video = document.querySelector('#active');
+      const renderer = document.createElement('ytd-reel-video-renderer');
+      video.replaceWith(renderer);
+      const menu = document.createElement('ytd-menu-renderer');
+      const more = document.createElement('button');
+      more.setAttribute('aria-label', 'Mais ações');
+      more.style.cssText = 'width:40px;height:30px';
+      more.onclick = () => {
+        const popup = document.createElement('div');
+        popup.style.cssText = 'position:fixed;left:600px;top:100px;width:250px';
+        for (const text of items) {
+          const item = document.createElement('tp-yt-paper-item');
+          item.style.cssText = 'display:block;width:240px;height:30px';
+          item.textContent = text;
+          item.onclick = () => { window.pressed = text; popup.remove(); };
+          popup.append(item);
+        }
+        document.body.append(popup);
+      };
+      menu.append(more);
+      renderer.append(video, menu);
+    }''', items)
+
+
+def test_youtube_not_interested_uses_the_shorts_menu(page):
+    add_shorts_menu(page, ["Descrição", "Não tenho interesse", "Denunciar"])
+    assert command(page, "not_interested") == {"ok": True, "advance": True}
+    assert page.evaluate("window.pressed") == "Não tenho interesse"
+
+
+def test_youtube_not_interested_reports_a_menu_without_the_option(page):
+    add_shorts_menu(page, ["Descrição", "Denunciar"])
+    result = command(page, "not_interested")
+    assert result["ok"] is False and "Não tenho interesse" in result["error"]
+    assert page.evaluate("window.pressed") is None
+
+
+def test_youtube_not_interested_accepts_a_follow_up_panel_asking_for_a_reason(page):
+    add_shorts_menu(page, ["Descrição", "Não tenho interesse", "Denunciar"])
+    page.evaluate('''() => new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        node.querySelectorAll?.('tp-yt-paper-item').forEach(item => {
+          item.onclick = () => {
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'dialog');
+            panel.style.cssText = 'position:fixed;left:300px;top:300px;width:200px;height:100px';
+            panel.textContent = 'Irrelevante Chato Outro';
+            document.body.append(panel);
+          };
+        });
+      }
+    }).observe(document.body, {childList: true})''')
+    assert command(page, "not_interested") == {"ok": True, "follow_up": True, "advance": True}
+
+
+def test_youtube_not_interested_closes_the_reason_panel_and_asks_to_skip(page):
+    add_shorts_menu(page, ["Descrição", "Não tenho interesse"])
+    page.evaluate('''() => new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        node.querySelectorAll?.('tp-yt-paper-item').forEach(item => {
+          item.onclick = () => {
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'dialog');
+            panel.style.cssText = 'position:fixed;left:300px;top:300px;width:200px;height:100px';
+            panel.innerHTML = 'Irrelevante Chato <button style="width:60px;height:20px">Fechar</button>';
+            panel.querySelector('button').onclick = () => panel.remove();
+            document.body.append(panel);
+          };
+        });
+      }
+    }).observe(document.body, {childList: true})''')
+    assert command(page, "not_interested") == {"ok": True, "advance": True}
+    assert page.evaluate("document.querySelector('[role=dialog]')") is None
+
+
+def test_youtube_not_interested_does_not_skip_when_the_short_already_changed(page):
+    add_shorts_menu(page, ["Não tenho interesse"])
+    page.evaluate('''() => {
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          node.querySelectorAll?.('tp-yt-paper-item').forEach(item => {
+            item.onclick = () => {
+              const next = document.createElement('video');
+              next.id = 'next';
+              document.querySelector('#active').replaceWith(next);
+              item.parentElement.remove();
+            };
+          });
+        }
+      }).observe(document.body, {childList: true});
+    }''')
+    assert command(page, "not_interested") == {"ok": True}

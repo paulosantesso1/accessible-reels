@@ -335,6 +335,26 @@
     lastActiveSource = selected?.currentSrc || "";
     return lastActiveVideo;
   }
+  // Resolves once the same video has kept its source and position for three
+  // consecutive samples, that is, the feed finished scrolling onto it.
+  async function waitUntilSettled(deadline) {
+    let previous = null;
+    let steady = 0;
+    while (Date.now() < deadline) {
+      const video = activeVideo();
+      const state = video && {
+        video,
+        top: Math.round(video.getBoundingClientRect().top),
+        source: video.currentSrc || video.getAttribute("src")
+      };
+      const same = state && previous && state.video === previous.video &&
+        state.top === previous.top && state.source === previous.source;
+      steady = same ? steady + 1 : 0;
+      previous = state;
+      if (steady >= 3) return;
+      await sleep(150);
+    }
+  }
   let initialPlaybackReleased = false;
   function startInitialPlaybackWhenReady() {
     const deadline = Date.now() + 12000;
@@ -842,6 +862,107 @@
     "[data-e2e*='collect-icon' i]", "[role=button][aria-label*='favorit' i]",
     "[role=button][aria-label*='favorite' i]"
   ];
+  const MORE_SELECTORS = [
+    "[data-e2e=more-menu-icon]", "[data-e2e*='more-icon' i]", "[data-e2e*='more-menu' i]",
+    "[role=button][aria-label*='mais opções' i]", "[role=button][aria-label*='more options' i]",
+    "[role=button][aria-label*='mais ações' i]", "[role=button][aria-label*='more actions' i]",
+    "button[aria-label*='mais opções' i]", "button[aria-label*='more options' i]",
+    "button[aria-label*='mais ações' i]", "button[aria-label*='more actions' i]"
+  ];
+  const NOT_INTERESTED = /^(não tenho interesse|não me interessa|não estou interessado|not interested)\b/i;
+  function findNotInterestedItem() {
+    const pool = new Set(document.querySelectorAll("[role=menuitem], button, [role=button], li, a, [data-e2e]"));
+    for (const popup of document.querySelectorAll("[role=menu], [role=dialog], [role=listbox]")) {
+      if (visible(popup)) popup.querySelectorAll("*").forEach(element => pool.add(element));
+    }
+    const matches = [...pool].filter(element => visible(element) &&
+      NOT_INTERESTED.test(normalizedText(element.getAttribute("aria-label") || element.textContent)));
+    return matches.find(element => !matches.some(other => other !== element && element.contains(other))) || null;
+  }
+  // The "..." button only exists visibly while the pointer is over the video.
+  async function hoverVideo(video) {
+    const target = video.closest("[data-e2e=feed-video], article, section") || video.parentElement || video;
+    const rect = target.getBoundingClientRect();
+    const init = {bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2};
+    for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"]) {
+      target.dispatchEvent(new MouseEvent(type, init));
+    }
+    await sleep(300);
+  }
+  function hiddenMoreButton(video) {
+    const scope = ancestorsFor(video).slice(-1)[0] || document.body;
+    return scope.querySelector("[data-e2e=more-menu-icon], [data-e2e*='more-menu' i]");
+  }
+  // Compact map of the controls around the video, for support when a command cannot find its target.
+  function describeControls(video) {
+    const scope = ancestorsFor(video).slice(-1)[0] || document.body;
+    const controls = [...scope.querySelectorAll("button, [role=button], [role=menuitem], a[href], [data-e2e]")]
+      .filter(visible).slice(0, 80)
+      .map(element => [element.tagName.toLowerCase(), element.getAttribute("data-e2e") || "",
+        element.getAttribute("aria-label") || "", normalizedText(element.textContent).slice(0, 30)].join("|"));
+    const popups = [...document.querySelectorAll("[role=menu], [role=dialog], [role=listbox]")]
+      .filter(visible).map(element => normalizedText(element.textContent).slice(0, 500));
+    // Which account controls the page shows tells whether the session is logged in.
+    const account = [...document.querySelectorAll(
+      "[data-e2e*='login' i], [data-e2e*='profile-icon' i], [data-e2e*='upload-icon' i], [data-e2e*='inbox' i]")]
+      .slice(0, 10).map(element => `${visible(element) ? "visible" : "hidden"}|${element.getAttribute("data-e2e")}`);
+    // Menus that only appear while the pointer hovers the video are not visible yet.
+    const menuLike = /more|mais|menu|report|denunci|interess|interested|dislike|option|opç/i;
+    const menuControls = [...scope.querySelectorAll("button, [role=button], [data-e2e], [aria-label]")]
+      .filter(element => menuLike.test(`${element.getAttribute("data-e2e") || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`))
+      .slice(0, 30).map(element => `${visible(element) ? "visible" : "hidden"}|${element.tagName.toLowerCase()}|` +
+        `${element.getAttribute("data-e2e") || ""}|${element.getAttribute("aria-label") || ""}`);
+    return {controls, popups, menuControls, account};
+  }
+  // The platform may move to the next video by itself after a mark; only ask for a skip when it did not.
+  async function afterMark(video, link, extra = {}) {
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      await sleep(150);
+      if (activeVideo() !== video || snapshot().link !== link) return extra;
+    }
+    return {...extra, advance: true};
+  }
+  async function markNotInterested() {
+    const video = activeVideo();
+    if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
+    try {
+      let item = findNotInterestedItem();
+      if (!item) {
+        await hoverVideo(video);
+        const more = findNearVideo(MORE_SELECTORS);
+        const hiddenMore = more ? null : hiddenMoreButton(video);
+        if (more) {
+          await trustedClick(more);
+        } else if (hiddenMore) {
+          hiddenMore.click();
+        } else {
+          // Some layouts only offer the option in the video's context menu.
+          const rect = video.getBoundingClientRect();
+          video.dispatchEvent(new MouseEvent("contextmenu", {bubbles: true, cancelable: true,
+            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2}));
+        }
+        const deadline = Date.now() + 3000;
+        while (!item && Date.now() < deadline) {
+          await sleep(150);
+          item = findNotInterestedItem();
+        }
+      }
+      if (!item) throw new Error("Este vídeo não oferece a opção Não tenho interesse. Use F6 para acessar a página.");
+      const link = snapshot().link;
+      await trustedClick(item, false);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        await sleep(150);
+        if (!item.isConnected || !visible(item)) return afterMark(video, link);
+      }
+      throw new Error("O TikTok não confirmou a marcação. Confira na página (F6).");
+    } catch (error) {
+      error.details = describeControls(video);
+      document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+      throw error;
+    }
+  }
   const COMMENT_SELECTORS = [
     "[data-e2e=comment-icon]", "[role=button][aria-label*='coment' i]",
     "[role=button][aria-label*='comment' i]"
@@ -999,14 +1120,20 @@
           behavior: "smooth"
         });
       }
+      const moved = current => current && (current !== video ||
+        (current.currentSrc || current.getAttribute("src")) !== source ||
+        snapshot().link !== link);
       const deadline = Date.now() + 4500;
       while (Date.now() < deadline) {
         await sleep(150);
         stabilizeAudio();
-        const current = activeVideo();
-        if (current && (current !== video ||
-            (current.currentSrc || current.getAttribute("src")) !== source ||
-            snapshot().link !== link)) return snapshot();
+        if (!moved(activeVideo())) continue;
+        // O vídeo seguinte já cobre a maior parte da tela enquanto a rolagem
+        // ainda anima, e ela pode voltar ao vídeo anterior. Só lemos os
+        // detalhes depois que o feed para de se mexer.
+        await waitUntilSettled(deadline + 1500);
+        stabilizeAudio();
+        if (moved(activeVideo())) return snapshot();
       }
       throw new Error("O TikTok não mudou de vídeo. Tente novamente ou use F6 para acessar a página.");
     }
@@ -1126,6 +1253,7 @@
       await sleep(1200);
       return {...info, expected_state: !before, follow_click_sent: true};
     }
+    if (action === "not_interested") return markNotInterested();
     if (action === "toggle_like") {
       return {state: await toggleAction(LIKE_SELECTORS, /descurtir|unlike|remove like/i,
         /curtir|like/i, "Não foi possível localizar o botão Curtir.")};
@@ -1192,7 +1320,8 @@
     if (action === "diagnostics") {
       return {message: `Extensão conectada; página ${location.hostname}; ` +
         `${document.querySelectorAll("video").length} vídeo(s); ` +
-        `vídeo ativo ${activeVideo() ? "sim" : "não"}; ${sharePanelDiagnostics()}`};
+        `vídeo ativo ${activeVideo() ? "sim" : "não"}; ${sharePanelDiagnostics()}`,
+        report: activeVideo() ? JSON.stringify(describeControls(activeVideo())) : ""};
     }
     throw new Error("Comando desconhecido recebido pela extensão.");
   }
@@ -1201,7 +1330,8 @@
     if (!message || message.type !== "accessible-reels-command") return false;
     execute(message.action, message.argument)
       .then(result => sendResponse({ok: true, ...result}))
-      .catch(error => sendResponse({ok: false, error: error && error.message ? error.message : String(error)}));
+      .catch(error => sendResponse({ok: false, error: error && error.message ? error.message : String(error),
+        details: error && error.details}));
     return true;
   });
 })();

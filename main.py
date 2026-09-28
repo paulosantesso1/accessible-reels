@@ -8,6 +8,12 @@ import sys
 def main() -> None:
     configure_logging()
     install_exception_logging()
+    link_server = None
+    if '--check-runtime' not in sys.argv:
+        from link_router import route_launch
+        link_server = route_launch(sys.argv)
+        if link_server is None:
+            return
     try:
         configure_runtime()
     except (OSError, ValueError, KeyError, RuntimeError) as error:
@@ -26,6 +32,7 @@ def main() -> None:
     from ui.app_frame import MainFrame
     app = wx.App(False)
     frame = MainFrame()
+    frame.attach_link_server(link_server)
     frame.Show()
     app.MainLoop()
 
