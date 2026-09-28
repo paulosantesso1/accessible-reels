@@ -1087,7 +1087,12 @@
         [...document.querySelectorAll(selectors.join(","))].find(onScreen);
       // Scrolling a navigation button into the center can move a scroll-snap
       // feed back onto the current item before the click even reaches TikTok.
-      if (button) await trustedClick(button, false);
+      // trustedClick asks Windows to synthesize a real mouse click, which
+      // isn't delivered while the app window isn't the OS foreground window
+      // (minimized, or another window covering it) -- it would just hang
+      // until the window regained focus. Go straight to the scroll fallback
+      // in that case instead.
+      if (button && document.hasFocus()) await trustedClick(button, false);
       else {
         let scroller = video.parentElement;
         while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&

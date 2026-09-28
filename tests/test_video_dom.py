@@ -510,6 +510,30 @@ def test_embedded_navigation_scrolls_feed_container(page, action, start, end):
     assert page.evaluate("window.scrollY") == 0
 
 
+def test_embedded_navigation_skips_trusted_click_without_window_focus(page):
+    # trustedClick asks the host app to synthesize a real OS-level mouse
+    # click, which isn't delivered while the app window isn't the Windows
+    # foreground window (minimized, or another window covering it) -- next/
+    # previous would hang waiting for a click that never registers. Go
+    # straight to the scroll fallback in that case, even with a navigation
+    # button present and otherwise clickable.
+    page.set_content('''
+      <style>
+        #feed {height:400px;overflow-y:scroll;scroll-snap-type:y mandatory}
+        article {height:400px;scroll-snap-align:start}
+        video {width:300px;height:350px}
+      </style>
+      <div id="feed"><article><video id="active"></video>
+      <button data-e2e="feed-navigation-next" onclick="window.navigated=true">Navigate</button></article>
+      <article><video></video></article></div>
+    ''')
+    install_embedded_tiktok(page)
+    page.evaluate("() => { document.hasFocus = () => false; }")
+    assert page.evaluate("command('next')")['ok'] is True
+    assert page.evaluate("window.navigated") is not True
+    page.wait_for_function("Math.abs(document.querySelector('#feed').scrollTop - 400) < 2")
+
+
 def test_embedded_navigation_does_not_report_replay_as_next_video(page):
     page.set_content('''<video id="active"></video>
       <button data-e2e="feed-navigation-next"
