@@ -43,6 +43,7 @@ class SettingsDialog(wx.Dialog):
         self.settings_file = settings_path()
         self.current_folder = Path.home() / "Downloads"
         self.check_ytdlp = True
+        self.avoid_real_minimize = True
         self.shortcuts, self.global_shortcuts = load_shortcut_settings()
         self._initial_shortcuts = dict(self.shortcuts)
         self._initial_global_shortcuts = set(self.global_shortcuts)
@@ -56,6 +57,7 @@ class SettingsDialog(wx.Dialog):
             if folder and Path(folder).is_absolute():
                 self.current_folder = Path(folder)
             self.check_ytdlp = value.get("check_ytdlp_updates", True)
+            self.avoid_real_minimize = value.get("avoid_real_minimize", True)
         except Exception:
             pass
 
@@ -64,6 +66,7 @@ class SettingsDialog(wx.Dialog):
         outer = wx.BoxSizer(wx.VERTICAL)
         notebook = wx.Notebook(root)
         notebook.AddPage(self._general_page(notebook), "&Geral")
+        notebook.AddPage(self._window_page(notebook), "&Janela")
         notebook.AddPage(self._shortcuts_page(notebook), "&Atalhos")
         outer.Add(notebook, 1, wx.EXPAND | wx.ALL, 8)
         buttons = wx.StdDialogButtonSizer()
@@ -90,6 +93,28 @@ class SettingsDialog(wx.Dialog):
         update = wx.Button(panel, label="Verificar atualização do motor a&gora")
         update.Bind(wx.EVT_BUTTON, self.on_manual_update)
         box.Add(update, 0, wx.ALL, 5)
+        panel.SetSizer(box)
+        return panel
+
+    def _window_page(self, notebook):
+        panel = wx.Panel(notebook)
+        box = wx.BoxSizer(wx.VERTICAL)
+        self.cb_avoid_minimize = wx.CheckBox(panel, label=(
+            "Manter o app funcionando ao minimizar, em vez de minimizar de "
+            "&verdade (recomendado)"))
+        self.cb_avoid_minimize.SetValue(self.avoid_real_minimize)
+        self.cb_avoid_minimize.SetToolTip(
+            "O WebView2 tem uma limitação conhecida: comandos como avançar/voltar "
+            "vídeo e a rolagem automática podem travar até a janela ser restaurada "
+            "quando minimizada de verdade. Com esta opção marcada, minimizar move a "
+            "janela para fora da tela em vez de usar a minimização do Windows, "
+            "evitando esse travamento; o ícone na barra de tarefas continua "
+            "trazendo a janela de volta normalmente.")
+        box.Add(self.cb_avoid_minimize, 0, wx.ALL, 5)
+        box.Add(wx.StaticText(panel, label="Links de vídeo compartilhados por outros aplicativos:"), 0, wx.LEFT | wx.TOP, 5)
+        default_apps = wx.Button(panel, label="&Definir como aplicativo padrão para links de vídeo...")
+        default_apps.Bind(wx.EVT_BUTTON, self.on_open_default_apps)
+        box.Add(default_apps, 0, wx.ALL, 5)
         panel.SetSizer(box)
         return panel
 
@@ -195,12 +220,16 @@ class SettingsDialog(wx.Dialog):
                 wx.CallAfter(finish, f"Erro ao executar atualizador: {exc}", True)
         threading.Thread(target=worker, daemon=True).start()
 
+    def on_open_default_apps(self, event=None):
+        self.GetParent().open_default_apps()
+
     def on_save(self, event):
         checked = {item.action for index, item in enumerate(SHORTCUT_DEFINITIONS) if self.shortcut_list.IsChecked(index)}
         try:
             if self.shortcuts != self._initial_shortcuts or checked != self._initial_global_shortcuts:
                 save_shortcut_settings(self.shortcuts, checked)
-            save_download_settings({"folder": str(self.current_folder), "check_ytdlp_updates": self.cb_auto_update.GetValue()}, path=self.settings_file)
+            save_download_settings({"folder": str(self.current_folder), "check_ytdlp_updates": self.cb_auto_update.GetValue(),
+                                    "avoid_real_minimize": self.cb_avoid_minimize.GetValue()}, path=self.settings_file)
         except Exception as exc:
             wx.MessageBox(f"Não foi possível salvar as configurações: {exc}", "Erro", wx.OK | wx.ICON_ERROR, self)
             return

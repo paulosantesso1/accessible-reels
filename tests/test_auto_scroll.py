@@ -153,6 +153,7 @@ def test_iconize_schedules_offscreen_replacement(frame):
     # window was brought back. Moving off-screen instead keeps it a
     # normal, restored (never iconized) window from WebView2's
     # perspective, so nothing suspends its renderer.
+    frame.avoid_real_minimize = True
     event = Mock()
     event.IsIconized.return_value = True
 
@@ -163,6 +164,7 @@ def test_iconize_schedules_offscreen_replacement(frame):
     event.Skip.assert_called_once()
 
 def test_restoring_from_iconize_does_not_schedule_offscreen_replacement(frame):
+    frame.avoid_real_minimize = True
     event = Mock()
     event.IsIconized.return_value = False
 
@@ -170,7 +172,25 @@ def test_restoring_from_iconize_does_not_schedule_offscreen_replacement(frame):
         frame._on_iconize(event)
 
     call_after.assert_not_called()
+
+def test_iconize_respects_setting_disabled_by_the_user(frame):
+    # Configurações > Janela lets the user opt back into a real, OS-standard
+    # minimize instead of this trade-off.
+    frame.avoid_real_minimize = False
+    event = Mock()
+    event.IsIconized.return_value = True
+
+    with patch('wx.CallAfter') as call_after:
+        frame._on_iconize(event)
+
+    call_after.assert_not_called()
     event.Skip.assert_called_once()
+
+def test_load_window_settings_reads_avoid_real_minimize(frame):
+    with patch('video_download.load_download_settings', return_value={'avoid_real_minimize': False}):
+        frame._load_window_settings()
+
+    assert frame.avoid_real_minimize is False
 
 def test_replace_minimize_with_offscreen_moves_window_and_remembers_position(frame):
     frame._restore_position = None

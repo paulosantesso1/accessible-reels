@@ -236,6 +236,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._update_checking = False
         self.auto_scroll_enabled = False
         self._restore_position = None
+        self._load_window_settings()
         self.Bind(html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._on_webview_message)
         self._registered_hotkeys = set()
         self._registered_hotkey_actions = set()
@@ -375,8 +376,6 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(settings, 'Baixar áudio do vídeo atual', self.start_audio_download, key('download_audio'))
         self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
         self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
-        settings.AppendSeparator()
-        self._append_menu_item(settings, 'Abrir links de vídeo neste aplicativo...', self.open_default_apps)
         bar.Append(settings, '&Configurações')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
@@ -804,9 +803,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         # normal, restored (never iconized) window, so nothing suspends
         # its renderer, while the user sees the same result -- the window
         # is gone from view, and its taskbar button brings it back.
-        if event.IsIconized():
+        # Configurable (Configurações > Janela): some users may prefer a
+        # real, OS-standard minimize over this trade-off.
+        if event.IsIconized() and self.avoid_real_minimize:
             wx.CallAfter(self._replace_minimize_with_offscreen)
         event.Skip()
+
+    def _load_window_settings(self):
+        from video_download import load_download_settings
+        self.avoid_real_minimize = load_download_settings().get('avoid_real_minimize', True)
 
     def _replace_minimize_with_offscreen(self):
         if self._closing_app or not self.IsIconized():
@@ -1226,6 +1231,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 if dlg.ShowModal() == wx.ID_OK:
                     self._download_folder = load_download_folder()
                     self.shortcuts, self.global_shortcuts = load_shortcut_settings()
+                    self._load_window_settings()
                     self._configure_accelerators()
                     self._build_menu_bar()
             finally:
