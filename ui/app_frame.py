@@ -539,7 +539,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         })();
         """
         try:
-            self.current().RunScript(js_code)
+            # RunScript (synchronous) blocks the UI thread until WebView2
+            # answers, which it won't do promptly while its renderer is
+            # suspended (window unfocused/occluded) -- and this same method
+            # is re-run 1.5s after every dispatch()'d next/previous/toggle,
+            # including ones from the global media-key hotkeys. That made a
+            # media key stall the whole app (hotkeys included) until the
+            # window regained focus. RunScriptAsync doesn't wait for a
+            # reply; nothing here needs the result.
+            self.current().RunScriptAsync(js_code)
         except Exception as e:
             logger.error(f"Erro ao injetar auto-scroll: {e}")
 

@@ -32,8 +32,13 @@ def test_start_dynamic_timer(frame):
     with patch.object(frame, 'current', return_value=mock_client):
         frame._start_dynamic_timer()
 
-        mock_client.RunScript.assert_called_once()
-        script = mock_client.RunScript.call_args[0][0]
+        # Async: RunScript (synchronous) blocks the UI thread until WebView2
+        # answers, which stalls the whole app -- including the global
+        # media-key hotkeys -- while the renderer is suspended (window
+        # unfocused/occluded).
+        mock_client.RunScript.assert_not_called()
+        mock_client.RunScriptAsync.assert_called_once()
+        script = mock_client.RunScriptAsync.call_args[0][0]
         assert "document.querySelectorAll('video')" in script
         # 'timeupdate' is driven by the media pipeline itself, not a JS
         # timer, so detection keeps working while the window is backgrounded
