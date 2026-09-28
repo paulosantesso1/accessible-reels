@@ -467,68 +467,75 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         
         js_code = """
         (function() {
-            if (window.autoScrollObserver) return;
-            window.autoScrollObserver = true;
-
-            // Chromium throttles a background/occluded window's setInterval
-            // and setTimeout timers, so a 200ms poll can stall for seconds
-            // (or longer) while the app isn't focused -- even though the
-            // active platform's video itself keeps playing in that state
-            // (see audio_guard.js). 'timeupdate' is fired by the media
-            // pipeline as the video actually plays, not by a JS timer, so
-            // it isn't subject to that throttling and keeps detecting the
-            // end of the video while the app is in the background.
-            const maybeAdvance = video => {
-                if (video.dataset.autoScrolled || video.duration <= 0) return;
-                if ((video.duration - video.currentTime) > 0.2) return;
-                video.dataset.autoScrolled = 'true';
-                video.pause();
-                // The feed can rebound (TikTok) or briefly keep this same
-                // element in view while the app's own "next" command is
-                // still asking the page to settle on the following post.
-                // If the platform resumes THIS SAME clip in that window,
-                // it plays a sliver, loops back to 0 and plays again --
-                // the video "repeats a second". Re-pause it whenever the
-                // platform tries to resume it, but only while it is
-                // still the same source: some platforms reuse this very
-                // <video> element for the next post (just swapping its
-                // src), and that legitimate next video starting to play
-                // must not be paused by mistake -- doing so looked like
-                // playback randomly stopping whenever something (losing
-                // window focus, a media key) nudged the page in that
-                // window.
-                const source = video.currentSrc || video.src;
-                const resumeGuard = () => {
-                    if ((video.currentSrc || video.src) === source) {
-                        video.pause();
-                    } else {
-                        video.removeEventListener('play', resumeGuard);
-                        delete video.dataset.autoScrolled;
-                    }
+            if (!window.__accessibleAutoScrollWatch) {
+                // Chromium throttles a background/occluded window's
+                // setInterval and setTimeout timers, so a 200ms poll can
+                // stall for seconds (or longer) while the app isn't
+                // focused -- even though the active platform's video
+                // itself keeps playing in that state (see audio_guard.js).
+                // 'timeupdate' is fired by the media pipeline as the video
+                // actually plays, not by a JS timer, so it isn't subject
+                // to that throttling.
+                const maybeAdvance = video => {
+                    if (video.dataset.autoScrolled || video.duration <= 0) return;
+                    if ((video.duration - video.currentTime) > 0.2) return;
+                    video.dataset.autoScrolled = 'true';
+                    video.pause();
+                    // The feed can rebound (TikTok) or briefly keep this
+                    // same element in view while the app's own "next"
+                    // command is still asking the page to settle on the
+                    // following post. If the platform resumes THIS SAME
+                    // clip in that window, it plays a sliver, loops back
+                    // to 0 and plays again -- the video "repeats a
+                    // second". Re-pause it whenever the platform tries to
+                    // resume it, but only while it is still the same
+                    // source: some platforms reuse this very <video>
+                    // element for the next post (just swapping its src),
+                    // and that legitimate next video starting to play
+                    // must not be paused by mistake -- doing so looked
+                    // like playback randomly stopping whenever something
+                    // (losing window focus, a media key) nudged the page
+                    // in that window.
+                    const source = video.currentSrc || video.src;
+                    const resumeGuard = () => {
+                        if ((video.currentSrc || video.src) === source) {
+                            video.pause();
+                        } else {
+                            video.removeEventListener('play', resumeGuard);
+                            delete video.dataset.autoScrolled;
+                        }
+                    };
+                    video.addEventListener('play', resumeGuard);
+                    setTimeout(() => video.removeEventListener('play', resumeGuard), 5000);
+                    window.chrome.webview.postMessage('auto_scroll_next');
                 };
-                video.addEventListener('play', resumeGuard);
-                setTimeout(() => video.removeEventListener('play', resumeGuard), 5000);
-                window.chrome.webview.postMessage('auto_scroll_next');
-            };
 
-            const watched = new WeakSet();
-            const watch = video => {
-                if (watched.has(video)) return;
-                watched.add(video);
-                video.addEventListener('timeupdate', () => maybeAdvance(video));
-            };
-            document.querySelectorAll('video').forEach(watch);
-            // The feed replaces/adds <video> elements as it scrolls; watch
-            // new ones as they appear.
-            new MutationObserver(records => {
-                for (const record of records) {
-                    for (const node of record.addedNodes) {
-                        if (!(node instanceof Element)) continue;
-                        if (node instanceof HTMLVideoElement) watch(node);
-                        node.querySelectorAll?.('video').forEach(watch);
+                const watched = new WeakSet();
+                const watch = video => {
+                    if (watched.has(video)) return;
+                    watched.add(video);
+                    video.addEventListener('timeupdate', () => maybeAdvance(video));
+                };
+                // The feed replaces/adds <video> elements as it scrolls;
+                // watch new ones as they appear.
+                new MutationObserver(records => {
+                    for (const record of records) {
+                        for (const node of record.addedNodes) {
+                            if (!(node instanceof Element)) continue;
+                            if (node instanceof HTMLVideoElement) watch(node);
+                            node.querySelectorAll?.('video').forEach(watch);
+                        }
                     }
-                }
-            }).observe(document, {childList: true, subtree: true});
+                }).observe(document, {childList: true, subtree: true});
+                window.__accessibleAutoScrollWatch = watch;
+            }
+            // Re-sweep every time this runs (toggling auto-scroll on, a
+            // manual next/previous, or the window regaining focus): the
+            // page can be suspended while unfocused, and a video element
+            // the feed swapped in during that time could be missed by the
+            // MutationObserver above, which is suspended right along with
+            // it. watch() is a no-op for an already-watched element.
+            document.querySelectorAll('video').forEach(window.__accessibleAutoScrollWatch);
         })();
         """
         try:
@@ -766,6 +773,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _activation_changed(self, event):
         self._sync_system_hotkeys(event.GetActive())
+        if event.GetActive():
+            # The embedded page can be suspended by the browser engine while
+            # the window is unfocused/occluded, and any DOM changes it made
+            # in that state (the feed swapping in a new <video> element) can
+            # be missed by the MutationObserver below, which is suspended
+            # right along with it. Re-sweep for the video that's live now
+            # instead of leaving auto-scroll stuck until the user manually
+            # retoggles it.
+            self._start_dynamic_timer()
         event.Skip()
 
     def _sync_system_hotkeys(self, active):

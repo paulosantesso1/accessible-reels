@@ -112,6 +112,33 @@ def test_on_webview_message_ignores_other_messages(frame):
         event.Skip.assert_called_once()
         dispatch.assert_not_called()
 
+def test_window_refocus_rearms_auto_scroll(frame):
+    # The embedded page can be suspended while the window is unfocused, and
+    # a <video> element the feed swapped in during that time can be missed
+    # by the page's own MutationObserver, which is suspended right along
+    # with it. Re-sweep for the video that's live now on refocus instead of
+    # leaving auto-scroll stuck until the user manually retoggles it.
+    event = Mock()
+    event.GetActive.return_value = True
+
+    with patch.object(frame, '_sync_system_hotkeys'), \
+         patch.object(frame, '_start_dynamic_timer') as start_timer:
+        frame._activation_changed(event)
+
+        start_timer.assert_called_once()
+        event.Skip.assert_called_once()
+
+def test_window_losing_focus_does_not_rearm_auto_scroll(frame):
+    event = Mock()
+    event.GetActive.return_value = False
+
+    with patch.object(frame, '_sync_system_hotkeys'), \
+         patch.object(frame, '_start_dynamic_timer') as start_timer:
+        frame._activation_changed(event)
+
+        start_timer.assert_not_called()
+        event.Skip.assert_called_once()
+
 def test_dispatch_intercepts_for_manual_scroll(frame):
     frame.auto_scroll_enabled = True
 
