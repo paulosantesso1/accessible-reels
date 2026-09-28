@@ -196,6 +196,24 @@ def test_list_mode_navigation_intercepts_next_and_previous_video():
     client.execute.assert_not_called()
 
 
+def test_pending_command_queues_play_pause_instead_of_dropping_it():
+    # next/previous already got queued to run once the pending command
+    # settles. toggle_playback/play (what the media-key play/pause hotkey
+    # dispatches) did not, and was silently dropped instead -- easy to miss
+    # while away from the screen, since next/previous can take several
+    # seconds to settle (or time out) while the window is backgrounded.
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    client = Mock(pending=True)
+    frame.clients = {'TikTok': client}
+
+    MainFrame.dispatch(frame, 'toggle_playback')
+
+    assert frame.platform_data['TikTok']['queued_navigation'] == 'toggle_playback'
+    client.execute.assert_not_called()
+
+
 def test_escape_returns_to_feed_from_search_tab():
     frame = Mock()
     frame.activities.GetSelection.return_value = 2

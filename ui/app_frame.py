@@ -1258,10 +1258,17 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 return
         
         if client.pending:
-            if action in ('next_video', 'previous_video'):
-                # A global key can arrive while WebView2 finishes the previous
-                # page command. Keep the last requested direction instead of
-                # silently losing it.
+            if action in ('next_video', 'previous_video', 'toggle_playback', 'play'):
+                # A global media-key hotkey can arrive while WebView2 is
+                # still finishing the previous command -- notably next/
+                # previous can take up to several seconds while the window
+                # is backgrounded, since the page's own feed navigation
+                # needs to actually render to confirm the change. Without
+                # this, a play/pause pressed in that window was silently
+                # dropped instead of queued like next/previous already
+                # were, going unnoticed until the user came back to a
+                # video that never paused. Keep the last requested action
+                # instead of silently losing it.
                 self.platform_data.setdefault(name, {})['queued_navigation'] = action
                 self.status('Comando de navegação recebido. Ele será executado assim que o vídeo terminar de carregar.')
                 return
