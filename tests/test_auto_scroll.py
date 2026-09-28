@@ -41,6 +41,10 @@ def test_start_dynamic_timer(frame):
         # otherwise it plays a sliver, loops to 0 and "repeats a second".
         assert "resumeGuard" in script
         assert "v.pause()" in script
+        # ...but only while it's still the same clip: some platforms reuse
+        # this element for the next post, and that legitimate playback must
+        # not be paused by mistake.
+        assert "currentSrc" in script
 
 def test_on_webview_message_triggers_next_video(frame):
     view = Mock()

@@ -477,12 +477,26 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     // The feed can rebound (TikTok) or briefly keep this same
                     // element in view while the app's own "next" command is
                     // still asking the page to settle on the following post.
-                    // If the platform resumes it in that window, it plays a
-                    // sliver from where it paused, then loops back to 0 and
-                    // plays again from the start -- the video "repeats a
-                    // second". Re-pause it immediately whenever the platform
-                    // tries to resume it, until the transition finishes.
-                    const resumeGuard = () => v.pause();
+                    // If the platform resumes THIS SAME clip in that window,
+                    // it plays a sliver, loops back to 0 and plays again --
+                    // the video "repeats a second". Re-pause it whenever the
+                    // platform tries to resume it, but only while it is
+                    // still the same source: some platforms reuse this very
+                    // <video> element for the next post (just swapping its
+                    // src), and that legitimate next video starting to play
+                    // must not be paused by mistake -- doing so looked like
+                    // playback randomly stopping whenever something (losing
+                    // window focus, a media key) nudged the page in that
+                    // window.
+                    const source = v.currentSrc || v.src;
+                    const resumeGuard = () => {
+                        if ((v.currentSrc || v.src) === source) {
+                            v.pause();
+                        } else {
+                            v.removeEventListener('play', resumeGuard);
+                            delete v.dataset.autoScrolled;
+                        }
+                    };
                     v.addEventListener('play', resumeGuard);
                     setTimeout(() => v.removeEventListener('play', resumeGuard), 5000);
                     window.chrome.webview.postMessage('auto_scroll_next');
