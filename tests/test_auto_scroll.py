@@ -27,49 +27,78 @@ def test_toggle_auto_scroll(frame):
 
 def test_start_dynamic_timer(frame):
     frame.auto_scroll_enabled = True
-    
+
     mock_client = Mock()
     with patch.object(frame, 'current', return_value=mock_client):
         frame._start_dynamic_timer()
-        
+
         mock_client.RunScript.assert_called_once()
         script = mock_client.RunScript.call_args[0][0]
         assert "document.querySelectorAll('video')" in script
-        assert "ontimeupdate" in script
+        assert "setInterval" in script
+        # Re-pauses the video if the platform (e.g. TikTok's scroll rebound)
+        # resumes it while the app is still settling on the next post --
+        # otherwise it plays a sliver, loops to 0 and "repeats a second".
+        assert "resumeGuard" in script
+        assert "v.pause()" in script
 
 def test_on_webview_message_triggers_next_video(frame):
+    view = Mock()
     event = Mock()
     event.GetString.return_value = "auto_scroll_next"
+    event.GetEventObject.return_value = view
     frame.auto_scroll_enabled = True
-    
+
     with patch.object(frame, 'dispatch') as dispatch, \
-         patch('wx.CallLater') as call_later:
-         
+         patch.object(frame, 'current', return_value=view):
         frame._on_webview_message(event)
-        
+
         event.Skip.assert_called_once()
         dispatch.assert_called_once_with('next_video')
-        call_later.assert_called_once_with(1500, frame._start_dynamic_timer)
 
-def test_on_webview_message_ignores_if_disabled(frame):
+def test_on_webview_message_ignores_background_platform(frame):
+    # The handler is bound once on the frame and receives messages bubbled
+    # from every embedded platform webview. A leftover auto-scroll interval
+    # from a platform the user switched away from (or turned auto-scroll
+    # off in) must not be able to advance whichever platform is active now.
+    background_view = Mock()
+    active_view = Mock()
     event = Mock()
     event.GetString.return_value = "auto_scroll_next"
-    frame.auto_scroll_enabled = False
-    
-    with patch.object(frame, 'dispatch') as dispatch:
+    event.GetEventObject.return_value = background_view
+    frame.auto_scroll_enabled = True
+
+    with patch.object(frame, 'dispatch') as dispatch, \
+         patch.object(frame, 'current', return_value=active_view):
         frame._on_webview_message(event)
-        
+
+        dispatch.assert_not_called()
+
+def test_on_webview_message_ignores_if_disabled(frame):
+    view = Mock()
+    event = Mock()
+    event.GetString.return_value = "auto_scroll_next"
+    event.GetEventObject.return_value = view
+    frame.auto_scroll_enabled = False
+
+    with patch.object(frame, 'dispatch') as dispatch, \
+         patch.object(frame, 'current', return_value=view):
+        frame._on_webview_message(event)
+
         event.Skip.assert_called_once()
         dispatch.assert_not_called()
 
 def test_on_webview_message_ignores_other_messages(frame):
+    view = Mock()
     event = Mock()
     event.GetString.return_value = "something_else"
+    event.GetEventObject.return_value = view
     frame.auto_scroll_enabled = True
-    
-    with patch.object(frame, 'dispatch') as dispatch:
+
+    with patch.object(frame, 'dispatch') as dispatch, \
+         patch.object(frame, 'current', return_value=view):
         frame._on_webview_message(event)
-        
+
         event.Skip.assert_called_once()
         dispatch.assert_not_called()
 

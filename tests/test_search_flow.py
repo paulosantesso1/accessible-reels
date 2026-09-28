@@ -15,6 +15,11 @@ def mock_frame():
     frame._return_tiktok_follow_verification.side_effect = (
         lambda message: MainFrame._return_tiktok_follow_verification(frame, message)
     )
+    # A bare Mock is truthy for any auto-vivified attribute, which would trip
+    # dispatch()'s auto-scroll safety net (it calls the real wx.CallLater,
+    # needing a live wx.App) for every test that dispatches next/previous
+    # video. Match MainFrame's real default instead.
+    frame.auto_scroll_enabled = False
     return frame
 
 

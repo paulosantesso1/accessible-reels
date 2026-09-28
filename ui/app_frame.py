@@ -474,6 +474,17 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 if (v && !v.dataset.autoScrolled && v.duration > 0 && (v.duration - v.currentTime) <= 0.2) {
                     v.dataset.autoScrolled = 'true';
                     v.pause();
+                    // The feed can rebound (TikTok) or briefly keep this same
+                    // element in view while the app's own "next" command is
+                    // still asking the page to settle on the following post.
+                    // If the platform resumes it in that window, it plays a
+                    // sliver from where it paused, then loops back to 0 and
+                    // plays again from the start -- the video "repeats a
+                    // second". Re-pause it immediately whenever the platform
+                    // tries to resume it, until the transition finishes.
+                    const resumeGuard = () => v.pause();
+                    v.addEventListener('play', resumeGuard);
+                    setTimeout(() => v.removeEventListener('play', resumeGuard), 5000);
                     window.chrome.webview.postMessage('auto_scroll_next');
                 }
             }, 200);
@@ -487,10 +498,19 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _on_webview_message(self, event):
         event.Skip()
         message = event.GetString()
-        
+
+        # This handler is bound once on the frame and receives messages
+        # bubbled from every embedded platform webview, not just the active
+        # one. The auto-scroll interval injected into a backgrounded
+        # platform is never torn down when the user switches platforms
+        # (Ctrl+1/2/3) or turns auto-scroll off mid-video, so without this
+        # check a video finishing off-screen could advance the wrong,
+        # currently active platform.
+        if event.GetEventObject() is not self.current():
+            return
+
         if message == "auto_scroll_next" and getattr(self, 'auto_scroll_enabled', False):
             self.dispatch('next_video')
-            wx.CallLater(1500, self._start_dynamic_timer)
 
     def on_check_for_updates(self, event=None):
         self._check_for_updates(manual=True)
