@@ -57,6 +57,7 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("not_interested", "Marcar como não tenho interesse", "Alt+Shift+N"),
     ShortcutDefinition("open_profile", "Abrir perfil", "Alt+Shift+P"),
     ShortcutDefinition("search", "Pesquisar", "Alt+E"),
+    ShortcutDefinition("toggle_auto_scroll", "Ativar ou desativar rolagem automática (válido em todas as redes)", "Alt+R"),
     ShortcutDefinition("exit", "Sair", "Alt+S"),
 )
 

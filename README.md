@@ -267,6 +267,7 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos percentuais;
 - `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos percentuais;
 - `Alt+E`: abrir a pesquisa de vídeos;
+- `Alt+R`: ativar ou desativar rolagem automática (válido em todas as redes);
 - `Alt+Shift+M`: ativar ou desativar o mudo;
 - `Alt+F12`: anunciar diagnóstico seguro da página e do último comando;
 - `Alt+F`: fechar navegador/conexão da plataforma;

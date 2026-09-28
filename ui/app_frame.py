@@ -227,6 +227,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._login_windows = set()
         self.initialize_downloads()
         self._update_checking = False
+        self.auto_scroll_enabled = False
+        self.Bind(html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._on_webview_message)
         self._registered_hotkeys = set()
         self._registered_hotkey_actions = set()
         self._accelerator_ids = {}
@@ -334,6 +336,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Diminuir volume', 'volume_down'), ('Aumentar volume', 'volume_up'),
             ('Diminuir velocidade', 'speed_down'), ('Aumentar velocidade', 'speed_up'),
             ('Ativar ou desativar mudo', 'toggle_mute'),
+            ('Ativar ou desativar rolagem automática', 'toggle_auto_scroll'),
         ]:
             self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(player, '&Player')
@@ -449,6 +452,45 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         sizer.AddStretchSpacer()
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Player')
+
+    def toggle_auto_scroll(self, event=None):
+        self.auto_scroll_enabled = not getattr(self, 'auto_scroll_enabled', False)
+        if self.auto_scroll_enabled:
+            self.status("Rolagem automática ativada. Use Alt+R para desativar.")
+            self._start_dynamic_timer()
+        else:
+            self.status("Rolagem automática desativada.")
+
+    def _start_dynamic_timer(self):
+        if not getattr(self, 'auto_scroll_enabled', False) or not self.current():
+            return
+        
+        js_code = """
+        (function() {
+            if (window.autoScrollObserver) return;
+            window.autoScrollObserver = setInterval(function() {
+                let videos = Array.from(document.querySelectorAll('video'));
+                let v = videos.find(vid => !vid.paused);
+                if (v && !v.dataset.autoScrolled && v.duration > 0 && (v.duration - v.currentTime) <= 0.2) {
+                    v.dataset.autoScrolled = 'true';
+                    v.pause();
+                    window.chrome.webview.postMessage('auto_scroll_next');
+                }
+            }, 200);
+        })();
+        """
+        try:
+            self.current().RunScript(js_code)
+        except Exception as e:
+            logger.error(f"Erro ao injetar auto-scroll: {e}")
+
+    def _on_webview_message(self, event):
+        event.Skip()
+        message = event.GetString()
+        
+        if message == "auto_scroll_next" and getattr(self, 'auto_scroll_enabled', False):
+            self.dispatch('next_video')
+            wx.CallLater(1500, self._start_dynamic_timer)
 
     def on_check_for_updates(self, event=None):
         self._check_for_updates(manual=True)
@@ -1049,6 +1091,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         view.LoadURL(url)
 
     def dispatch(self, action, argument=None):
+        if action == 'toggle_auto_scroll':
+            self.toggle_auto_scroll()
+            return
+        
+        # Travas de segurança: se rolar manualmente ou pausar, pede pra monitorar o vídeo novamente
+        if getattr(self, 'auto_scroll_enabled', False):
+            if action in ('next_video', 'previous_video', 'toggle_playback', 'play'):
+                wx.CallLater(1500, self._start_dynamic_timer)
+
         if action == 'exit':
             self.Close()
             return

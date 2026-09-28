@@ -25,3 +25,4 @@ download-settings.json
 Lib/
 Include/
 pyvenv.cfg
+scripts/ 
