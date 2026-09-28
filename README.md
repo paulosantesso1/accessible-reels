@@ -275,6 +275,7 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+Shift+Seta para cima`: aumentar o volume em 5 pontos percentuais;
 - `Alt+Shift+Seta para baixo`: diminuir o volume em 5 pontos percentuais;
 - `Alt+E`: abrir a pesquisa de vídeos;
+- `Alt+R`: ativar ou desativar rolagem automática (válido em todas as redes);
 - `Alt+Shift+M`: ativar ou desativar o mudo;
 - `Alt+F12`: anunciar diagnóstico seguro da página e do último comando;
 - `Alt+F`: fechar navegador/conexão da plataforma;
@@ -347,8 +348,9 @@ Valores de cookies e tokens não são exibidos nem registrados. Arquivos `cookie
 ## Abrir links do WhatsApp direto no aplicativo
 
 O instalador registra o Accessible Reels na lista de aplicativos padrão do Windows, mas
-não o define como navegador sozinho. Use **Configurações > Abrir links de vídeo neste
-aplicativo...** e, em Aplicativos padrão, escolha Accessible Reels para HTTP e HTTPS.
+não o define como navegador sozinho. Abra as Configurações do aplicativo, aba **Janela**,
+use **Definir como aplicativo padrão para links de vídeo...** e, em Aplicativos padrão,
+escolha Accessible Reels para HTTP e HTTPS.
 
 Depois disso, links de vídeo do TikTok, Reels e Shorts abrem na janela do aplicativo,
 reaproveitando a janela já aberta. Qualquer outro link é repassado ao navegador que era o
@@ -367,4 +369,11 @@ ou trocar a tecla. Enquanto o aplicativo está aberto, ele recebe essas teclas n
 reprodutores, como o Spotify. O tratamento próprio de teclas de mídia do WebView2 é desativado para que uma
 pressão não aja duas vezes. Fones que só se comunicam pelo controle de mídia do Windows, sem enviar teclas,
 não são atendidos por este recurso.
+
+Uma limitação conhecida do WebView2 faz comandos como avançar/voltar vídeo e a rolagem automática
+travarem até a janela ser restaurada quando ela é minimizada de verdade (o WebView2 não recebe o aviso
+de que a janela pai foi minimizada). Por isso, minimizar move a janela para fora da tela em vez de usar a
+minimização do Windows — o ícone na barra de tarefas continua trazendo-a de volta normalmente. Para
+desativar esse comportamento e usar a minimização padrão do Windows, desmarque a opção em Configurações,
+aba **Janela**.
 

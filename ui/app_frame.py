@@ -48,7 +48,14 @@ BACKGROUND_WEBVIEW_ARGUMENTS = (
 )
 
 
-DISABLED_WEBVIEW_FEATURES = ('HardwareMediaKeyHandling',)
+# On Windows, Chromium separately tracks whether the host window is fully
+# covered by another native window ("native window occlusion") and, when it
+# is, treats the page as if it were a background tab regardless of the flags
+# above: rendering stops and script is throttled. That's what let next/
+# previous (which needs the page to actually render to confirm the feed
+# advanced) time out, and the active video visibly freeze, whenever the
+# window was minimized or covered -- not just unfocused.
+DISABLED_WEBVIEW_FEATURES = ('HardwareMediaKeyHandling', 'CalculateNativeWinOcclusion')
 
 
 def webview_browser_arguments(existing: str = '') -> str:
@@ -249,6 +256,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._login_windows = set()
         self.initialize_downloads()
         self._update_checking = False
+        self.auto_scroll_enabled = False
+        self._restore_position = None
+        self._load_window_settings()
+        self.Bind(html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._on_webview_message)
         self._registered_hotkeys = set()
         self._registered_hotkey_actions = set()
         self._accelerator_ids = {}
@@ -296,6 +307,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.activities.SetSelection(0)
         self.Bind(wx.EVT_HOTKEY, self._on_system_hotkey)
         self.Bind(wx.EVT_ACTIVATE, self._activation_changed)
+        self.Bind(wx.EVT_ICONIZE, self._on_iconize)
         self.Bind(wx.EVT_CLOSE, self._closing)
         self.Bind(wx.EVT_CHAR_HOOK, self._plain_shortcuts)
         self.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
@@ -358,6 +370,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Diminuir volume', 'volume_down'), ('Aumentar volume', 'volume_up'),
             ('Diminuir velocidade', 'speed_down'), ('Aumentar velocidade', 'speed_up'),
             ('Ativar ou desativar mudo', 'toggle_mute'),
+            ('Ativar ou desativar rolagem automática', 'toggle_auto_scroll'),
         ]:
             self._append_menu_item(player, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(player, '&Player')
@@ -388,8 +401,6 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(settings, 'Baixar áudio do vídeo atual', self.start_audio_download, key('download_audio'))
         self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
         self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
-        settings.AppendSeparator()
-        self._append_menu_item(settings, 'Abrir links de vídeo neste aplicativo...', self.open_default_apps)
         bar.Append(settings, '&Configurações')
         bar.Append(help_menu, 'A&juda')
         self.SetMenuBar(bar)
@@ -417,6 +428,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         if self.IsIconized():
             self.Iconize(False)
+        self._restore_offscreen_position()
         self.Show()
         self.Raise()
         if message.get('action') == 'open':
@@ -474,6 +486,106 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         sizer.AddStretchSpacer()
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Player')
+
+    def toggle_auto_scroll(self, event=None):
+        self.auto_scroll_enabled = not getattr(self, 'auto_scroll_enabled', False)
+        if self.auto_scroll_enabled:
+            self.status("Rolagem automática ativada. Use Alt+R para desativar.")
+            self._start_dynamic_timer()
+        else:
+            self.status("Rolagem automática desativada.")
+
+    def _start_dynamic_timer(self):
+        if not getattr(self, 'auto_scroll_enabled', False) or not self.current():
+            return
+        
+        js_code = """
+        (function() {
+            if (!window.__accessibleAutoScrollWatch) {
+                // Chromium throttles a background/occluded window's
+                // setInterval and setTimeout timers, so a 200ms poll can
+                // stall for seconds (or longer) while the app isn't
+                // focused -- even though the active platform's video
+                // itself keeps playing in that state (see audio_guard.js).
+                // 'timeupdate' is fired by the media pipeline as the video
+                // actually plays, not by a JS timer, so it isn't subject
+                // to that throttling.
+                const maybeAdvance = video => {
+                    if (video.dataset.autoScrolled || video.duration <= 0) return;
+                    if ((video.duration - video.currentTime) > 0.2) return;
+                    video.dataset.autoScrolled = 'true';
+                    // The platform loops this video itself right at this
+                    // point rather than firing a real 'ended' (that's why
+                    // this watches for the video nearing its end instead
+                    // of a plain 'ended' listener). Asking to advance in
+                    // the middle of that, especially while the app window
+                    // is in the background, caught next/previous while the
+                    // page was still mid-transition and it handled that far
+                    // less reliably than a request arriving a moment later
+                    // -- a manual next/previous pressed right after this
+                    // one failed and got queued behind it succeeded as
+                    // soon as its turn came. Give the platform a moment to
+                    // settle its own loop first.
+                    setTimeout(() => window.chrome.webview.postMessage('auto_scroll_next'), 500);
+                };
+
+                const watched = new WeakSet();
+                const watch = video => {
+                    if (watched.has(video)) return;
+                    watched.add(video);
+                    video.addEventListener('timeupdate', () => maybeAdvance(video));
+                };
+                // The feed replaces/adds <video> elements as it scrolls;
+                // watch new ones as they appear.
+                new MutationObserver(records => {
+                    for (const record of records) {
+                        for (const node of record.addedNodes) {
+                            if (!(node instanceof Element)) continue;
+                            if (node instanceof HTMLVideoElement) watch(node);
+                            node.querySelectorAll?.('video').forEach(watch);
+                        }
+                    }
+                }).observe(document, {childList: true, subtree: true});
+                window.__accessibleAutoScrollWatch = watch;
+            }
+            // Re-sweep every time this runs (toggling auto-scroll on, a
+            // manual next/previous, or the window regaining focus): the
+            // page can be suspended while unfocused, and a video element
+            // the feed swapped in during that time could be missed by the
+            // MutationObserver above, which is suspended right along with
+            // it. watch() is a no-op for an already-watched element.
+            document.querySelectorAll('video').forEach(window.__accessibleAutoScrollWatch);
+        })();
+        """
+        try:
+            # RunScript (synchronous) blocks the UI thread until WebView2
+            # answers, which it won't do promptly while its renderer is
+            # suspended (window unfocused/occluded) -- and this same method
+            # is re-run 1.5s after every dispatch()'d next/previous/toggle,
+            # including ones from the global media-key hotkeys. That made a
+            # media key stall the whole app (hotkeys included) until the
+            # window regained focus. RunScriptAsync doesn't wait for a
+            # reply; nothing here needs the result.
+            self.current().RunScriptAsync(js_code)
+        except Exception as e:
+            logger.error(f"Erro ao injetar auto-scroll: {e}")
+
+    def _on_webview_message(self, event):
+        event.Skip()
+        message = event.GetString()
+
+        # This handler is bound once on the frame and receives messages
+        # bubbled from every embedded platform webview, not just the active
+        # one. The auto-scroll interval injected into a backgrounded
+        # platform is never torn down when the user switches platforms
+        # (Ctrl+1/2/3) or turns auto-scroll off mid-video, so without this
+        # check a video finishing off-screen could advance the wrong,
+        # currently active platform.
+        if event.GetEventObject() is not self.current():
+            return
+
+        if message == "auto_scroll_next" and getattr(self, 'auto_scroll_enabled', False):
+            self.dispatch('next_video')
 
     def on_check_for_updates(self, event=None):
         self._check_for_updates(manual=True)
@@ -687,8 +799,57 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self._invoke_shortcut(action)
 
     def _activation_changed(self, event):
-        self._sync_system_hotkeys(event.GetActive())
+        active = event.GetActive()
+        self._sync_system_hotkeys(active)
+        if active:
+            self._restore_offscreen_position()
+            # The embedded page can be suspended by the browser engine while
+            # the window is unfocused/occluded, and any DOM changes it made
+            # in that state (the feed swapping in a new <video> element) can
+            # be missed by the MutationObserver below, which is suspended
+            # right along with it. Re-sweep for the video that's live now
+            # instead of leaving auto-scroll stuck until the user manually
+            # retoggles it.
+            self._start_dynamic_timer()
         event.Skip()
+
+    def _on_iconize(self, event):
+        # WebView2 is a child window and does not reliably get notified
+        # when the top-level window is minimized/restored (a documented
+        # WebView2 limitation), which left it unable to reliably process
+        # commands -- including next/previous, and by extension auto-scroll
+        # -- until the window was brought back. Alt+Tab-ing to another
+        # window (which only covers this one, never truly minimizing it)
+        # doesn't hit this; only a real minimize (the taskbar button, or
+        # Windows+D) does.
+        #
+        # Intercept the real minimize and move the window off-screen
+        # instead: from Windows' and WebView2's perspective it stays a
+        # normal, restored (never iconized) window, so nothing suspends
+        # its renderer, while the user sees the same result -- the window
+        # is gone from view, and its taskbar button brings it back.
+        # Configurable (Configurações > Janela): some users may prefer a
+        # real, OS-standard minimize over this trade-off.
+        if event.IsIconized() and self.avoid_real_minimize:
+            wx.CallAfter(self._replace_minimize_with_offscreen)
+        event.Skip()
+
+    def _load_window_settings(self):
+        from video_download import load_download_settings
+        self.avoid_real_minimize = load_download_settings().get('avoid_real_minimize', True)
+
+    def _replace_minimize_with_offscreen(self):
+        if self._closing_app or not self.IsIconized():
+            return
+        if self._restore_position is None:
+            self._restore_position = self.GetPosition()
+        self.Iconize(False)
+        self.SetPosition(wx.Point(-32000, -32000))
+
+    def _restore_offscreen_position(self):
+        if self._restore_position is not None:
+            self.SetPosition(self._restore_position)
+            self._restore_position = None
 
     def _sync_system_hotkeys(self, active):
         actions = set(self.global_shortcuts)
@@ -1095,6 +1256,15 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         view.LoadURL(url)
 
     def dispatch(self, action, argument=None):
+        if action == 'toggle_auto_scroll':
+            self.toggle_auto_scroll()
+            return
+        
+        # Travas de segurança: se rolar manualmente ou pausar, pede pra monitorar o vídeo novamente
+        if getattr(self, 'auto_scroll_enabled', False):
+            if action in ('next_video', 'previous_video', 'toggle_playback', 'play'):
+                wx.CallLater(1500, self._start_dynamic_timer)
+
         if action == 'exit':
             self.Close()
             return
@@ -1107,6 +1277,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 if dlg.ShowModal() == wx.ID_OK:
                     self._download_folder = load_download_folder()
                     self.shortcuts, self.global_shortcuts = load_shortcut_settings()
+                    self._load_window_settings()
                     self._configure_accelerators()
                     self._build_menu_bar()
             finally:
@@ -1168,10 +1339,17 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 return
         
         if client.pending:
-            if action in ('next_video', 'previous_video'):
-                # A global key can arrive while WebView2 finishes the previous
-                # page command. Keep the last requested direction instead of
-                # silently losing it.
+            if action in ('next_video', 'previous_video', 'toggle_playback', 'play'):
+                # A global media-key hotkey can arrive while WebView2 is
+                # still finishing the previous command -- notably next/
+                # previous can take up to several seconds while the window
+                # is backgrounded, since the page's own feed navigation
+                # needs to actually render to confirm the change. Without
+                # this, a play/pause pressed in that window was silently
+                # dropped instead of queued like next/previous already
+                # were, going unnoticed until the user came back to a
+                # video that never paused. Keep the last requested action
+                # instead of silently losing it.
                 self.platform_data.setdefault(name, {})['queued_navigation'] = action
                 self.status('Comando de navegação recebido. Ele será executado assim que o vídeo terminar de carregar.')
                 return

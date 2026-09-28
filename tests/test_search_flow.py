@@ -15,6 +15,11 @@ def mock_frame():
     frame._return_tiktok_follow_verification.side_effect = (
         lambda message: MainFrame._return_tiktok_follow_verification(frame, message)
     )
+    # A bare Mock is truthy for any auto-vivified attribute, which would trip
+    # dispatch()'s auto-scroll safety net (it calls the real wx.CallLater,
+    # needing a live wx.App) for every test that dispatches next/previous
+    # video. Match MainFrame's real default instead.
+    frame.auto_scroll_enabled = False
     return frame
 
 
@@ -188,6 +193,24 @@ def test_list_mode_navigation_intercepts_next_and_previous_video():
     MainFrame.dispatch(frame, 'previous_video')
     frame.results_list.SetSelection.assert_called_once_with(0)
     frame.open_result.assert_called_once()
+    client.execute.assert_not_called()
+
+
+def test_pending_command_queues_play_pause_instead_of_dropping_it():
+    # next/previous already got queued to run once the pending command
+    # settles. toggle_playback/play (what the media-key play/pause hotkey
+    # dispatches) did not, and was silently dropped instead -- easy to miss
+    # while away from the screen, since next/previous can take several
+    # seconds to settle (or time out) while the window is backgrounded.
+    frame = mock_frame()
+    frame._active_name = 'TikTok'
+    frame.platform_data = {'TikTok': {}}
+    client = Mock(pending=True)
+    frame.clients = {'TikTok': client}
+
+    MainFrame.dispatch(frame, 'toggle_playback')
+
+    assert frame.platform_data['TikTok']['queued_navigation'] == 'toggle_playback'
     client.execute.assert_not_called()
 
 

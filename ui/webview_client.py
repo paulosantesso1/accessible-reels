@@ -301,6 +301,7 @@ class WebViewClient:
             self._cancel('A rede não respondeu a tempo. A página foi recarregada; confira o estado antes de repetir.')
 
     def _message(self, event):
+        event.Skip()
         if not self.alive or not self.active or not self.pending or not belongs_to_platform(event.GetURL(), self.platform):
             return
         try:
