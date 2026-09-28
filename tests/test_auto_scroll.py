@@ -47,15 +47,11 @@ def test_start_dynamic_timer(frame):
         # stopping auto-scroll from continuing in the background.
         assert "setInterval(" not in script
         assert "'timeupdate'" in script
-        # Re-pauses the video if the platform (e.g. TikTok's scroll rebound)
-        # resumes it while the app is still settling on the next post --
-        # otherwise it plays a sliver, loops to 0 and "repeats a second".
-        assert "resumeGuard" in script
-        assert "video.pause()" in script
-        # ...but only while it's still the same clip: some platforms reuse
-        # this element for the next post, and that legitimate playback must
-        # not be paused by mistake.
-        assert "currentSrc" in script
+        # Advances while the video is still playing, the same state a
+        # manual next/previous always runs against. An earlier version
+        # paused the video and fought the platform resuming it, which put
+        # next/previous in a state it handled far less reliably.
+        assert "video.pause()" not in script
 
 def test_on_webview_message_triggers_next_video(frame):
     view = Mock()
@@ -142,29 +138,6 @@ def test_window_losing_focus_does_not_rearm_auto_scroll(frame):
         frame._activation_changed(event)
 
         start_timer.assert_not_called()
-
-def test_activation_change_broadcasts_real_focus_state_to_every_view(frame):
-    # document.hasFocus() does not reliably reflect whether THIS APP'S
-    # WINDOW is the Windows foreground window -- WebView2 can keep
-    # reporting page focus regardless, which let next/previous keep
-    # attempting (and hanging on) a native click that needs real OS
-    # foreground status. Push the real wx-level state into every embedded
-    # platform instead (not just the currently selected one, since the
-    # user can switch platforms while the window stays unfocused).
-    view_a, view_b = Mock(), Mock()
-    frame.views = {'TikTok': view_a, 'Instagram': view_b}
-    event = Mock()
-    event.GetActive.return_value = False
-
-    with patch.object(frame, '_sync_system_hotkeys'), \
-         patch.object(frame, '_start_dynamic_timer'):
-        frame._activation_changed(event)
-
-    for view in (view_a, view_b):
-        view.RunScriptAsync.assert_called_once()
-        script = view.RunScriptAsync.call_args[0][0]
-        assert '__accessibleWindowFocused' in script and 'false' in script
-        event.Skip.assert_called_once()
 
 def test_dispatch_intercepts_for_manual_scroll(frame):
     frame.auto_scroll_enabled = True

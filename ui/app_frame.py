@@ -1,7 +1,6 @@
 """Accessible controls and embedded social pages in one application window."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -488,33 +487,16 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     if (video.dataset.autoScrolled || video.duration <= 0) return;
                     if ((video.duration - video.currentTime) > 0.2) return;
                     video.dataset.autoScrolled = 'true';
-                    video.pause();
-                    // The feed can rebound (TikTok) or briefly keep this
-                    // same element in view while the app's own "next"
-                    // command is still asking the page to settle on the
-                    // following post. If the platform resumes THIS SAME
-                    // clip in that window, it plays a sliver, loops back
-                    // to 0 and plays again -- the video "repeats a
-                    // second". Re-pause it whenever the platform tries to
-                    // resume it, but only while it is still the same
-                    // source: some platforms reuse this very <video>
-                    // element for the next post (just swapping its src),
-                    // and that legitimate next video starting to play
-                    // must not be paused by mistake -- doing so looked
-                    // like playback randomly stopping whenever something
-                    // (losing window focus, a media key) nudged the page
-                    // in that window.
-                    const source = video.currentSrc || video.src;
-                    const resumeGuard = () => {
-                        if ((video.currentSrc || video.src) === source) {
-                            video.pause();
-                        } else {
-                            video.removeEventListener('play', resumeGuard);
-                            delete video.dataset.autoScrolled;
-                        }
-                    };
-                    video.addEventListener('play', resumeGuard);
-                    setTimeout(() => video.removeEventListener('play', resumeGuard), 5000);
+                    // Ask the app to advance while the video is still
+                    // playing, the same state a manual next/previous
+                    // always runs against -- next/previous itself needs
+                    // the page to actually process the transition, which
+                    // it can already do reliably in that state. Pausing
+                    // the video here first (an earlier version of this)
+                    // put it in a state next/previous handled much less
+                    // reliably, especially while the app window was in
+                    // the background: it could take several failed
+                    // attempts, or hang until the window regained focus.
                     window.chrome.webview.postMessage('auto_scroll_next');
                 };
 
@@ -790,18 +772,6 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _activation_changed(self, event):
         active = event.GetActive()
         self._sync_system_hotkeys(active)
-        # document.hasFocus() does not reliably reflect whether THIS APP'S
-        # WINDOW is the Windows foreground window -- WebView2 can keep
-        # reporting page focus even while the app is minimized or another
-        # window covers it, which made next/previous keep attempting (and
-        # hanging on) the native click that needs real OS foreground status.
-        # Tell every embedded page the real state directly instead.
-        script = f'window.__accessibleWindowFocused = {json.dumps(active)};'
-        for view in self.views.values():
-            try:
-                view.RunScriptAsync(script)
-            except Exception:
-                pass
         if active:
             # The embedded page can be suspended by the browser engine while
             # the window is unfocused/occluded, and any DOM changes it made

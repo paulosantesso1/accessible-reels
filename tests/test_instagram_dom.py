@@ -284,18 +284,6 @@ def test_instagram_navigates_by_scrolling_when_responsive_layout_hides_arrows(pa
     assert command(page, "previous")["author"] == "@ana"
 
 
-def test_instagram_skips_trusted_click_without_window_focus(page):
-    # click() asks the host app to synthesize a real OS-level mouse click,
-    # which isn't delivered while the app window isn't the Windows
-    # foreground window (minimized, or another window covering it) -- next/
-    # previous would hang waiting for a click that never registers. Go
-    # straight to the scroll fallback in that case, even with a navigation
-    # button present and otherwise clickable.
-    page.evaluate("() => { window.__accessibleWindowFocused = false; }")
-    assert command(page, "next")["author"] == "@errado"
-    assert page.evaluate("window.igClicks") == []
-
-
 def test_instagram_failed_social_state_is_reported_as_error(page):
     page.evaluate("document.querySelector('#like').onclick=null")
     result = command(page, "toggle_like")

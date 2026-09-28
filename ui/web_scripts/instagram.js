@@ -416,15 +416,7 @@
       const nav = buttonNamed(document, action === "next" ?
         /^(navegar para o próximo reel|go to next reel|next reel)$/i :
         /^(navegar para o reel anterior|go to previous reel|previous reel)$/i);
-      // click() asks Windows to synthesize a real mouse click, which isn't
-      // delivered while the app window isn't the OS foreground window
-      // (minimized, or another window covering it) -- it would just hang
-      // until the window regained focus. document.hasFocus() does not
-      // reliably reflect that (WebView2 can keep reporting page focus
-      // regardless), so the app pushes the real state into
-      // window.__accessibleWindowFocused instead. Go straight to the
-      // scroll fallback whenever that's false.
-      if (nav && window.__accessibleWindowFocused !== false) {
+      if (nav) {
         await click(nav);
       } else {
         // Instagram removes the arrow buttons in the narrower layout used by
