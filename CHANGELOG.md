@@ -1,5 +1,13 @@
 # Histórico de versões
 
+## 1.2.2 — 2026-09-29
+
+- Corrigida a navegação por Alt+seta (próximo/anterior vídeo), que no
+  TikTok podia falhar repetidamente com "O TikTok não mudou de vídeo".
+  Agora a troca de vídeo também tenta uma tecla de seta real, o que reage
+  diretamente na própria plataforma e não depende de botões que podem
+  mudar de marcação. Aplicado em TikTok, Instagram e YouTube.
+
 ## 1.2.1 — 2026-09-28
 
 - Corrigido o empacotamento do instalador: o arquivo com o histórico de
