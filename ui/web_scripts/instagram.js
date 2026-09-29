@@ -138,6 +138,15 @@
     });
     if (!result?.ok) throw new Error(result?.error || "O navegador recusou o clique.");
   }
+  // Best-effort: Instagram's own player already advances on a real
+  // ArrowDown/ArrowUp key press, independent of whatever nav-button markup
+  // or preloaded Reels are present -- try that before the click/scroll
+  // fallback, which depends on markup that can change. Never throws.
+  async function trustedKeyPress(key) {
+    try {
+      await transport.runtime.sendMessage({type: "accessible-reels-trusted-key", key});
+    } catch (_) {}
+  }
   async function waitFor(read, message, timeout = 5000) {
     const deadline = Date.now() + timeout;
     do {
@@ -413,12 +422,14 @@
     if (action === "next" || action === "previous") {
       await closeComments();
       const before = video.currentSrc;
-      const nav = buttonNamed(document, action === "next" ?
-        /^(navegar para o próximo reel|go to next reel|next reel)$/i :
-        /^(navegar para o reel anterior|go to previous reel|previous reel)$/i);
-      if (nav) {
-        await click(nav);
-      } else {
+      const triggerNav = async () => {
+        const nav = buttonNamed(document, action === "next" ?
+          /^(navegar para o próximo reel|go to next reel|next reel)$/i :
+          /^(navegar para o reel anterior|go to previous reel|previous reel)$/i);
+        if (nav) {
+          await click(nav);
+          return true;
+        }
         // Instagram removes the arrow buttons in the narrower layout used by
         // the embedded WebView. Move to the adjacent loaded Reel instead.
         const currentRect = video.getBoundingClientRect();
@@ -427,14 +438,32 @@
           .map(item => ({item, rect: item.getBoundingClientRect()}))
           .filter(({rect}) => action === "next" ? rect.top > currentRect.top + 20 : rect.top < currentRect.top - 20)
           .sort((a, b) => action === "next" ? a.rect.top - b.rect.top : b.rect.top - a.rect.top);
-        if (!candidates.length) {
-          throw new Error(action === "next" ?
-            "Não há um próximo Reel carregado." : "Você está no primeiro Reel carregado.");
-        }
+        if (!candidates.length) return false;
         candidates[0].item.scrollIntoView({block: "center", inline: "nearest"});
+        return true;
+      };
+      const moved = () => {const active = activeVideo(); return active && (active !== video || active.currentSrc !== before);};
+      // Try a real key press first -- Instagram's own player already
+      // advances on ArrowDown/ArrowUp, independent of whichever nav-button
+      // markup is in the DOM at the moment (that markup is what the
+      // click/scroll fallback above depends on).
+      await trustedKeyPress(action === "next" ? "ArrowDown" : "ArrowUp");
+      let triedNav = false;
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && !moved()) {
+        if (!triedNav && Date.now() >= deadline - 2500) {
+          triedNav = true;
+          if (!await triggerNav()) {
+            throw new Error(action === "next" ?
+              "Não há um próximo Reel carregado." : "Você está no primeiro Reel carregado.");
+          }
+          continue;
+        }
+        await sleep(150);
       }
-      await waitFor(() => {const active = activeVideo(); return active && (active !== video || active.currentSrc !== before);},
-        "O Instagram não mudou de Reel; você pode estar no início ou fim da lista.", 4000);
+      if (!moved()) {
+        throw new Error("O Instagram não mudou de Reel; você pode estar no início ou fim da lista.");
+      }
       // Espera o feed parar de rolar antes de ler os detalhes; o Reel seguinte
       // já cobre a maior parte da tela enquanto a rolagem ainda anima.
       let previous = null, steady = 0;

@@ -188,6 +188,16 @@
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+    // Best-effort: YouTube's own Shorts player already advances on a real
+    // ArrowDown/ArrowUp key press, independent of whichever nav-button
+    // markup is in the DOM at the moment (that markup is what the
+    // click/scroll fallback below depends on). Never throws.
+    async function trustedKeyPress(key) {
+        try {
+            await transport.runtime.sendMessage({type: "accessible-reels-trusted-key", key});
+        } catch (_) {}
+    }
+
     const NOT_INTERESTED = /^(não tenho interesse|não me interessa|não estou interessado|not interested)\b/i;
     function findNotInterestedItem() {
         const matches = [...document.querySelectorAll(
@@ -474,49 +484,56 @@
             const link = snapshot().link;
 
             const isNext = action === "next";
-            const btnSelectors = isNext 
-                ? ['#navigation-button-down button', '#navigation-button-down', '[aria-label="Próximo vídeo"]'] 
+            const btnSelectors = isNext
+                ? ['#navigation-button-down button', '#navigation-button-down', '[aria-label="Próximo vídeo"]']
                 : ['#navigation-button-up button', '#navigation-button-up', '[aria-label="Vídeo anterior"]'];
-            
-            let clicked = false;
-            for (const selector of btnSelectors) {
-                const btn = document.querySelector(selector);
-                if (btn) {
-                    btn.click(); // CORREÇÃO 3: Retirada a trava de "visibilidade" para clicar no botão oculto do YT
-                    clicked = true;
-                    break;
-                }
-            }
 
-            if (!clicked) {
+            const triggerNavClick = () => {
+                for (const selector of btnSelectors) {
+                    const btn = document.querySelector(selector);
+                    if (btn) {
+                        btn.click(); // CORREÇÃO 3: Retirada a trava de "visibilidade" para clicar no botão oculto do YT
+                        return;
+                    }
+                }
                 // Alternativa infalível: rola a tela se o botão não for encontrado
                 window.scrollBy({ top: isNext ? window.innerHeight : -window.innerHeight, behavior: 'smooth' });
-            }
+            };
+            const moved = candidate => candidate && (candidate !== video ||
+                (candidate.currentSrc || candidate.getAttribute("src")) !== source ||
+                snapshot().link !== link);
 
+            // Try a real key press first -- YouTube's own Shorts player
+            // already advances on ArrowDown/ArrowUp, independent of the
+            // nav-button markup the click/scroll fallback below depends on.
+            await trustedKeyPress(isNext ? "ArrowDown" : "ArrowUp");
+            let triedClick = false;
             // CORREÇÃO 4: Lógica de espera do TikTok para garantir que os dados atualizem na interface
             const deadline = Date.now() + 4500;
             while (Date.now() < deadline) {
                 await sleep(150);
                 const current = activeVideo();
-                const moved = candidate => candidate && (candidate !== video ||
-                    (candidate.currentSrc || candidate.getAttribute("src")) !== source ||
-                    snapshot().link !== link);
-                if (moved(current)) {
-                    // A rolagem pode ainda estar animando; espera o feed parar
-                    // e o DOM do YouTube renderizar os novos textos.
-                    let previous = null, steady = 0;
-                    const settleBy = deadline + 1500;
-                    while (Date.now() < settleBy && steady < 3) {
-                        await sleep(150);
-                        const active = activeVideo();
-                        const state = active && {active, top: Math.round(active.getBoundingClientRect().top),
-                            source: active.currentSrc || active.getAttribute("src")};
-                        steady = state && previous && state.active === previous.active &&
-                            state.top === previous.top && state.source === previous.source ? steady + 1 : 0;
-                        previous = state;
+                if (!moved(current)) {
+                    if (!triedClick && Date.now() >= deadline - 3000) {
+                        triedClick = true;
+                        triggerNavClick();
                     }
-                    if (moved(activeVideo())) return snapshot();
+                    continue;
                 }
+                // A rolagem pode ainda estar animando; espera o feed parar
+                // e o DOM do YouTube renderizar os novos textos.
+                let previous = null, steady = 0;
+                const settleBy = deadline + 1500;
+                while (Date.now() < settleBy && steady < 3) {
+                    await sleep(150);
+                    const active = activeVideo();
+                    const state = active && {active, top: Math.round(active.getBoundingClientRect().top),
+                        source: active.currentSrc || active.getAttribute("src")};
+                    steady = state && previous && state.active === previous.active &&
+                        state.top === previous.top && state.source === previous.source ? steady + 1 : 0;
+                    previous = state;
+                }
+                if (moved(activeVideo())) return snapshot();
             }
             throw new Error("O YouTube não mudou de vídeo a tempo. Tente novamente ou use F6 para acessar a página.");
         }

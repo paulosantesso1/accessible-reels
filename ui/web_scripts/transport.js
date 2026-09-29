@@ -17,14 +17,18 @@
     runtime: {
       onMessage: {addListener: fn => { listener = fn; }},
       sendMessage: message => {
-        if (message.type !== 'accessible-reels-trusted-click' || !commandToken) {
+        const isClick = message.type === 'accessible-reels-trusted-click';
+        const isKey = message.type === 'accessible-reels-trusted-key';
+        if ((!isClick && !isKey) || !commandToken) {
           return Promise.resolve({ok:false, error:'Nenhum comando do aplicativo em execução.'});
         }
         return new Promise(resolve => {
           const id = ++clickId;
-          const timeout = setTimeout(() => { waiting.delete(id); resolve({ok:false, error:'O clique não respondeu a tempo.'}); }, 5000);
+          const timeout = setTimeout(() => { waiting.delete(id); resolve({ok:false, error:'O comando não respondeu a tempo.'}); }, 5000);
           waiting.set(id, result => { clearTimeout(timeout); resolve(result); });
-          window.reelsHost.postMessage(JSON.stringify({
+          window.reelsHost.postMessage(JSON.stringify(isKey ? {
+            type:'key', token:commandToken, id, key:message.key
+          } : {
             type:'click', token:commandToken, id, x:message.x, y:message.y,
             follow_diagnostic: message.follow_diagnostic
           }));

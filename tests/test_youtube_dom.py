@@ -22,12 +22,23 @@ def page(browser):
     ''')
     page.evaluate('''() => {
       window.ytStorage = {accessibleReelsYouTubeVolume: 0.35, accessibleReelsYouTubeMuted: false};
+      window.dispatchedKeys = [];
       window.__accessibleTransport = {
         storage: {local: {
           get: async () => window.ytStorage,
           set: async values => Object.assign(window.ytStorage, values)
         }},
-        runtime: {onMessage: {addListener: handler => window.ytListener = handler}}
+        runtime: {
+          onMessage: {addListener: handler => window.ytListener = handler},
+          sendMessage: async ({type, key}) => {
+            if (type === 'accessible-reels-trusted-key') {
+              window.dispatchedKeys.push(key);
+              document.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+              document.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles: true, cancelable: true}));
+            }
+            return {ok: true};
+          }
+        }
       };
       window.ytCommand = (action, argument) => new Promise(resolve =>
         window.ytListener({type:'accessible-reels-command', platform:'youtube', action, argument}, {}, resolve));
@@ -40,6 +51,38 @@ def page(browser):
 
 def command(page, action):
     return page.evaluate("action => window.ytCommand(action)", action)
+
+
+@pytest.mark.parametrize("action, key", [("next", "ArrowDown"), ("previous", "ArrowUp")])
+def test_youtube_navigation_uses_native_key_press_before_any_button(page, action, key):
+    # No navigation button at all: only a real key press (which the mocked
+    # transport turns into a genuine keydown/keyup) can advance this Short,
+    # mirroring how YouTube's own player reacts to arrow keys regardless of
+    # whatever nav-button markup it currently ships.
+    page.evaluate("""key => {
+      document.addEventListener('keydown', event => {
+        if (event.key === key) document.querySelector('video').setAttribute('src', 'next.mp4');
+      });
+    }""", key)
+    result = command(page, action)
+    assert result['ok'] is True
+    assert page.evaluate("window.dispatchedKeys") == [key]
+
+
+@pytest.mark.parametrize("action, selector", [
+    ("next", "navigation-button-down"), ("previous", "navigation-button-up"),
+])
+def test_youtube_navigation_falls_back_to_the_nav_button(page, action, selector):
+    # No keydown listener responds here, so the key press is a no-op and the
+    # existing button-click fallback must still take over.
+    page.evaluate("""selector => {
+      const button = document.createElement('button');
+      button.id = selector;
+      button.onclick = () => document.querySelector('video').setAttribute('src', 'next.mp4');
+      document.body.append(button);
+    }""", selector)
+    result = command(page, action)
+    assert result['ok'] is True
 
 
 def test_youtube_audio_preference_is_saved_and_reapplied(page):

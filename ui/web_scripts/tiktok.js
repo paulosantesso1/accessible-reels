@@ -304,6 +304,18 @@
     }
   }
 
+  // Best-effort: TikTok's own feed already advances on a real ArrowDown/
+  // ArrowUp key press, independent of whichever nav-button markup is in the
+  // DOM at the moment (that markup is what the click/scroll fallback below
+  // depends on, and TikTok has been observed changing it). Never throws --
+  // the caller keeps polling for a video change and falls back to the
+  // click/scroll path if this didn't produce one.
+  async function trustedKeyPress(key) {
+    try {
+      await transport.runtime.sendMessage({type: "accessible-reels-trusted-key", key});
+    } catch (_) {}
+  }
+
   function activeVideo() {
     const width = Math.max(document.documentElement.clientWidth, innerWidth || 0);
     const height = Math.max(document.documentElement.clientHeight, innerHeight || 0);
@@ -1102,32 +1114,46 @@
         const target = document.elementFromPoint(x, y);
         return target && element.contains(target);
       };
-      const nearby = findNearVideo(selectors);
-      const button = (onScreen(nearby) && nearby) ||
-        [...document.querySelectorAll(selectors.join(","))].find(onScreen);
-      // Scrolling a navigation button into the center can move a scroll-snap
-      // feed back onto the current item before the click even reaches TikTok.
-      if (button) await trustedClick(button, false);
-      else {
-        let scroller = video.parentElement;
-        while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
-            /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
-          scroller = scroller.parentElement;
+      const triggerNavClick = async () => {
+        const nearby = findNearVideo(selectors);
+        const button = (onScreen(nearby) && nearby) ||
+          [...document.querySelectorAll(selectors.join(","))].find(onScreen);
+        // Scrolling a navigation button into the center can move a scroll-snap
+        // feed back onto the current item before the click even reaches TikTok.
+        if (button) await trustedClick(button, false);
+        else {
+          let scroller = video.parentElement;
+          while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
+              /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+            scroller = scroller.parentElement;
+          }
+          scroller = scroller || document.scrollingElement;
+          if (scroller) scroller.scrollBy({
+            top: (action === "next" ? 1 : -1) * scroller.clientHeight,
+            behavior: "smooth"
+          });
         }
-        scroller = scroller || document.scrollingElement;
-        if (scroller) scroller.scrollBy({
-          top: (action === "next" ? 1 : -1) * scroller.clientHeight,
-          behavior: "smooth"
-        });
-      }
+      };
       const moved = current => current && (current !== video ||
         (current.currentSrc || current.getAttribute("src")) !== source ||
         snapshot().link !== link);
+      // Try a real key press first -- it survives nav-button markup changes
+      // that break the selectors/scroll fallback above. Give it a short
+      // window before falling back, so a working key press isn't slowed
+      // down by also clicking (which could then double-advance).
+      await trustedKeyPress(action === "next" ? "ArrowDown" : "ArrowUp");
+      let triedClick = false;
       const deadline = Date.now() + 4500;
       while (Date.now() < deadline) {
         await sleep(150);
         stabilizeAudio();
-        if (!moved(activeVideo())) continue;
+        if (!moved(activeVideo())) {
+          if (!triedClick && Date.now() >= deadline - 3000) {
+            triedClick = true;
+            await triggerNavClick();
+          }
+          continue;
+        }
         // O vídeo seguinte já cobre a maior parte da tela enquanto a rolagem
         // ainda anima, e ela pode voltar ao vídeo anterior. Só lemos os
         // detalhes depois que o feed para de se mexer.

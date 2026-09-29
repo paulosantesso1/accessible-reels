@@ -31,7 +31,13 @@ def install_embedded_tiktok(page):
         storage: {local: {get: async () => ({}), set: async () => {}}},
         runtime: {
           onMessage: {addListener: fn => { window.commandListener = fn; }},
-          sendMessage: async ({x, y}) => {
+          sendMessage: async ({type, x, y, key}) => {
+            if (type === 'accessible-reels-trusted-key') {
+              window.dispatchedKeys = (window.dispatchedKeys || []).concat(key);
+              document.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+              document.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles: true, cancelable: true}));
+              return {ok: true};
+            }
             document.elementFromPoint(x, y).click();
             return {ok: true};
           }
@@ -508,6 +514,24 @@ def test_embedded_navigation_scrolls_feed_container(page, action, start, end):
     assert page.evaluate("action => command(action)", action)['ok'] is True
     page.wait_for_function("top => Math.abs(document.querySelector('#feed').scrollTop - top) < 2", arg=end)
     assert page.evaluate("window.scrollY") == 0
+
+
+@pytest.mark.parametrize("action, key", [("next", "ArrowDown"), ("previous", "ArrowUp")])
+def test_embedded_navigation_uses_native_key_press_before_any_button(page, action, key):
+    # No navigation button at all: only a real key press (which the mocked
+    # transport turns into a genuine keydown/keyup) can advance this feed,
+    # mirroring how TikTok's own player reacts to arrow keys regardless of
+    # whatever nav-button markup it currently ships.
+    page.set_content('''<video id="active"></video>''')
+    install_embedded_tiktok(page)
+    page.evaluate("""key => {
+      document.addEventListener('keydown', event => {
+        if (event.key === key) document.querySelector('video').setAttribute('src', 'next.mp4');
+      });
+    }""", key)
+    result = page.evaluate("action => command(action)", action)
+    assert result['ok'] is True
+    assert page.evaluate("window.dispatchedKeys") == [key]
 
 
 def test_embedded_navigation_does_not_report_replay_as_next_video(page):

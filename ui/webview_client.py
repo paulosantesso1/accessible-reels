@@ -306,14 +306,23 @@ class WebViewClient:
             return
         try:
             value = json.loads(event.GetString())
-            if value.get('type') != 'click' or value.get('token') != self.pending['token']:
+            message_type = value.get('type')
+            if message_type not in ('click', 'key') or value.get('token') != self.pending['token']:
                 return
-            identifier, x, y = value.get('id'), value.get('x'), value.get('y')
+            identifier = value.get('id')
             if type(identifier) is not int or identifier in self.pending['clicks']:
                 return
-            width, height = self.view.GetClientSize()
-            if any(type(n) not in (float, int) or not math.isfinite(n) for n in (x, y)) or not (0 <= x < width and 0 <= y < height):
-                return
+            if message_type == 'click':
+                x, y = value.get('x'), value.get('y')
+                width, height = self.view.GetClientSize()
+                if any(type(n) not in (float, int) or not math.isfinite(n) for n in (x, y)) or not (0 <= x < width and 0 <= y < height):
+                    return
+            else:
+                # Only the "next"/"previous" fallback dispatches real key
+                # presses, and only these two: keep the channel narrow.
+                key = value.get('key')
+                if key not in ('ArrowDown', 'ArrowUp') or self.pending['action'] not in ('next', 'previous'):
+                    return
             if len(self.pending['clicks']) >= 4:
                 return
         except (TypeError, ValueError, AttributeError):
@@ -330,11 +339,14 @@ class WebViewClient:
         def valid():
             return (self.alive and self.active and generation == self.generation and
                     self.pending is not None and self.pending['token'] == token)
-        def clicked(ok, error):
+        def done(ok, error):
             if valid():
                 response = json.dumps({'ok':ok, 'error':error}, ensure_ascii=True)
                 self.view.RunScriptAsync(f'window.__accessibleClickDone?.({identifier}, {response});')
-        webview_native.click(self.view, x, y, clicked, valid)
+        if message_type == 'click':
+            webview_native.click(self.view, value.get('x'), value.get('y'), done, valid)
+        else:
+            webview_native.key_press(self.view, value.get('key'), done, valid)
 
     def close(self):
         self.alive = False

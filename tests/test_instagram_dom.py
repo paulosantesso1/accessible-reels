@@ -46,6 +46,7 @@ def page(browser, request):
     page.evaluate('''() => {
       window.igStorage = {};
       window.igClicks = [];
+      window.dispatchedKeys = [];
       window.__accessibleTransport = {
         storage: {local: {
           get: async () => window.igStorage,
@@ -58,6 +59,11 @@ def page(browser, request):
               const target = document.elementFromPoint(message.x, message.y).closest('button,[role=button]');
               window.igClicks.push(target.id || target.textContent);
               target.click();
+            }
+            if (message.type === 'accessible-reels-trusted-key') {
+              window.dispatchedKeys.push(message.key);
+              document.dispatchEvent(new KeyboardEvent('keydown', {key: message.key, bubbles: true, cancelable: true}));
+              document.dispatchEvent(new KeyboardEvent('keyup', {key: message.key, bubbles: true, cancelable: true}));
             }
             return {ok:true};
           }
@@ -276,6 +282,35 @@ def test_instagram_plain_letters_do_not_intercept_comment_typing(page):
 def test_instagram_next_and_previous_change_active_reel(page):
     assert command(page, "next")["author"] == "@errado"
     assert command(page, "previous")["author"] == "@ana"
+
+
+def test_instagram_navigation_uses_native_key_press_before_any_button(page):
+    # No nav button and no adjacent Reel: only a real key press (which the
+    # mocked transport turns into a genuine keydown) can move this one,
+    # mirroring how Instagram's own player reacts to arrow keys regardless
+    # of whatever nav-button markup or preloaded Reels are on screen.
+    page.evaluate("""() => {
+      document.querySelectorAll('[aria-label^="Navegar"]').forEach(b => b.parentElement.remove());
+      document.querySelector('#other').remove();
+      document.addEventListener('keydown', event => {
+        if (event.key === 'ArrowDown') {
+          document.querySelector('#v1').setAttribute('src', 'https://s.cdninstagram.com/next.mp4');
+        }
+      });
+    }""")
+    result = command(page, "next")
+    assert result['ok'] is True
+    assert page.evaluate("window.dispatchedKeys") == ['ArrowDown']
+
+
+def test_instagram_next_without_button_or_loaded_reel_reports_end_of_list(page):
+    page.evaluate("""() => {
+      document.querySelectorAll('[aria-label^="Navegar"]').forEach(b => b.parentElement.remove());
+      document.querySelector('#other').remove();
+    }""")
+    result = command(page, "next")
+    assert result['ok'] is False
+    assert result['error'] == 'Não há um próximo Reel carregado.'
 
 
 def test_instagram_navigates_by_scrolling_when_responsive_layout_hides_arrows(page):

@@ -123,3 +123,33 @@ def click(view, x, y, callback, still_valid=lambda: True):
     call_devtools(view, 'Input.dispatchMouseEvent', {
         **parameters, 'type': 'mousePressed',
     }, pressed)
+
+
+# windowsVirtualKeyCode/nativeVirtualKeyCode values for VK_UP/VK_DOWN, the
+# only keys this dispatches; keep this list narrow, it is not a general
+# keyboard API.
+_KEY_EVENT_PARAMETERS = {
+    'ArrowDown': {'key': 'ArrowDown', 'code': 'ArrowDown', 'windowsVirtualKeyCode': 40, 'nativeVirtualKeyCode': 40},
+    'ArrowUp': {'key': 'ArrowUp', 'code': 'ArrowUp', 'windowsVirtualKeyCode': 38, 'nativeVirtualKeyCode': 38},
+}
+
+
+def key_press(view, key, callback, still_valid=lambda: True):
+    """Dispatch a trusted key press (down+up) via CDP; only ArrowDown/ArrowUp."""
+    parameters = _KEY_EVENT_PARAMETERS.get(key)
+    if parameters is None:
+        callback(False, 'Tecla não suportada.')
+        return
+    def down(_payload, error):
+        if error:
+            callback(False, error)
+            return
+        if not still_valid():
+            callback(False, 'A página mudou durante o comando.')
+            return
+        call_devtools(view, 'Input.dispatchKeyEvent', {
+            **parameters, 'type': 'keyUp',
+        }, lambda _p, err: callback(not err, err))
+    call_devtools(view, 'Input.dispatchKeyEvent', {
+        **parameters, 'type': 'keyDown',
+    }, down)

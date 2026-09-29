@@ -90,6 +90,53 @@ def test_follow_click_diagnostic_is_logged_without_labels_or_text():
     click.assert_called_once()
 
 
+def test_key_message_dispatches_native_key_press_during_navigation():
+    client = make_client()
+    client.pending = {'token': 'token', 'clicks': set(), 'action': 'next'}
+    event = Mock()
+    event.GetURL.return_value = 'https://www.tiktok.com/'
+    event.GetString.return_value = json.dumps({
+        'type': 'key', 'token': 'token', 'id': 1, 'key': 'ArrowDown',
+    })
+
+    with patch('ui.webview_client.webview_native.key_press') as key_press:
+        client._message(event)
+
+    key_press.assert_called_once()
+    assert key_press.call_args.args[1] == 'ArrowDown'
+
+
+@pytest.mark.parametrize('action', ('toggle', 'toggle_like', 'author'))
+def test_key_message_is_ignored_outside_navigation_commands(action):
+    client = make_client()
+    client.pending = {'token': 'token', 'clicks': set(), 'action': action}
+    event = Mock()
+    event.GetURL.return_value = 'https://www.tiktok.com/'
+    event.GetString.return_value = json.dumps({
+        'type': 'key', 'token': 'token', 'id': 1, 'key': 'ArrowDown',
+    })
+
+    with patch('ui.webview_client.webview_native.key_press') as key_press:
+        client._message(event)
+
+    key_press.assert_not_called()
+
+
+def test_key_message_rejects_keys_outside_the_arrow_allowlist():
+    client = make_client()
+    client.pending = {'token': 'token', 'clicks': set(), 'action': 'next'}
+    event = Mock()
+    event.GetURL.return_value = 'https://www.tiktok.com/'
+    event.GetString.return_value = json.dumps({
+        'type': 'key', 'token': 'token', 'id': 1, 'key': 'Enter',
+    })
+
+    with patch('ui.webview_client.webview_native.key_press') as key_press:
+        client._message(event)
+
+    key_press.assert_not_called()
+
+
 def test_checked_navigation_cancels_callback_on_a_different_profile():
     client = make_client()
     loaded = Mock()
