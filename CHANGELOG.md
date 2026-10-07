@@ -1,5 +1,23 @@
 # Histórico de versões
 
+## 1.3.0 — 2026-10-07
+
+- Meus vídeos curtidos e favoritos do TikTok: Alt+Shift+L lista os vídeos que
+  você curtiu e Alt+Shift+F lista os favoritos, direto na aba de resultados.
+  A lista abre assim que os primeiros 50 vídeos ficam prontos e continua
+  carregando em segundo plano, até 500 vídeos. Dentro da lista, Enter abre o
+  vídeo, Alt+seta passa para o próximo ou o anterior e Ctrl+R volta à lista.
+  Alt+L descurte e Alt+F remove dos favoritos o vídeo aberto.
+- Shorts curtidos no YouTube: com o YouTube Shorts aberto, Alt+Shift+L lista
+  os Shorts que você curtiu.
+- Download em lote: Ctrl+Shift+L baixa todos os vídeos da lista que está na
+  tela, um por vez, pulando os que já estão na pasta. Pressione de novo para
+  cancelar.
+- Instagram: corrigido o vídeo que começava a tocar, parava e voltava do
+  início ao abrir um Reel por link. Agora ele só começa depois de carregado
+  e, se o Instagram recriar o player logo no começo, o vídeo continua de onde
+  estava em vez de repetir o início.
+
 ## 1.2.2 — 2026-09-29
 
 - Corrigida a navegação por Alt+seta (próximo/anterior vídeo), que no
