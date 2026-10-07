@@ -278,3 +278,117 @@ def test_comment_writing_commands_are_not_accepted(action):
     client = make_client()
     with pytest.raises(ValueError, match='Comando desconhecido'):
         client.execute(action, None, Mock())
+
+
+def navigating_event(url):
+    event = Mock()
+    event.IsTargetMainFrame.return_value = True
+    event.GetURL.return_value = url
+    return event
+
+
+VIDEO = 'https://www.tiktok.com/@ana/video/7693578824465927444'
+
+
+def test_same_page_renavigation_reruns_play_silently():
+    client = make_client()
+    client.target_url = VIDEO
+    client.view.GetCurrentURL.return_value = VIDEO
+    callback, post_load = Mock(), Mock()
+    client._last_after_load = post_load
+    client.pending = {'callback': callback, 'timer': Mock(), 'action': 'play'}
+    with patch('ui.webview_client.wx.CallAfter') as deferred:
+        client._navigating(navigating_event(VIDEO))
+    deferred.call_args.args[0]()
+    assert callback.call_args.args[0] == {'ok': False, 'ignored': True}
+    assert client.after_load is post_load
+    assert client._rearms == 1
+
+
+def test_same_page_renavigation_during_refresh_is_silent():
+    client = make_client()
+    client.target_url = VIDEO
+    client.view.GetCurrentURL.return_value = VIDEO
+    callback = Mock()
+    client.pending = {'callback': callback, 'timer': Mock(), 'action': 'refresh_info'}
+    with patch('ui.webview_client.wx.CallAfter') as deferred:
+        client._navigating(navigating_event(VIDEO))
+    deferred.call_args.args[0]()
+    assert callback.call_args.args[0] == {'ok': False, 'ignored': True}
+
+
+def test_rerun_stops_after_two_attempts_and_then_reports_the_change():
+    client = make_client()
+    client.target_url = VIDEO
+    client.view.GetCurrentURL.return_value = VIDEO
+    client._last_after_load = Mock()
+    client._rearms = 2
+    callback = Mock()
+    client.pending = {'callback': callback, 'timer': Mock(), 'action': 'play'}
+    with patch('ui.webview_client.wx.CallAfter') as deferred:
+        client._navigating(navigating_event(VIDEO))
+    deferred.call_args.args[0]()
+    assert callback.call_args.args[0]['ok'] is False and 'ignored' not in callback.call_args.args[0]
+
+
+def test_navigation_to_another_page_still_cancels_play_with_a_message():
+    client = make_client()
+    client.target_url = VIDEO
+    client.view.GetCurrentURL.return_value = VIDEO
+    client._last_after_load = Mock()
+    callback = Mock()
+    client.pending = {'callback': callback, 'timer': Mock(), 'action': 'play'}
+    with patch('ui.webview_client.wx.CallAfter') as deferred:
+        client._navigating(navigating_event('https://www.tiktok.com/@other/video/999'))
+    deferred.call_args.args[0]()
+    assert 'A página mudou' in callback.call_args.args[0]['error']
+
+
+def aborted_event():
+    event = Mock()
+    event.GetTarget.return_value = ''
+    event.GetURL.return_value = 'https://www.tiktok.com/'
+    event.GetInt.return_value = 0
+    event.GetString.return_value = 'COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED'
+    return event
+
+
+def test_aborted_navigation_is_not_announced_while_another_page_loads():
+    client = make_client()
+    client.ready = False
+    client.generation = 3
+    with patch('ui.webview_client.wx.CallLater') as later:
+        client._error(aborted_event())
+    client.on_error.assert_not_called()
+    assert later.call_args.args[0] == 4000
+
+
+def test_aborted_navigation_is_a_failure_only_if_nothing_loads_afterwards():
+    client = make_client()
+    client.ready = False
+    client.generation = 3
+    client._retry_url = None
+    pending_callback = Mock()
+    client.pending = {'callback': pending_callback, 'timer': Mock(), 'action': 'play'}
+    client._aborted_without_load(3, '')
+    pending_callback.assert_called_once()
+    assert 'Falha ao carregar a página' in pending_callback.call_args.args[0]['error']
+
+
+def test_aborted_watch_is_ignored_once_the_page_loaded_or_changed():
+    client = make_client()
+    client.generation = 5
+    client.ready = True
+    client._aborted_without_load(5, '')
+    client.ready = False
+    client._aborted_without_load(4, '')
+    client.on_error.assert_not_called()
+
+
+def test_a_loaded_page_cancels_the_abort_watch():
+    client = make_client()
+    watch = Mock()
+    client._abort_watch = watch
+    client._stop_abort_watch()
+    watch.Stop.assert_called_once()
+    assert client._abort_watch is None

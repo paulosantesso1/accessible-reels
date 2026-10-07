@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import threading
 import ctypes
 from ctypes import wintypes
@@ -24,7 +25,7 @@ from ui.shortcuts import (MEDIA_ACTIONS, SEEK_SECONDS, SHORTCUT_DEFINITIONS, acc
                           action_shortcut, load_shortcut_settings,
                           shortcut_to_windows)
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
-from tiktok.search import search_url, normalize_search_results, validate_search_result_url
+from tiktok.search import search_url, normalize_search_results, validate_search_result_url, LIBRARY_LIMIT
 from instagram.search import normalize_reel_results, validate_reel_url
 from youtube.search import normalize_youtube_results, validate_youtube_url
 from tiktok.video_controls import VideoControlError
@@ -96,6 +97,12 @@ def instagram_fallback_queries(query):
         if candidate and candidate.casefold() != original and candidate.casefold() not in {item.casefold() for item in unique}:
             unique.append(candidate)
     return tuple(unique)
+
+
+LIBRARY_NAMES = {'liked': 'curtidos', 'favorites': 'favoritos'}
+LIBRARY_FIRST_BATCH = 50
+LIBRARY_FIRST_WAIT = 25  # seconds to wait for the first batch before opening with what exists
+YOUTUBE_LIKED_URL = 'https://www.youtube.com/playlist?list=LL'
 
 
 def merge_search_results(current, additional):
@@ -251,6 +258,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         )
         self.views, self.clients, self.platform_data = {}, {}, {}
         self._active_name = 'TikTok'
+        self._library_worker = None
         self._pending_page_focus = None
         self._closing_app = False
         self._login_windows = set()
@@ -359,6 +367,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._append_menu_item(platform, 'Abrir link...', self.open_link, key('open_link'))
         self._append_menu_item(platform, 'Voltar aos resultados da pesquisa', self.return_to_results, key('return_results'))
         self._append_menu_item(platform, 'Voltar ao feed', self.home, key('home'))
+        platform.AppendSeparator()
+        self._append_menu_item(platform, 'Meus vídeos curtidos (TikTok)', lambda event: self.open_library('liked'), key('open_liked'))
+        self._append_menu_item(platform, 'Meus vídeos favoritos (TikTok)', lambda event: self.open_library('favorites'), key('open_favorites'))
+        platform.AppendSeparator()
         self._append_menu_item(platform, 'Recarregar página', self.reload)
         bar.Append(platform, '&Plataforma')
 
@@ -399,6 +411,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         settings.AppendSeparator()
         self._append_menu_item(settings, 'Baixar vídeo atual', self.start_video_download, key('download_video'))
         self._append_menu_item(settings, 'Baixar áudio do vídeo atual', self.start_audio_download, key('download_audio'))
+        self._append_menu_item(settings, 'Baixar todos os vídeos da lista...', self.start_list_download, key('download_list'))
         self._append_menu_item(settings, 'Escolher pasta de downloads...', self.choose_download_folder)
         self._append_menu_item(settings, 'Abrir pasta de downloads', self.open_download_folder)
         bar.Append(settings, '&Configurações')
@@ -468,6 +481,170 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 self.status('Atualizando feed do ' + name + '...')
             else:
                 self.open_network()
+
+    def open_library(self, kind):
+        """List the logged-in account's liked (TikTok, YouTube Shorts) or saved (TikTok) videos."""
+        if self._closing_app or kind not in LIBRARY_NAMES:
+            return
+        if self._active_name == 'YouTube':
+            self._open_youtube_library(kind)
+            return
+        if self._active_name == 'Instagram':
+            self.status('O Instagram não permite listar os vídeos curtidos ou salvos. '
+                        'Use Ctrl+1 para o TikTok ou Ctrl+3 para o YouTube.')
+            return
+        client = self.clients.get('TikTok')
+        if client and client.pending:
+            self.status('Aguarde o comando anterior.')
+            return
+        label = LIBRARY_NAMES[kind]
+        self._cancel_library()
+        self.network.SetStringSelection('TikTok')
+        self.open_network(
+            url=PLATFORM_URLS['TikTok'],
+            after_load=lambda: self.dispatch('own_profile', kind)
+            if self._active_name == 'TikTok' and not self._closing_app else None,
+        )
+        if self._active_name != 'TikTok' or 'TikTok' not in self.clients:
+            return
+        self._reset_library_state('TikTok')
+        self.status(f'Procurando seus vídeos {label} no TikTok...')
+
+    def _open_youtube_library(self, kind):
+        """Liked Shorts: the main page loads the playlist silently, a hidden page lists it."""
+        if kind != 'liked':
+            self.status('No YouTube Shorts só existe a lista de curtidos. Use Alt+Shift+L.')
+            return
+        client = self.clients.get('YouTube')
+        if client and client.pending:
+            self.status('Aguarde o comando anterior.')
+            return
+        self._cancel_library()
+        self.network.SetStringSelection('YouTube')
+        self.open_network(
+            url=YOUTUBE_LIKED_URL,
+            after_load=lambda: self._start_library_worker('YouTube', kind, YOUTUBE_LIKED_URL)
+            if self._active_name == 'YouTube' and not self._closing_app else None,
+        )
+        if self._active_name != 'YouTube' or 'YouTube' not in self.clients:
+            return
+        self._reset_library_state('YouTube')
+        self.status('Procurando os Shorts que você curtiu no YouTube...')
+
+    def _reset_library_state(self, name):
+        data = self.platform_data[name]
+        data['results'] = ()
+        data['result_index'] = 0
+        data['is_list_mode'] = False
+        for key in ('search_url', 'opening_profile', 'library'):
+            data.pop(key, None)
+        self._restore_fields()
+        self.activities.SetSelection(2)
+        self._set_search_loading(True)
+
+    def _start_library_worker(self, name, kind, profile_url):
+        """List the account's tab on a hidden page, so videos can be opened meanwhile."""
+        from ui.background_library import BackgroundLibrary
+        client = self.clients[name]
+        # The page that was only used to find the list must be silent.
+        client.set_active(False)
+        self._cancel_library()
+        try:
+            worker = BackgroundLibrary(
+                self.panel, kind, profile_url,
+                lambda w, raw, done: self._library_update(w, name, kind, raw, done),
+                lambda w, message: self._library_error(w, name, kind, message),
+                platform=name,
+            )
+            self._library_worker = worker
+            worker.start()
+        except Exception:
+            logger.exception('Could not start the liked/saved list worker')
+            self._library_worker = None
+            self._set_search_loading(False)
+            self.status('Não foi possível carregar a lista.')
+            return
+        self.status(f'Carregando seus vídeos {LIBRARY_NAMES[kind]}. A lista abre quando os primeiros '
+                    f'{LIBRARY_FIRST_BATCH} estiverem prontos.')
+
+    def _cancel_library(self):
+        worker = getattr(self, '_library_worker', None)
+        self._library_worker = None
+        if worker:
+            worker.close()
+
+    def _library_update(self, worker, name, kind, raw, finished):
+        if worker is not self._library_worker or self._closing_app:
+            return
+        data = self.platform_data.get(name)
+        if data is None:
+            return
+        normalize = normalize_youtube_results if name == 'YouTube' else normalize_search_results
+        results = normalize(raw, LIBRARY_LIMIT)
+        label = LIBRARY_NAMES[kind]
+        first = data.get('library') != kind
+        waited = time.monotonic() - getattr(worker, 'created', time.monotonic())
+        if (first and len(results) < LIBRARY_FIRST_BATCH and not finished
+                and not (results and waited >= LIBRARY_FIRST_WAIT)):
+            self.SetStatusText(f'Carregando seus vídeos {label}: {len(results)}...')
+            return
+        if finished:
+            self._library_worker = None
+        data['library'] = kind
+        grown = len(results) > len(data.get('results', ()))
+        if first or grown:
+            data['results'] = results
+            if self._active_name == name:
+                self._show_library_results(results, first)
+        if first:
+            data['result_index'] = 0
+            self._set_search_loading(False)
+            self.clients[name].set_active(False)
+            self.activities.SetSelection(2)
+            self.results_list.SetFocus()
+            if not results:
+                self.status(f'Nenhum vídeo {label[:-1]} encontrado. A lista pode estar vazia, '
+                            'privada ou exigir login (F6).')
+                return
+            undo = 'Alt+F remove dos favoritos' if kind == 'favorites' else 'Alt+L descurte'
+            if finished:
+                self.status(f'{len(results)} vídeos {label}. Enter abre um vídeo; nele, {undo}. '
+                            'Ctrl+Shift+L baixa todos.')
+            else:
+                self.status(f'{len(results)} vídeos {label} prontos; o restante continua carregando em '
+                            f'segundo plano. Enter abre um vídeo; nele, {undo}.')
+        elif finished:
+            message = f'Lista completa: {len(results)} vídeos {label}. Ctrl+Shift+L baixa todos.'
+            if len(results) >= LIBRARY_LIMIT:
+                message += f' A lista mostra no máximo {LIBRARY_LIMIT} vídeos.'
+            self.status(message)
+        elif grown:
+            self.SetStatusText(f'Carregando seus vídeos {label}: {len(results)}...')
+
+    def _show_library_results(self, results, replace):
+        """Append new cards to the visible list without disturbing the user's position."""
+        current = tuple(self._results)
+        if not replace and results[:len(current)] == current:
+            for item in results[len(current):]:
+                self.results_list.Append(item.label)
+            self._results = results
+            return
+        self._results = results
+        self.results_list.Set([item.label for item in results])
+        if results:
+            self.results_list.SetSelection(0)
+
+    def _library_error(self, worker, name, kind, message):
+        if worker is not self._library_worker or self._closing_app:
+            return
+        self._library_worker = None
+        data = self.platform_data.get(name, {})
+        self._set_search_loading(False)
+        if data.get('library') == kind and data.get('results'):
+            self.status(f'Não foi possível carregar o restante da lista: {message} '
+                        f'{len(data["results"])} vídeos disponíveis.')
+        else:
+            self._platform_error(name, message)
 
     def _build_video_controls(self):
         page = wx.Panel(self.activities)
@@ -787,6 +964,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if action == 'open_link': self.open_link(); return
         if action == 'download_video': self.start_video_download(); return
         if action == 'download_audio': self.start_audio_download(); return
+        if action == 'download_list': self.start_list_download(); return
+        if action == 'open_liked': self.open_library('liked'); return
+        if action == 'open_favorites': self.open_library('favorites'); return
         if action == 'return_results': self.return_to_results(); return
         if action == 'home': self.home(); return
         self.dispatch(MEDIA_ACTIONS.get(action, action))
@@ -1320,6 +1500,19 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
             
         is_list_mode = self.platform_data.get(name, {}).get('is_list_mode', False)
+        if (not is_list_mode and not client.active and self._results
+                and action in ('next_video', 'previous_video')):
+            # The list is on screen and no video is open yet: Alt+Down/Up open
+            # the item below/above the selection instead of failing silently.
+            step = 1 if action == 'next_video' else -1
+            current = self.results_list.GetSelection()
+            target = 0 if current == wx.NOT_FOUND else current + step
+            if 0 <= target < len(self._results):
+                self.results_list.SetSelection(target)
+                self.open_result()
+            else:
+                self.status('Fim da lista de vídeos.' if step > 0 else 'Início da lista de vídeos.')
+            return
         if is_list_mode:
             if action == 'next_video':
                 current = self.results_list.GetSelection()
@@ -1491,7 +1684,17 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             if field in result:
                 data[field] = result[field]
         active = name == self._active_name
+        if name == 'TikTok' and action == 'own_profile':
+            if argument in LIBRARY_NAMES and result.get('profile_url'):
+                self._start_library_worker('TikTok', argument, result['profile_url'])
+            else:
+                self._set_search_loading(False)
+                self.status('Não foi possível identificar o seu perfil.')
+            return
         if 'results' in result:
+            # Any other list replaces the liked/saved one still loading.
+            self._cancel_library()
+            data.pop('library', None)
             if name == 'TikTok':
                 normalize = normalize_search_results
             elif name == 'YouTube':
@@ -1730,6 +1933,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         context = self.platform_data.get('TikTok', {}).pop('follow_verification', None)
         if context and context.get('worker'):
             context['worker'].close()
+        self._cancel_library()
         self._release_hotkey()
         if getattr(self, '_link_server', None):
             self._link_server.close()

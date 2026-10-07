@@ -53,7 +53,7 @@ def validate_youtube_url(value: Any) -> str:
     return f"https://www.youtube.com/shorts/{video_id}"
 
 
-def normalize_youtube_results(values: Any) -> tuple[SearchResult, ...]:
+def normalize_youtube_results(values: Any, limit: int = 50) -> tuple[SearchResult, ...]:
     """Keep only canonical Shorts returned by the YouTube search page."""
     if not isinstance(values, list):
         return ()
@@ -77,6 +77,6 @@ def normalize_youtube_results(values: Any) -> tuple[SearchResult, ...]:
             " ".join(str(value.get("author") or "YouTube").split()),
             " ".join(str(value.get("description") or "Short sem título").split()),
         ))
-        if len(results) >= 50:
+        if len(results) >= limit:
             break
     return tuple(results)

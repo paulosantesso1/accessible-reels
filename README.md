@@ -190,6 +190,41 @@ O Windows pede confirmação ao substituir um arquivo existente; o arquivo anter
 é preservado até o novo download terminar. O menu **Configurações** permite baixar,
 trocar ou abrir essa pasta.
 
+### Meus vídeos curtidos e favoritos (TikTok)
+
+Com a conta do TikTok logada na página (F6), use:
+
+- **Alt+Shift+L**: lista os vídeos que você curtiu;
+- **Alt+Shift+F**: lista os vídeos que você favoritou;
+- **Ctrl+Shift+L**: baixa todos os vídeos da lista que está na tela.
+
+Os atalhos funcionam de qualquer lugar do aplicativo, inclusive com o TikTok ainda fechado, e também estão no
+menu **Plataforma** (`Meus vídeos curtidos` e `Meus vídeos favoritos`). A lista aparece na aba de resultados,
+a mesma da pesquisa, e o foco vai direto para ela. A lista abre assim que os primeiros **50 vídeos** estão
+prontos (em geral, meio minuto); o restante continua carregando em segundo plano, numa página escondida, e
+os novos vídeos entram no fim da lista sem mexer na sua posição. Você pode abrir vídeos normalmente enquanto
+isso. Ao terminar, o aplicativo avisa "Lista completa" com a quantidade, até **500 vídeos** por lista. Se a
+lista vier vazia, ela pode estar privada nas configurações do TikTok ou o login pode ter expirado.
+
+**Enter** abre o vídeo selecionado; **Alt+Seta para baixo/cima** passa para o próximo ou o anterior da lista e
+**Ctrl+R** volta à lista. Dentro de um vídeo curtido, **Alt+L** descurte; dentro de um favorito, **Alt+F**
+remove dos favoritos. O vídeo continua na lista até você carregá-la de novo.
+
+**Download em lote:** espere o aviso de "Lista completa". Ctrl+Shift+L pede a pasta, baixa um vídeo por vez (com uma pausa curta entre eles) e
+mostra o andamento na barra de status. Vídeos que já estão na pasta são pulados, então dá para repetir o
+comando e continuar de onde parou. Vídeos privados ou removidos são contados como falha e não interrompem o
+resto. Para cancelar, pressione Ctrl+Shift+L de novo e confirme; o vídeo atual termina antes de parar. O
+comando vale para qualquer lista, inclusive a de uma pesquisa.
+
+#### YouTube Shorts
+
+Com o YouTube Shorts aberto (**Ctrl+3**), **Alt+Shift+L** lista os **Shorts** que você curtiu. No YouTube não
+existe lista de favoritos, e no Instagram nenhuma das duas é possível. Como a lista "Vídeos com Gostei" do
+YouTube mistura todos os vídeos curtidos (podem ser milhares) e o filtro Shorts do próprio YouTube só cobre
+os primeiros itens, o aplicativo percorre a lista inteira em segundo plano e confirma, um a um, quais são
+Shorts de verdade. Por isso a lista abre em até 25 segundos com o que já foi achado e vai crescendo; o aviso
+"Lista completa" diz quando terminou. Os atalhos de abrir, navegar e baixar são os mesmos do TikTok.
+
 ### Baixar só o áudio
 
 Pressione **Ctrl+Shift+B** (ou use **Configurações, Baixar áudio do vídeo atual**) para salvar apenas o 
@@ -264,6 +299,9 @@ e **Fechar conexão do navegador** usa `Alt+F`.
 - `Alt+D`: ler descrição;
 - `Alt+C`: copiar link;
 - `Alt+Shift+P`: abrir perfil;
+- `Alt+Shift+L`: listar os vídeos curtidos da sua conta no TikTok;
+- `Alt+Shift+F`: listar os vídeos favoritados da sua conta no TikTok;
+- `Ctrl+Shift+L`: baixar todos os vídeos da lista na tela;
 - `Alt+Shift+C`: abrir os comentários nativos do vídeo atual;
 - `Alt+L`: curtir ou descurtir o vídeo atual;
 - `Alt+F`: favoritar ou desfavoritar no TikTok; salvar ou remover dos salvos no Instagram;

@@ -295,7 +295,89 @@
         }
     }
 
+    // Liked Shorts. The "Vídeos com Gostei" playlist mixes every liked video and
+    // YouTube's own Shorts filter only covers its first ~50 items, so the whole
+    // playlist is scanned: videos of up to three minutes are candidates, and a
+    // HEAD request to /shorts/ID tells a real Short (200) from a regular video
+    // (redirect). One short step per call; the page keeps the state, so the
+    // caller can poll while the list is already in use.
+    const LIBRARY_LIMIT = 500;
+    const LIBRARY_SCAN_LIMIT = 6000;
+    const SHORT_MAX_SECONDS = 180;
+    const CLASSIFY_PER_STEP = 24;
+    const CLASSIFY_PARALLEL = 6;
+
+    function durationSeconds(text) {
+        const parts = (text || "").split(":").map(Number);
+        if (parts.some(Number.isNaN)) return null;
+        return parts.length === 2 ? parts[0] * 60 + parts[1]
+            : parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : null;
+    }
+
+    async function isShort(id) {
+        try {
+            const response = await fetch(`/shorts/${id}`, {method: "HEAD", redirect: "manual", credentials: "include"});
+            return response.type === "basic" && response.status === 200;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    async function libraryStep(kind) {
+        if (kind !== "liked") throw new Error("Lista desconhecida.");
+        let state = window.__accessibleLibrary;
+        if (!state || state.kind !== kind) {
+            state = window.__accessibleLibrary = {
+                kind, seen: new Set(), order: 0, queue: [], shorts: new Map(), idle: 0, started: Date.now()
+            };
+        }
+        const rows = () => [...document.querySelectorAll("yt-lockup-view-model, ytd-playlist-video-renderer")];
+        // The playlist may need a moment to render; no cards at all means no access to it.
+        while (!rows().length && Date.now() - state.started < 20000) await sleep(250);
+        if (!rows().length) throw new Error("Não encontrei os vídeos que você curtiu. Verifique se está logado no YouTube (F6).");
+        const before = state.seen.size;
+        for (const row of rows()) {
+            const href = (row.querySelector('a[href*="watch?v="]') || {getAttribute: () => ""}).getAttribute("href") || "";
+            const id = (href.match(/[?&]v=([A-Za-z0-9_-]{11})/) || [])[1];
+            if (!id || state.seen.has(id)) continue;
+            state.seen.add(id);
+            const seconds = durationSeconds(((row.innerText || "").match(/\b\d{1,2}:\d{2}(?::\d{2})?\b/) || [""])[0]);
+            const heading = row.querySelector("h3, #video-title");
+            const title = (heading ? heading.innerText || heading.getAttribute("title") : "").trim();
+            const index = state.order++;
+            if (seconds !== null && seconds <= SHORT_MAX_SECONDS) state.queue.push({index, id, title, tries: 0});
+        }
+        const batch = state.queue.splice(0, CLASSIFY_PER_STEP);
+        for (let at = 0; at < batch.length; at += CLASSIFY_PARALLEL) {
+            const group = batch.slice(at, at + CLASSIFY_PARALLEL);
+            const verdicts = await Promise.all(group.map(item => isShort(item.id)));
+            group.forEach((item, position) => {
+                if (verdicts[position] === true) {
+                    state.shorts.set(item.index, {
+                        url: `https://www.youtube.com/shorts/${item.id}`, author: "", description: item.title
+                    });
+                } else if (verdicts[position] === null && ++item.tries < 3) {
+                    state.queue.push(item);
+                }
+            });
+        }
+        if (state.seen.size > before || state.queue.length) state.idle = 0; else state.idle += 1;
+        const done = state.shorts.size >= LIBRARY_LIMIT || state.seen.size >= LIBRARY_SCAN_LIMIT ||
+            (state.idle >= 5 && !state.queue.length);
+        if (!done) {
+            // The playlist loads its next page when the last card reaches the viewport.
+            const all = rows();
+            if (all.length) all[all.length - 1].scrollIntoView({block: "end"});
+            window.scrollBy(0, window.innerHeight);
+            await sleep(700);
+        }
+        const results = [...state.shorts.entries()].sort((a, b) => a[0] - b[0])
+            .map(entry => entry[1]).slice(0, LIBRARY_LIMIT);
+        return {results, library: kind, done, scanned: state.seen.size};
+    }
+
     async function execute(action, argument) {
+        if (action === "library_step") return libraryStep(argument);
         if (action === "play" || action === "toggle") {
             let video = activeVideo();
             if (action === "play") {

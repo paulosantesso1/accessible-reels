@@ -18,8 +18,16 @@ PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow', 'not_interested',
-           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics'}
+           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step'}
 logger = get_logger()
+# Commands the app starts by itself right after a page loads. If the platform
+# immediately re-navigates to the same page, they are simply run again on the
+# new document instead of being reported to the user as a failure.
+AUTOMATIC_ACTIONS = {'play', 'refresh_info'}
+MAX_AUTOMATIC_REARMS = 2
+# A load error saying the navigation was "aborted" only means that another
+# navigation replaced it. It is a failure only if no page loads afterwards.
+ABORT_GRACE_MS = 4000
 
 
 def belongs_to_platform(url, platform):
@@ -85,6 +93,9 @@ class WebViewClient:
         self._retry_expected_url = None
         self._retry_unexpected = None
         self._retry_attempted = False
+        self._last_after_load = None
+        self._rearms = 0
+        self._abort_watch = None
         view.Bind(wx.PyEventBinder(html2.wxEVT_WEBVIEW_CREATED, 1), self._created)
         view.Bind(html2.EVT_WEBVIEW_NAVIGATING, self._navigating)
         view.Bind(html2.EVT_WEBVIEW_LOADED, self._loaded)
@@ -133,10 +144,37 @@ class WebViewClient:
         pending, self.pending = self.pending, None
         if pending:
             pending['timer'].Stop()
-            wx.CallAfter(lambda: pending['callback']({
-                'ok': False, 'error': 'A página mudou. Confira o vídeo antes de repetir a ação.'
-            }) if self.alive else None)
+            if self._rerun_after_same_page_navigation(pending, event.GetURL()):
+                wx.CallAfter(lambda: pending['callback']({'ok': False, 'ignored': True}) if self.alive else None)
+            else:
+                wx.CallAfter(lambda: pending['callback']({
+                    'ok': False, 'error': 'A página mudou. Confira o vídeo antes de repetir a ação.'
+                }) if self.alive else None)
         event.Skip()
+
+    def _rerun_after_same_page_navigation(self, pending, destination):
+        """True when an automatic command was cut short by a re-navigation to the same page."""
+        action = pending.get('action')
+        if action not in AUTOMATIC_ACTIONS:
+            return False
+        if not (same_page_target(destination, self.target_url)
+                or same_page_target(destination, self.view.GetCurrentURL())):
+            return False
+        if action == 'refresh_info':
+            # The next load reports readiness again and refreshes the details.
+            return True
+        if self._last_after_load is None or self._rearms >= MAX_AUTOMATIC_REARMS:
+            return False
+        self._rearms += 1
+        self.after_load = self._last_after_load
+        logger.info('Re-running post-load step after same-page navigation: platform=%s action=%s',
+                    self.platform, action)
+        return True
+
+    def _stop_abort_watch(self):
+        if self._abort_watch:
+            self._abort_watch.Stop()
+            self._abort_watch = None
 
     def _loaded(self, event):
         # wxWebViewEdge does not populate IsTargetMainFrame on LOADED events.
@@ -158,6 +196,7 @@ class WebViewClient:
             was_ready = self.ready
             self.ready = document_ready
             if self.ready:
+                self._stop_abort_watch()
                 self.set_active(self.active)
                 if not was_ready:
                     self.on_loaded()
@@ -167,6 +206,7 @@ class WebViewClient:
                 self._retry_unexpected = None
                 if self.after_load:
                     callback, self.after_load = self.after_load, None
+                    self._last_after_load = callback
                     self._after_load_expected_url = None
                     self._after_load_unexpected = None
                     wx.CallAfter(lambda: callback() if self.alive and generation == self.generation else None)
@@ -196,6 +236,22 @@ class WebViewClient:
                 self.platform, current_url, event.GetTarget(),
             )
             return
+        detail = event.GetString()
+        if isinstance(detail, str) and 'CONNECTION_ABORTED' in detail:
+            generation = self.generation
+            logger.info('Ignoring aborted navigation superseded by another: platform=%s current=%s',
+                        self.platform, current_url)
+            self._stop_abort_watch()
+            self._abort_watch = wx.CallLater(ABORT_GRACE_MS, self._aborted_without_load, generation, event.GetTarget())
+            return
+        self._fail_load(event.GetTarget())
+
+    def _aborted_without_load(self, generation, target):
+        self._abort_watch = None
+        if self.alive and generation == self.generation and not self.ready:
+            self._fail_load(target)
+
+    def _fail_load(self, target):
         # A platform can transiently reject a direct video URL immediately
         # after search. Retry that one explicit result navigation once,
         # retaining its callback and result list on every supported network.
@@ -227,7 +283,7 @@ class WebViewClient:
         self._retry_after_load = None
         self._retry_expected_url = None
         self._retry_unexpected = None
-        logger.warning('WebView load error: platform=%s target=%s', self.platform, event.GetTarget())
+        logger.warning('WebView load error: platform=%s target=%s', self.platform, target)
         if pending:
             pending['timer'].Stop()
             pending['callback']({'ok': False, 'error': 'Falha ao carregar a página. Tente recarregar.'})
@@ -252,6 +308,9 @@ class WebViewClient:
         self._retry_expected_url = expected_url
         self._retry_unexpected = on_unexpected
         self._retry_attempted = False
+        self._last_after_load = None
+        self._rearms = 0
+        self._stop_abort_watch()
         self.view.LoadURL(url)
 
     def set_active(self, active):
@@ -260,6 +319,10 @@ class WebViewClient:
             self.view.RunScriptAsync(f'window.__accessibleSetActive?.({json.dumps(active)});')
 
     def execute(self, action, argument, callback):
+        if self.alive and not self.active and belongs_to_platform(self.view.GetCurrentURL(), self.platform):
+            # The list of results is on screen; no video is open yet.
+            callback({'ok':False, 'error':'Nenhum vídeo aberto. Abra um da lista com Enter ou use Ctrl+Home para o feed.'})
+            return
         if not self.alive or not self.active or not belongs_to_platform(self.view.GetCurrentURL(), self.platform):
             callback({'ok':False, 'error':'Abra a rede selecionada e aguarde a página carregar.'})
             return
@@ -351,6 +414,7 @@ class WebViewClient:
     def close(self):
         self.alive = False
         self.ready = False
+        self._stop_abort_watch()
         self.after_load = None
         self._after_load_expected_url = None
         self._after_load_unexpected = None

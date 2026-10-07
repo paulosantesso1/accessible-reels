@@ -819,6 +819,20 @@
     return {results};
   }
 
+  // TikTok's favorite button keeps the same accessible name ("Adicionar aos
+  // favoritos...") in both states and exposes no pressed attribute: the only
+  // difference is the bookmark icon, yellow when saved and white when not.
+  function iconColorState(button) {
+    const icon = button.querySelector("svg");
+    if (!icon) return null;
+    const match = getComputedStyle(icon).fill.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!match) return null;
+    const [red, green, blue] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    if (red > 200 && green > 140 && blue < 110) return true;
+    if (red > 200 && green > 200 && blue > 200) return false;
+    return null;
+  }
+
   function readState(button, undoPattern, inactivePattern) {
     if (!button || !button.isConnected) return null;
     const elements = [button, ...button.querySelectorAll(
@@ -832,6 +846,10 @@
       const state = (element.getAttribute("data-state") || "").toLowerCase();
       if (["on", "checked", "active", "selected"].includes(state)) return true;
       if (["off", "unchecked", "inactive", "unselected"].includes(state)) return false;
+    }
+    if (/favorite|collect/i.test(button.getAttribute("data-e2e") || "")) {
+      const colored = iconColorState(button);
+      if (colored !== null) return colored;
     }
     const label = normalizedText([
       button.getAttribute("aria-label") || "", button.getAttribute("title") || "",
@@ -1021,7 +1039,99 @@
     return normalizedText(element.innerText);
   }
 
+  // The logged-in account's own profile link is in the side navigation.
+  async function ownProfile() {
+    const deadline = Date.now() + 10000;
+    let handle = "";
+    while (!handle && Date.now() < deadline) {
+      const link = document.querySelector('[data-e2e="nav-profile"]');
+      handle = ((link && link.getAttribute("href")) || "").match(/^\/(@[^/?#]+)/)?.[1] || "";
+      if (!handle) await sleep(250);
+    }
+    if (!handle) throw new Error("Entre na sua conta do TikTok pela página (F6) para ver seus vídeos.");
+    return {profile_url: `https://www.tiktok.com/${handle}`};
+  }
+
+  // Profile tabs of the logged-in account. The activity panel has buttons with
+  // similar names ("Curtidas"), so only non-button tabs count.
+  const LIBRARY_TABS = {
+    liked: {
+      item: '[data-e2e="user-liked-item"]',
+      tab: () => document.querySelector('[data-e2e="liked-tab"]') || findProfileTab(/^(curtid|liked)/i),
+      name: "Curtidos"
+    },
+    favorites: {
+      item: '[data-e2e="favorites-item"]',
+      tab: () => document.querySelector('[data-e2e="favorites-tab"]') || findProfileTab(/^(favorit|saved|salvo)/i),
+      name: "Favoritos"
+    }
+  };
+  const LIBRARY_LIMIT = 500;
+
+  function findProfileTab(pattern) {
+    return [...document.querySelectorAll('[role="tab"]')].find(
+      tab => tab.tagName !== "BUTTON" && pattern.test(normalizedText(tab.innerText))
+    );
+  }
+
+  // One short step of a progressive listing. The page keeps its own state, so
+  // the caller can poll while the list is already in use: open the tab once,
+  // then every call harvests the cards in view and scrolls for more.
+  async function libraryStep(kind) {
+    const spec = LIBRARY_TABS[kind];
+    if (!spec) throw new Error("Lista desconhecida.");
+    let state = window.__accessibleLibrary;
+    if (!state || state.kind !== kind) {
+      state = window.__accessibleLibrary = {kind, items: new Map(), idle: 0, opened: false};
+    }
+    if (!state.opened) {
+      let deadline = Date.now() + 10000;
+      let tab = spec.tab();
+      while (!tab && Date.now() < deadline) {
+        await sleep(250);
+        tab = spec.tab();
+      }
+      if (!tab) throw new Error(`Não encontrei a aba ${spec.name} no seu perfil. Verifique se está logado (F6).`);
+      if (tab.getAttribute("aria-selected") !== "true") {
+        try { await trustedClick(tab); } catch (_error) { tab.click(); }
+      }
+      deadline = Date.now() + 10000;
+      while (!document.querySelector(spec.item) && Date.now() < deadline) await sleep(250);
+      state.opened = true;
+    }
+    const before = state.items.size;
+    const items = [...document.querySelectorAll(spec.item)];
+    for (const item of items) {
+      const anchor = item.querySelector('a[href*="/video/"]');
+      if (!anchor) continue;
+      let url;
+      try { url = new URL(anchor.href, location.href); } catch (_error) { continue; }
+      const match = url.pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
+      if (!match) continue;
+      const link = `https://www.tiktok.com/${match[1]}/video/${match[2]}`;
+      if (state.items.has(link)) continue;
+      const image = item.querySelector("img");
+      state.items.set(link, {
+        url: link,
+        author: decodeURIComponent(match[1]),
+        description: normalizedText((image && (image.alt || image.getAttribute("aria-label"))) ||
+                                    anchor.getAttribute("aria-label") || anchor.title || "")
+      });
+    }
+    if (state.items.size > before) state.idle = 0; else state.idle += 1;
+    const done = state.items.size >= LIBRARY_LIMIT || state.idle >= 5;
+    if (!done) {
+      // TikTok loads more cards only when the last row reaches the viewport.
+      if (items.length) items[items.length - 1].scrollIntoView({block: "end"});
+      window.scrollBy(0, window.innerHeight);
+      await sleep(700);
+    }
+    return {results: [...state.items.values()].slice(0, LIBRARY_LIMIT), library: kind, done};
+  }
+
   async function execute(action, argument) {
+    if (action === "own_profile") return ownProfile();
+    if (action === "library_step") return libraryStep(argument);
     // The top-level page can finish loading before TikTok mounts the first
     // video. Both explicit playback and the automatic details refresh run at
     // that boundary, so give the player time to appear instead of reporting a
@@ -1201,7 +1311,10 @@
           }
         }
       } else if (action === "toggle") video.pause();
-      return {paused: video.paused};
+      // TikTok can swap the <video> element while a result opens; report the
+      // one on screen now, not the stale element this command started with.
+      const current = video.isConnected ? video : (activeVideo() || video);
+      return {paused: current.paused};
     }
     if (action === "volume_up" || action === "volume_down") {
       if (preferredVolume === null) preferredVolume = video.volume;

@@ -56,7 +56,10 @@ def search_url(query: str) -> str:
     return f"https://www.tiktok.com/search/video?q={quote_plus(normalized)}"
 
 
-def normalize_search_results(values: Any) -> tuple[SearchResult, ...]:
+LIBRARY_LIMIT = 500
+
+
+def normalize_search_results(values: Any, limit: int = 50) -> tuple[SearchResult, ...]:
     if not isinstance(values, list):
         return ()
     results: list[SearchResult] = []
@@ -74,7 +77,7 @@ def normalize_search_results(values: Any) -> tuple[SearchResult, ...]:
         author = " ".join(str(value.get("author") or "Autor desconhecido").split())
         description = " ".join(str(value.get("description") or "").split())
         results.append(SearchResult(url, author, description))
-        if len(results) >= 50:
+        if len(results) >= limit:
             break
     return tuple(results)
 

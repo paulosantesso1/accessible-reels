@@ -3,13 +3,31 @@ import os
 import threading
 import re
 import tempfile
+import time
 from pathlib import Path
 
 import wx
 
 from audio_extract import AudioExtractError, extract_m4a
-from video_download import download_video, load_download_folder, save_download_folder
+from app_logging import get_logger, sanitize
+from video_download import MEDIA_SUFFIXES, download_video, load_download_folder, save_download_folder
 from ui.browser_download import BrowserDownload
+
+
+logger = get_logger()
+LIST_DOWNLOAD_PAUSE = 1.5  # seconds between videos, to avoid looking like a flood of requests
+
+
+def already_downloaded(folder, url):
+    """True when a media file named after this video's id is already in the folder."""
+    identifier = str(url).rstrip('/').split('/')[-1].split('?')[0]
+    if not identifier:
+        return False
+    try:
+        return any(path.is_file() and path.suffix.lower() in MEDIA_SUFFIXES and f'[{identifier}]' in path.name
+                   for path in Path(folder).iterdir())
+    except OSError:
+        return False
 
 
 class DownloadControlsMixin:
@@ -34,6 +52,7 @@ class DownloadControlsMixin:
 
     def initialize_downloads(self):
         self._download_busy = False
+        self._list_download = None
         self._download_folder = load_download_folder()
 
     def choose_download_folder(self, event=None):
@@ -56,6 +75,85 @@ class DownloadControlsMixin:
             os.startfile(self._download_folder)
         except OSError:
             self.status('Não foi possível abrir a pasta de downloads.')
+
+    def start_list_download(self, event=None):
+        """Download every video of the list on screen, one at a time, into a chosen folder."""
+        running = self._list_download
+        if running:
+            with wx.MessageDialog(self, 'Cancelar o download em lote? O vídeo atual termina antes de parar.',
+                                  'Download em lote', wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION) as dialog:
+                if dialog.ShowModal() == wx.ID_YES:
+                    running['cancel'].set()
+                    self.status('Cancelando o download em lote...')
+            return
+        if getattr(self, '_library_worker', None):
+            self.status('A lista ainda está carregando em segundo plano. Aguarde o aviso de lista completa '
+                        'para baixar todos os vídeos.')
+            return
+        items = tuple(self._results)
+        if not items or not self.current():
+            self.status('Não há uma lista de vídeos para baixar. Faça uma pesquisa ou abra seus curtidos (Alt+Shift+L).')
+            return
+        if self._download_busy:
+            self.status('Já existe um download em andamento. Aguarde a conclusão.')
+            return
+        name = self._active_name
+        with wx.DirDialog(self, f'Escolha a pasta para salvar os {len(items)} vídeos da lista',
+                          defaultPath=str(self._download_folder or '')) as dialog:
+            if dialog.ShowModal() != wx.ID_OK:
+                self.status('Download em lote cancelado.')
+                return
+            folder = Path(dialog.GetPath())
+        try:
+            self._download_folder = save_download_folder(folder)
+        except OSError:
+            self._download_folder = folder
+        self._download_busy = True
+        job = {'cancel': threading.Event()}
+        self._list_download = job
+        self.status(f'Baixando {len(items)} vídeos para {folder}. Use o mesmo atalho para cancelar.')
+        threading.Thread(target=self._list_download_worker, args=(name, items, folder, job), daemon=True).start()
+
+    def _list_download_worker(self, name, items, folder, job):
+        done = skipped = failed = 0
+        total = len(items)
+        for index, item in enumerate(items, 1):
+            if job['cancel'].is_set() or self._closing_app:
+                break
+            if index == 1 or index % 5 == 0:
+                wx.CallAfter(self._list_download_announce, f'Baixando vídeo {index} de {total}.')
+            else:
+                self._download_notify(f'Baixando vídeo {index} de {total}...')
+            if already_downloaded(folder, item.url):
+                skipped += 1
+                continue
+            try:
+                download_video(item.url, name, folder, lambda message: None)
+                done += 1
+            except Exception as exception:
+                failed += 1
+                logger.warning('List download item failed: %s', sanitize(str(exception))[:200])
+            if index < total:
+                job['cancel'].wait(LIST_DOWNLOAD_PAUSE)
+        wx.CallAfter(self._list_download_finished, job, done, skipped, failed, total, folder)
+
+    def _list_download_announce(self, message):
+        if self._list_download:
+            self.status(message)
+
+    def _list_download_finished(self, job, done, skipped, failed, total, folder):
+        self._list_download = None
+        self._download_busy = False
+        if self._closing_app:
+            return
+        parts = [f'{done} baixados']
+        if skipped:
+            parts.append(f'{skipped} já existiam')
+        if failed:
+            parts.append(f'{failed} com falha')
+        cancelled = job['cancel'].is_set()
+        self.status(('Download em lote cancelado: ' if cancelled else 'Download em lote concluído: ')
+                    + ', '.join(parts) + f' de {total}. Pasta: {folder}.')
 
     def start_audio_download(self, event=None):
         self.start_video_download(audio=True)

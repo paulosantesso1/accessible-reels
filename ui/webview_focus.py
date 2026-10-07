@@ -22,6 +22,17 @@ PAGE_FOCUS_SCRIPT = """(() => {
         getComputedStyle(el).visibility !== 'hidden' && !el.closest('[inert]');
     let target = document.activeElement;
     if (!target || target === document.body || target === document.documentElement || !visible(target)) {
+        // The first tabbable element on TikTok is a sidebar link that often
+        // lands on Explore; start on "For You" so videos play right away.
+        if (/(^|\\.)tiktok\\.com$/.test(location.hostname) && /^\\/(foryou)?\\/?$/.test(location.pathname)) {
+            const forYou = [...document.querySelectorAll(
+                '[data-e2e="nav-foryou"], a[href="/foryou"], a[href="/"][data-e2e*="foryou" i]')]
+                .map(el => el.closest('a,button') || el)
+                .find(el => visible(el));
+            if (forYou) target = forYou;
+        }
+    }
+    if (!target || target === document.body || target === document.documentElement || !visible(target)) {
         const scope = document.querySelector('[role="dialog"],dialog[open]') || document;
         target = [...scope.querySelectorAll('a[href],button,input,select,textarea,[tabindex]')]
             .find(el => !el.disabled && el.tabIndex >= 0 && visible(el));
