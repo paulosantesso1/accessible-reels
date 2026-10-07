@@ -60,13 +60,49 @@
     return candidates[0]?.video || null;
   }
   let initialPlaybackReleased = false;
+  // O Instagram começa a tocar assim que a primeira fonte aparece e depois
+  // troca para a definitiva, reiniciando o vídeo. Até a liberação, qualquer
+  // play antes da hora é desfeito logo no evento.
+  for (const name of ["play", "playing"]) {
+    document.addEventListener(name, event => {
+      if (!initialPlaybackReleased && event.target instanceof HTMLVideoElement) event.target.pause();
+    }, true);
+  }
+  // Logo depois de abrir um Reel, o Instagram costuma recriar o player e o
+  // elemento novo recomeça do zero. Nos primeiros segundos, se o vídeo que
+  // tocava sai do documento e outro assume a tela no mesmo Reel, o novo
+  // retoma de onde o anterior parou.
+  function keepPositionAcrossPlayerSwap(first) {
+    const deadline = Date.now() + 15000;
+    const path = location.pathname.replace(/^\/reels?\//, "");
+    let tracked = first, position = 0;
+    const timer = setInterval(() => {
+      if (Date.now() > deadline) { clearInterval(timer); return; }
+      if (tracked.isConnected) { position = Math.max(position, tracked.currentTime || 0); return; }
+      const next = activeVideo();
+      if (!next || next === tracked) return;
+      if (location.pathname.replace(/^\/reels?\//, "") !== path) { clearInterval(timer); return; }
+      if (next.readyState < HTMLMediaElement.HAVE_METADATA) return;
+      if (position > 1 && next.currentTime < position) next.currentTime = position;
+      tracked = next;
+      position = Math.max(position, next.currentTime || 0);
+    }, 50);
+  }
   function startInitialPlaybackWhenReady() {
     const deadline = Date.now() + 12000;
+    const release = video => {
+      initialPlaybackReleased = true;
+      if (!video) return;
+      applyAudio(video);
+      video.play().catch(() => {});
+      keepPositionAcrossPlayerSwap(video);
+    };
     const probe = () => {
       if (initialPlaybackReleased) return;
       const video = activeVideo();
       if (!video || !video.currentSrc || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
         if (Date.now() < deadline) setTimeout(probe, 150);
+        else release(video);
         return;
       }
       const source = video.currentSrc;
@@ -75,10 +111,9 @@
         const current = activeVideo();
         if (current === video && current.currentSrc === source &&
             current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-          initialPlaybackReleased = true;
-          applyAudio(video);
-          video.play().catch(() => {});
+          release(video);
         } else if (Date.now() < deadline) probe();
+        else release(current);
       }, 750);
     };
     probe();
@@ -481,6 +516,12 @@
       return snapshot();
     }
     if (action === "toggle" || action === "play") {
+      // O play automático depois de abrir um link chega antes do vídeo estar
+      // pronto; deixa a rotina de início decidir o momento em vez de tocar já.
+      if (action === "play" && !initialPlaybackReleased) {
+        const limit = Date.now() + 13000;
+        while (!initialPlaybackReleased && Date.now() < limit) await sleep(100);
+      }
       initialPlaybackReleased = true;
       if (video.paused) {
         applyAudio(video);

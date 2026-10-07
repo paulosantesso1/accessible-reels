@@ -144,6 +144,58 @@ def test_instagram_play_starts_without_toggling_back_to_pause(page):
     assert command(page, 'play') == {'ok': True, 'paused': False}
 
 
+def test_instagram_holds_early_play_until_video_is_ready(page):
+    page.evaluate('''() => {
+      const v = document.querySelector('#v1');
+      window.igPlays = 0; window.igPauses = 0;
+      v.play = async () => { window.igPlays++; };
+      v.pause = () => { window.igPauses++; };
+      Object.defineProperty(v, 'currentSrc', {configurable: true, value: 'blob:early'});
+      Object.defineProperty(v, 'readyState', {configurable: true, value: 1});
+      v.dispatchEvent(new Event('play'));
+      v.dispatchEvent(new Event('playing'));
+    }''')
+    page.wait_for_timeout(1000)
+    assert page.evaluate("[igPauses > 0, igPlays]") == [True, 0]
+    page.evaluate("Object.defineProperty(document.querySelector('#v1'), 'readyState', {configurable: true, value: 4})")
+    page.wait_for_timeout(1500)
+    assert page.evaluate("igPlays") == 1
+
+
+def test_instagram_new_player_resumes_where_the_old_one_stopped(page):
+    page.evaluate('''() => {
+      const fake = (v, time) => {
+        let t = time;
+        v.play = async () => {}; v.pause = () => {};
+        Object.defineProperty(v, 'currentTime', {configurable: true, get: () => t, set: x => { t = x; }});
+        Object.defineProperty(v, 'currentSrc', {configurable: true, value: 'blob:x'});
+        Object.defineProperty(v, 'readyState', {configurable: true, value: 4});
+      };
+      const old = document.querySelector('#v1');
+      fake(old, 0);
+      window.igOld = old;
+    }''')
+    page.wait_for_timeout(1800)
+    page.evaluate('''() => {
+      igOld.currentTime = 4.2;
+    }''')
+    page.wait_for_timeout(200)
+    page.evaluate('''() => {
+      const group = igOld.parentElement;
+      const fresh = document.createElement('video');
+      let t = 0;
+      fresh.play = async () => {}; fresh.pause = () => {};
+      Object.defineProperty(fresh, 'currentTime', {configurable: true, get: () => t, set: x => { t = x; }});
+      Object.defineProperty(fresh, 'currentSrc', {configurable: true, value: 'blob:y'});
+      Object.defineProperty(fresh, 'readyState', {configurable: true, value: 4});
+      igOld.remove();
+      group.prepend(fresh);
+      window.igFresh = fresh;
+    }''')
+    page.wait_for_timeout(500)
+    assert page.evaluate("igFresh.currentTime") == pytest.approx(4.2)
+
+
 def test_instagram_reads_only_active_reel_metadata(page):
     info = command(page, "refresh_info")
     assert info["ok"] is True
