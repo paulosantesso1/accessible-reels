@@ -1,0 +1,41 @@
+name: Delete merged branch
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  delete:
+    # Only delete this repository's head branch after a merge into the default
+    # branch. Closing a PR without merging, or merging a fork, deletes nothing.
+    # Explicitly protect the default branch even if the PR targets another base.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Delete head branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          # Treat branch names as data, including URL-reserved characters.
+          encoded_branch=$(jq -rn --arg branch "$BRANCH" '$branch | @uri')
+          if gh api --method DELETE "repos/$REPO/git/refs/heads/$encoded_branch" 2>error.txt; then
+            printf "Branch '%s' deleted.\n" "$BRANCH"
+          elif grep -Fq 'Reference does not exist' error.txt; then
+            # A maintainer or GitHub's automatic deletion may have removed it.
+            printf "Branch '%s' was already deleted.\n" "$BRANCH"
+          else
+            cat error.txt >&2
+            exit 1
+          fi

@@ -1,8 +1,19 @@
 import json
+import re
 
 from app_version import APP_VERSION
-from release_notes import (has_seen_current_release, load_release_history,
+from release_notes import (changelog_path, has_seen_current_release, load_release_history,
                            mark_current_release_seen)
+
+
+def test_committed_changelog_starts_with_the_application_version():
+    markdown = changelog_path().read_text(encoding="utf-8")
+    first_release = re.search(r"^##\s+(\d+(?:\.\d+)*)(?:\s|$)", markdown, re.MULTILINE)
+    assert first_release is not None, "CHANGELOG.md não contém uma seção de versão"
+    assert first_release.group(1) == APP_VERSION, (
+        f"A primeira versão do CHANGELOG.md ({first_release.group(1)}) "
+        f"difere de APP_VERSION ({APP_VERSION})"
+    )
 
 
 def test_release_history_keeps_current_and_previous_versions(tmp_path):

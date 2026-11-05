@@ -1,4 +1,4 @@
-﻿param([string]$PythonExe = ".\.venv\Scripts\python.exe", [string]$AppVersion = "1.0.7")
+﻿param([string]$PythonExe = ".\.venv\Scripts\python.exe", [string]$AppVersion = "")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -8,6 +8,18 @@ if (Test-Path -LiteralPath $PythonExe) {
 } elseif (-not (Get-Command $PythonExe -ErrorAction SilentlyContinue)) {
     throw "Python do ambiente virtual não encontrado: $PythonExe"
 }
+
+# app_version.py is the source of truth for both the application and installer.
+$sourceVersion = & $PythonExe -c "import runpy; print(runpy.run_path('app_version.py')['APP_VERSION'])"
+if ($LASTEXITCODE -ne 0) { throw "Não foi possível ler APP_VERSION." }
+$sourceVersion = "$sourceVersion".Trim()
+if ($sourceVersion -notmatch '^\d+(\.\d+){0,3}$') {
+    throw "APP_VERSION inválida: $sourceVersion"
+}
+if ($AppVersion -and $AppVersion -cne $sourceVersion) {
+    throw "A versão solicitada ($AppVersion) difere de APP_VERSION ($sourceVersion)."
+}
+$AppVersion = $sourceVersion
 
 & $PythonExe -m pip install --upgrade pip pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "Falha ao instalar ferramentas de build." }

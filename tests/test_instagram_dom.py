@@ -196,6 +196,72 @@ def test_instagram_new_player_resumes_where_the_old_one_stopped(page):
     assert page.evaluate("igFresh.currentTime") == pytest.approx(4.2)
 
 
+# O elemento <video> continua no documento, mas recebe uma fonte nova. Como no
+# navegador, trocar a fonte zera o tempo e o elemento passa a ter ``readyState``
+# baixo até os metadados da nova fonte chegarem.
+SAME_ELEMENT_PLAYER = '''() => {
+  const v = document.querySelector('#v1');
+  let t = 0, src = 'blob:first', ready = 4;
+  v.play = async () => {}; v.pause = () => {};
+  Object.defineProperty(v, 'currentTime', {configurable: true, get: () => t, set: x => { t = x; }});
+  Object.defineProperty(v, 'currentSrc', {configurable: true, get: () => src});
+  Object.defineProperty(v, 'readyState', {configurable: true, get: () => ready});
+  window.igV = v;
+  window.igSwapSource = (next, readyState = 4) => { src = next; t = 0; ready = readyState; };
+  window.igSetReady = value => { ready = value; };
+}'''
+
+
+def start_same_element_playback(page, position=4.2):
+    page.evaluate(SAME_ELEMENT_PLAYER)
+    page.wait_for_timeout(1800)  # a rotina inicial libera o play depois de 750 ms estável
+    page.evaluate("position => { igV.currentTime = position; }", position)
+    page.wait_for_timeout(200)  # o acompanhamento amostra a posição a cada 50 ms
+
+
+def test_instagram_same_element_source_swap_resumes_position(page):
+    start_same_element_playback(page)
+    page.evaluate("igSwapSource('blob:definitive')")
+    page.wait_for_timeout(600)
+    assert page.evaluate("igV.isConnected") is True
+    assert page.evaluate("igV.currentTime") == pytest.approx(4.2)
+
+
+def test_instagram_same_element_source_swap_waits_for_metadata(page):
+    start_same_element_playback(page)
+    page.evaluate("igSwapSource('blob:definitive', 0)")
+    page.wait_for_timeout(300)
+    assert page.evaluate("igV.currentTime") == 0  # sem metadados, ainda não dá para retomar
+    page.evaluate("igSetReady(4)")
+    page.wait_for_timeout(300)
+    assert page.evaluate("igV.currentTime") == pytest.approx(4.2)
+
+
+def test_instagram_source_swap_for_another_reel_does_not_inherit_position(browser):
+    page = browser.new_page(viewport={"width": 900, "height": 700})
+    try:
+        page.route("https://www.instagram.com/**", lambda route: route.fulfill(
+            status=200, content_type="text/html",
+            body='<video id="v1" style="display:block;width:400px;height:300px"></video>'))
+        page.goto("https://www.instagram.com/reels/AAA/")
+        page.evaluate('''() => {
+          window.__accessibleTransport = {
+            storage: {local: {get: async () => ({}), set: async () => ({})}},
+            runtime: {onMessage: {addListener: () => {}}, sendMessage: async () => ({ok: true})}
+          };
+        }''')
+        page.evaluate(Path("ui/web_scripts/audio_guard.js").read_text(encoding="utf-8"))
+        page.evaluate(Path("ui/web_scripts/instagram.js").read_text(encoding="utf-8"))
+        start_same_element_playback(page)
+        # O usuário vai para o próximo Reel: o Instagram reaproveita o elemento
+        # com outra fonte, e a posição do Reel anterior não pode ser aplicada.
+        page.evaluate("history.pushState(null, '', '/reels/BBB/'); igSwapSource('blob:other')")
+        page.wait_for_timeout(600)
+        assert page.evaluate("igV.currentTime") == 0
+    finally:
+        page.close()
+
+
 def test_instagram_reads_only_active_reel_metadata(page):
     info = command(page, "refresh_info")
     assert info["ok"] is True

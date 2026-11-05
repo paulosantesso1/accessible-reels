@@ -68,24 +68,44 @@
       if (!initialPlaybackReleased && event.target instanceof HTMLVideoElement) event.target.pause();
     }, true);
   }
-  // Logo depois de abrir um Reel, o Instagram costuma recriar o player e o
-  // elemento novo recomeça do zero. Nos primeiros segundos, se o vídeo que
-  // tocava sai do documento e outro assume a tela no mesmo Reel, o novo
-  // retoma de onde o anterior parou.
+  // Logo depois de abrir um Reel, o Instagram costuma trocar o player e o
+  // vídeo recomeça do zero. Isso acontece de duas formas: o elemento <video>
+  // sai do documento e outro assume a tela, ou o mesmo elemento recebe uma
+  // fonte nova (o elemento continua conectado, mas o tempo volta a zero).
+  // Nos primeiros segundos, em qualquer um dos dois casos e no mesmo Reel, o
+  // vídeo retoma de onde o anterior parou.
   function keepPositionAcrossPlayerSwap(first) {
     const deadline = Date.now() + 15000;
-    const path = location.pathname.replace(/^\/reels?\//, "");
-    let tracked = first, position = 0;
+    const reelPath = () => location.pathname.replace(/^\/reels?\//, "");
+    const path = reelPath();
+    let tracked = first, source = first.currentSrc, position = 0;
+    const resume = video => {
+      if (position > 1 && video.currentTime < position) video.currentTime = position;
+    };
     const timer = setInterval(() => {
       if (Date.now() > deadline) { clearInterval(timer); return; }
-      if (tracked.isConnected) { position = Math.max(position, tracked.currentTime || 0); return; }
-      const next = activeVideo();
-      if (!next || next === tracked) return;
-      if (location.pathname.replace(/^\/reels?\//, "") !== path) { clearInterval(timer); return; }
-      if (next.readyState < HTMLMediaElement.HAVE_METADATA) return;
-      if (position > 1 && next.currentTime < position) next.currentTime = position;
-      tracked = next;
-      position = Math.max(position, next.currentTime || 0);
+      // Outro Reel (próximo/anterior): o elemento ou a fonte nova são de outro
+      // vídeo e não podem herdar a posição deste.
+      if (reelPath() !== path) { clearInterval(timer); return; }
+      if (!tracked.isConnected) {
+        const next = activeVideo();
+        if (!next || next === tracked) return;
+        if (next.readyState < HTMLMediaElement.HAVE_METADATA) return;
+        resume(next);
+        tracked = next;
+        source = next.currentSrc;
+        position = Math.max(position, next.currentTime || 0);
+        return;
+      }
+      const current = tracked.currentSrc;
+      // Sem fonte: a troca está em andamento. Espera a nova ficar pronta.
+      if (!current) return;
+      if (current !== source) {
+        if (tracked.readyState < HTMLMediaElement.HAVE_METADATA) return;
+        resume(tracked);
+        source = current;
+      }
+      position = Math.max(position, tracked.currentTime || 0);
     }, 50);
   }
   function startInitialPlaybackWhenReady() {

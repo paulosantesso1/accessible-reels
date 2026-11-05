@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.9"
+  #error "AppVersion is required. Use scripts/build_windows_release.ps1."
 #endif
 
 #define AppName "Accessible Reels"
