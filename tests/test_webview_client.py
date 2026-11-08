@@ -276,7 +276,8 @@ def test_inactive_network_does_not_execute_commands():
 def test_comment_replies_are_not_accepted_yet():
     client = make_client()
     with pytest.raises(ValueError, match='Comando desconhecido'):
-        client.execute(action, None, Mock())
+        client.execute('reply_comment', None, Mock())
+
 
 
 def navigating_event(url):
@@ -392,7 +393,7 @@ def test_a_loaded_page_cancels_the_abort_watch():
     watch.Stop.assert_called_once()
     assert client._abort_watch is None
 
-        client.execute('reply_comment', None, Mock())
+
 
 
 def test_live_chat_toggle_is_an_allowed_command():

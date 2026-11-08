@@ -66,6 +66,7 @@ def page(browser, request):
               window.dispatchedKeys.push(message.key);
               document.dispatchEvent(new KeyboardEvent('keydown', {key: message.key, bubbles: true, cancelable: true}));
               document.dispatchEvent(new KeyboardEvent('keyup', {key: message.key, bubbles: true, cancelable: true}));
+            }
             if (message.type === 'accessible-reels-trusted-text') {
               // Same effect as the application's Input.insertText: typing into the focused field.
               window.igTyped = (window.igTyped || []).concat(message.text);

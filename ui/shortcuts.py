@@ -62,7 +62,7 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("open_profile", "Abrir perfil", "Alt+Shift+P"),
     ShortcutDefinition("search", "Pesquisar", "Alt+E"),
     ShortcutDefinition("toggle_auto_scroll", "Ativar ou desativar rolagem automática (válido em todas as redes)", "Alt+R"),
-    ShortcutDefinition("toggle_live_chat", "Ativar ou desativar chat ao vivo da live", "Alt+Shift+C"),
+    ShortcutDefinition("toggle_live_chat", "Ativar ou desativar chat ao vivo da live", "Alt+Shift+T"),
     ShortcutDefinition("exit", "Sair", "Alt+S"),
 )
 

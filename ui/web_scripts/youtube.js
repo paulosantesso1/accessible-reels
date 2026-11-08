@@ -196,6 +196,7 @@
         try {
             await transport.runtime.sendMessage({type: "accessible-reels-trusted-key", key});
         } catch (_) {}
+    }
 
     // Clique real pelo aplicativo: o campo de comentário do YouTube só abre e só
     // aceita digitação depois de uma interação que o navegador considere humana.
