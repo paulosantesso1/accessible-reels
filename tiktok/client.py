@@ -416,23 +416,23 @@ class BrowserWorker(threading.Thread):
         )
 
     def _ensure_context(self) -> BrowserContext:
-        if self._context is not None:
-            return self._context
+        if self._browser_context is not None:
+            return self._browser_context
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
-        self._context = self._playwright.chromium.launch_persistent_context(
+        self._browser_context = self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self._profile_dir),
             headless=False,
             args=["--autoplay-policy=no-user-gesture-required"],
         )
-        self._context.add_init_script(
+        self._browser_context.add_init_script(
             script=volume_preference_init_script(self._volume)
         )
-        return self._context
+        return self._browser_context
 
     def _active_page(self) -> Page:
         if (
-            self._context is None
+            self._browser_context is None
             and self._page is not None
             and not self._page.is_closed()
         ):
@@ -465,7 +465,7 @@ class BrowserWorker(threading.Thread):
             raise VideoControlError(
                 "Abra o TikTok antes de usar os controles de vídeo."
             )
-        if self._context is None or page.context is not self._context:
+        if self._browser_context is None or page.context is not self._browser_context:
             raise VideoControlError(
                 "A página do TikTok não pertence ao contexto persistente atual."
             )
@@ -591,7 +591,7 @@ class BrowserWorker(threading.Thread):
         )
 
     def _publish_diagnostics(self) -> None:
-        if self._context is None or self._page is None or self._page.is_closed():
+        if self._browser_context is None or self._page is None or self._page.is_closed():
             connected = "não"
             url = "indisponível"
             video_text = "vídeos 0; vídeo ativo não"
@@ -628,10 +628,10 @@ class BrowserWorker(threading.Thread):
 
     def _close_resources(self) -> None:
         try:
-            if self._context is not None:
-                self._context.close()
+            if self._browser_context is not None:
+                self._browser_context.close()
         finally:
-            self._context = None
+            self._browser_context = None
             self._page = None
             if self._playwright is not None:
                 self._playwright.stop()

@@ -19,14 +19,21 @@ def parse_video_link(value):
             raise ValueError
         if url.hostname in ('instagram.com', 'www.instagram.com'):
             return 'Instagram', validate_reel_url(value)
-        if url.hostname in ('tiktok.com', 'www.tiktok.com'):
+        if url.hostname in ('tiktok.com', 'www.tiktok.com', 'live.tiktok.com'):
             if re.fullmatch(r'/t/[A-Za-z0-9_-]+/?', url.path):
                 return 'TikTok', f'https://www.tiktok.com{url.path}'
+            live_match = re.fullmatch(r'/(@[A-Za-z0-9_.-]+)/live/?', url.path)
+            if live_match:
+                return 'TikTok', f'https://www.tiktok.com/{live_match.group(1)}/live'
+            if url.hostname == 'live.tiktok.com':
+                direct_live = re.fullmatch(r'/(@[A-Za-z0-9_.-]+)(/live)?/?', url.path)
+                if direct_live:
+                    return 'TikTok', f'https://www.tiktok.com/{direct_live.group(1)}/live'
             return 'TikTok', validate_search_result_url(value)
         if url.hostname in ('vm.tiktok.com', 'vt.tiktok.com') and re.fullmatch(
                 r'/[A-Za-z0-9_-]+/?', url.path):
             return 'TikTok', f'https://{url.hostname}{url.path}'
-        if url.hostname in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'):
+        if url.hostname in ('youtube.com', 'www.youtube.com', 'm.youtube.com'):
             from youtube.search import validate_youtube_url
             return 'YouTube', validate_youtube_url(value)
     except (ValueError, VideoControlError):

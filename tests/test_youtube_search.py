@@ -33,3 +33,18 @@ def test_youtube_search_uses_platform_label_when_the_card_has_no_channel():
 def test_youtube_validator_rejects_paths_that_only_start_with_watch():
     with pytest.raises(VideoControlError):
         validate_youtube_url('https://www.youtube.com/watchlater?v=AbCdEfGhI_j')
+
+
+def test_youtube_validator_accepts_shorts_and_rejects_regular_videos_and_music():
+    assert validate_youtube_url('https://www.youtube.com/shorts/AbCdEfGhI_j') == 'https://www.youtube.com/shorts/AbCdEfGhI_j'
+    assert validate_youtube_url('https://m.youtube.com/shorts/AbCdEfGhI_j?feature=share') == 'https://www.youtube.com/shorts/AbCdEfGhI_j'
+
+    with pytest.raises(VideoControlError):
+        validate_youtube_url('https://www.youtube.com/watch?v=AbCdEfGhI_j')
+
+    with pytest.raises(VideoControlError):
+        validate_youtube_url('https://youtu.be/AbCdEfGhI_j')
+
+    with pytest.raises(VideoControlError):
+        validate_youtube_url('https://music.youtube.com/watch?v=AbCdEfGhI_j')
+

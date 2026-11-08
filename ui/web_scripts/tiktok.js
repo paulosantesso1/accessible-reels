@@ -1,4 +1,4 @@
-(() => {
+  (() => {
   if (globalThis.__accessibleReelsInstalled) return;
   globalThis.__accessibleReelsInstalled = true;
 
@@ -11,6 +11,43 @@
   let lastActiveSource = "";
   const applyingAudio = new WeakSet();
   const watchedVideos = new WeakSet();
+  let liveChatHidden = false;
+  const LIVE_CHAT_SELECTORS = [
+    '[data-e2e="chat-room"]',
+    '[data-e2e="live-chat-room"]',
+    '[class*="DivChatRoom"]',
+    '[class*="ChatContainer"]',
+    '[class*="chat-room"]',
+    'div[role="log"]',
+    '[data-e2e="chat-message-list"]'
+  ];
+  const isLivePage = () => /^\/@[^/]+\/live\/?$/.test(location.pathname) ||
+    location.hostname === "live.tiktok.com" ||
+    location.pathname === "/live" || location.pathname.startsWith("/live/");
+  const liveChatElements = () => [...new Set(LIVE_CHAT_SELECTORS.flatMap(selector => [...document.querySelectorAll(selector)]))];
+  // The chat's own display and ARIA attributes are kept so that showing it again
+  // restores exactly what the site had, e.g. aria-live="polite" for NVDA.
+  function hideLiveChat(el) {
+    if (el.dataset.accessibleChatState) return;
+    el.dataset.accessibleChatState = JSON.stringify({
+      display: el.style.display,
+      hidden: el.getAttribute("aria-hidden"),
+      live: el.getAttribute("aria-live")
+    });
+    el.style.setProperty("display", "none", "important");
+    el.setAttribute("aria-hidden", "true");
+    el.setAttribute("aria-live", "off");
+  }
+  function showLiveChat(el) {
+    if (!el.dataset.accessibleChatState) return;
+    const previous = JSON.parse(el.dataset.accessibleChatState);
+    delete el.dataset.accessibleChatState;
+    el.style.display = previous.display;
+    for (const [name, value] of [["aria-hidden", previous.hidden], ["aria-live", previous.live]]) {
+      if (value === null) el.removeAttribute(name);
+      else el.setAttribute(name, value);
+    }
+  }
   const audioScheduleGeneration = new WeakMap();
 
   function publishAudioPreference() {
@@ -123,8 +160,13 @@
   // Events normally catch TikTok resets in the same task. This inexpensive
   // fallback repairs silent resets that the site performs without an event.
   setInterval(() => {
-    if (preferredVolume === null) return;
-    document.querySelectorAll("video").forEach(applyAudioPreference);
+    if (preferredVolume !== null) {
+      document.querySelectorAll("video").forEach(applyAudioPreference);
+    }
+    // Outside a live the broad chat selectors could match unrelated parts of the site.
+    if (liveChatHidden && isLivePage()) {
+      liveChatElements().forEach(hideLiveChat);
+    }
   }, 250);
   const visible = element => {
     if (!element) return false;
@@ -549,10 +591,17 @@
   function canonicalLink(value) {
     try {
       const url = new URL(value, location.href);
-      const match = url.pathname.match(/^\/@[^/?#]+\/video\/(\d+)\/?$/);
-      if (url.protocol !== "https:" || !["www.tiktok.com", "tiktok.com"].includes(url.hostname) ||
-          url.username || url.password || url.port || !match) return "";
-      return `https://www.tiktok.com${url.pathname}`;
+      const videoMatch = url.pathname.match(/^\/@[^/?#]+\/video\/(\d+)\/?$/);
+      const liveMatch = url.pathname.match(/^\/(@[^/?#]+)\/live\/?$/);
+      const directLive = url.hostname === "live.tiktok.com" ? url.pathname.match(/^\/(@[^/?#]+)(\/live)?\/?$/) : null;
+      const trustedHost = ["www.tiktok.com", "tiktok.com", "live.tiktok.com"].includes(url.hostname);
+      if (url.protocol !== "https:" || !trustedHost || url.username || url.password || url.port) return "";
+      if (directLive) return `https://www.tiktok.com/${directLive[1]}/live`;
+      if (liveMatch) return `https://www.tiktok.com/${liveMatch[1]}/live`;
+      if (videoMatch) return `https://www.tiktok.com${url.pathname.replace(/\/$/, "")}`;
+      return "";
+
+
     } catch (_error) { return ""; }
   }
 
@@ -794,14 +843,20 @@
   function collectSearchResults() {
     const results = [];
     const seen = new Set();
-    for (const anchor of document.querySelectorAll("a[href*='/video/']")) {
+    // Live cards link to /@author/live; they only show up when the search
+    // includes lives, which uses TikTok's general results page.
+    for (const anchor of document.querySelectorAll("a[href*='/video/'], a[href*='/live']")) {
       let url;
       try { url = new URL(anchor.href, location.href); } catch (_error) { continue; }
-      const match = url.pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
-      if (!match || seen.has(match[0])) continue;
-      seen.add(match[0]);
+      const videoMatch = url.pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
+      const liveMatch = url.pathname.match(/^\/(\@[^/?#]+)\/live\/?$/);
+      if (!videoMatch && !liveMatch) continue;
+      const key = videoMatch ? videoMatch[0] : liveMatch[0];
+      if (seen.has(key)) continue;
+      seen.add(key);
       const container = anchor.closest(
-        "[data-e2e=search-card-video-container], [data-e2e=user-post-item], li"
+        "[data-e2e=search-card-video-container], [data-e2e=search-card-live-container], " +
+        "[data-e2e=user-post-item], li"
       ) || anchor.parentElement;
       const image = anchor.querySelector("img") || (container && container.querySelector("img"));
       const description = normalizedText(
@@ -809,9 +864,12 @@
         anchor.getAttribute("aria-label") || anchor.title ||
         (container && container.innerText) || ""
       );
+      const author = videoMatch ? videoMatch[1] : liveMatch[1];
       results.push({
-        url: `https://www.tiktok.com/${match[1]}/video/${match[2]}`,
-        author: decodeURIComponent(match[1]),
+        url: videoMatch
+          ? `https://www.tiktok.com/${author}/video/${videoMatch[2]}`
+          : `https://www.tiktok.com/${author}/live`,
+        author: decodeURIComponent(author),
         description
       });
       if (results.length >= 50) break;
@@ -997,18 +1055,126 @@
     "[data-e2e=comment-icon]", "[role=button][aria-label*='coment' i]",
     "[role=button][aria-label*='comment' i]"
   ];
+  // On TikTok comment-level-1 marks the paragraph with a comment's text, inside the item
+  // that also holds its author and its Responder control. Each comment is listed once,
+  // through that item, so a reply always starts from the element that has Responder.
+  const COMMENT_TEXT = "[data-e2e=comment-level-1]";
+  const COMMENT_ITEM = "[data-e2e=comment-item], [class*='CommentItemContainer'], [class*='CommentItem']";
+  const REPLY_CONTROL = "[data-e2e*='comment-reply' i], [data-e2e*='reply' i], button, [role=button]";
+  let nextCommentId = 0;
+  function replyControlIn(item) {
+    return [...item.querySelectorAll(REPLY_CONTROL)].find(control =>
+      /comment-reply/i.test(control.getAttribute("data-e2e") || "") ||
+      /^(responder|reply)$/i.test(normalizedText(control.innerText || control.getAttribute("aria-label")))) || null;
+  }
+  function commentItemOf(element) {
+    if (!element.matches(COMMENT_TEXT)) return element;
+    const item = element.parentElement?.closest(COMMENT_ITEM);
+    if (item) return item;
+    // Without a known item class, the item is the nearest ancestor holding Responder.
+    for (let node = element, level = 0; node && level < 6; node = node.parentElement, level++) {
+      if (replyControlIn(node)) return node;
+    }
+    return element;
+  }
+  function commentElements() {
+    const items = [];
+    for (const element of document.querySelectorAll(`${COMMENT_ITEM}, ${COMMENT_TEXT}`)) {
+      if (!visible(element)) continue;
+      const item = commentItemOf(element);
+      if (!items.includes(item)) items.push(item);
+    }
+    // An item inside another one is part of that comment (its reply thread), not a new comment.
+    return items.filter(item => !items.some(other => other !== item && other.contains(item)));
+  }
+  function commentText(item) {
+    const author = normalizedText(item.querySelector("[data-e2e^='comment-username']")?.innerText);
+    const body = normalizedText(item.querySelector(COMMENT_TEXT)?.innerText);
+    return author && body ? `${author}: ${body}` : normalizedText(item.innerText);
+  }
   function commentRows() {
     const seen = new Set();
-    return [...document.querySelectorAll(
-      "[data-e2e=comment-item], [data-e2e=comment-level-1], [class*='CommentItem']"
-    )].filter(visible).map(item => {
-      const text = normalizedText(item.innerText);
+    return commentElements().map(item => {
+      const text = commentText(item);
       if (!text || seen.has(text)) return null;
       seen.add(text);
-      const id = item.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${seen.size}`;
-      item.setAttribute("data-accessible-reels-comment-id", id);
+      // Ids never repeat, so a list built earlier can not point at another comment.
+      let id = item.getAttribute("data-accessible-reels-comment-id");
+      if (!id) {
+        id = `accessible-reels-comment-${++nextCommentId}`;
+        item.setAttribute("data-accessible-reels-comment-id", id);
+      }
       return {id, text};
     }).filter(Boolean).slice(0, 200);
+  }
+  // Logged when Responder is not found: the shape of the comment, never its text or author.
+  function describeCommentItem(item) {
+    const shape = [];
+    const walk = (node, depth) => {
+      if (shape.length >= 60 || depth > 8) return;
+      const names = String(node.className?.baseVal ?? node.className ?? "").split(/\s+/)
+        .map(name => name.split("-").pop()).filter(name => /^[A-Z]/.test(name)).join(".");
+      const label = node.getAttribute("aria-label") || "";
+      const control = node.matches("button, [role=button]") ? normalizedText(node.innerText).slice(0, 15) : "";
+      shape.push([depth, node.tagName.toLowerCase(), node.getAttribute("data-e2e") || "", node.getAttribute("role") || "",
+        names, label.length <= 25 ? label : "", control, visible(node) ? "visible" : "hidden"].join("|"));
+      for (const child of node.children) walk(child, depth + 1);
+    };
+    walk(item, 0);
+    return {comment_item: shape};
+  }
+  // The send control of a comment field is found from the field outwards. It may be a
+  // text button, an icon named by aria-label/data-e2e, or an icon that only turns
+  // TikTok's red once the field has text; emoji and mention buttons are never it.
+  const TIKTOK_ACTIVE_RED = "rgb(254, 44, 85)";
+  const POST_CANDIDATES = "[data-e2e*='comment-post' i], [data-e2e*='post' i], button, [role=button]";
+  const POST_NAME = /^(publicar|postar|post|enviar|send)\b/i;
+  const NOT_POST = /emoji|mention|comment-at|gif|image|imagem|cancel|fechar|close|responder|reply|curtir|like/i;
+  function controlName(element) {
+    return normalizedText(element.getAttribute("aria-label") || element.getAttribute("title") ||
+      element.querySelector("svg title")?.textContent || element.textContent || "");
+  }
+  function enabledControl(element) {
+    return visible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true";
+  }
+  function paintedRed(element) {
+    return [element, ...element.querySelectorAll("svg, path")].some(node => {
+      const style = getComputedStyle(node);
+      return [style.color, style.fill, style.backgroundColor].includes(TIKTOK_ACTIVE_RED);
+    });
+  }
+  function postButtonFor(editor) {
+    for (let area = editor.parentElement; area && area !== document.documentElement; area = area.parentElement) {
+      const candidates = [...area.querySelectorAll(POST_CANDIDATES)]
+        .filter(element => !element.contains(editor) && enabledControl(element));
+      const named = candidates.find(element => POST_NAME.test(controlName(element)) ||
+        /comment-post/i.test(element.getAttribute("data-e2e") || ""));
+      if (named) return named;
+      const red = candidates.find(element => paintedRed(element) &&
+        !NOT_POST.test(`${element.getAttribute("data-e2e") || ""} ${controlName(element)}`));
+      if (red) return red;
+      // Past this point the area also holds another field, whose button is not this one's.
+      if ([...area.querySelectorAll("[contenteditable=true]")].some(other => other !== editor && visible(other))) return null;
+    }
+    return null;
+  }
+  // Logged when no send control is found: the controls around the field, never comment text.
+  function describePostArea(editor) {
+    const controls = [];
+    let area = editor.parentElement;
+    for (let level = 0; area && level < 10 && controls.length < 25; level++, area = area.parentElement) {
+      for (const element of area.querySelectorAll("button, [role=button], [data-e2e], svg")) {
+        if (controls.length >= 25 || element.contains(editor) || element.dataset.accessibleReelsSeen) continue;
+        element.dataset.accessibleReelsSeen = "1";
+        const style = getComputedStyle(element);
+        controls.push([level, element.tagName.toLowerCase(), element.getAttribute("data-e2e") || "",
+          element.getAttribute("role") || "", element.getAttribute("aria-label") || "",
+          normalizedText(element.textContent).slice(0, 20), element.disabled || element.getAttribute("aria-disabled") || "",
+          style.color, style.fill, style.backgroundColor, visible(element) ? "visible" : "hidden"].join("|"));
+      }
+    }
+    document.querySelectorAll("[data-accessible-reels-seen]").forEach(element => delete element.dataset.accessibleReelsSeen);
+    return {post_area: controls};
   }
   async function openComments(video) {
     const button = findNearVideo(COMMENT_SELECTORS);
@@ -1032,11 +1198,14 @@
       rows.find(item => item.text === normalizedText(text));
     if (!target) throw new Error("O comentário selecionado não está mais disponível.");
     const element = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(target.id)}"]`);
-    const reply = element && [...element.querySelectorAll("button, [role=button], [data-e2e*='reply' i]")]
-      .find(button => visible(button) && /^(responder|reply)$/i.test(normalizedText(button.innerText || button.getAttribute("aria-label"))));
-    if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+    const reply = element && replyControlIn(element);
+    if (!reply || !visible(reply)) {
+      const error = new Error("Não foi possível localizar Responder neste comentário.");
+      if (element) error.details = describeCommentItem(element);
+      throw error;
+    }
     await trustedClick(reply);
-    return normalizedText(element.innerText);
+    return element;
   }
 
   // The logged-in account's own profile link is in the side navigation.
@@ -1414,7 +1583,7 @@
       await openComments(video);
       const identifier = typeof argument === "object" ? argument.replyTo || argument.id : argument;
       const text = typeof argument === "object" ? argument.replyText || argument.text : "";
-      return {replyTo: await replyToComment(identifier, text)};
+      return {replyTo: normalizedText((await replyToComment(identifier, text)).innerText)};
     }
     if (action === "post_comment") {
       const text = normalizedText(typeof argument === "object" ? argument.text : String(argument || ""));
@@ -1422,30 +1591,78 @@
       try {
         await openComments(video);
         const replyTo = typeof argument === "object" ? argument.replyTo : "";
-        if (replyTo) await replyToComment(replyTo, argument.replyText);
+        const editors = () => [...document.querySelectorAll(
+          "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
+        )].filter(visible);
+        const inComment = element => element.closest(
+          "[data-e2e=comment-level-1], [data-e2e=comment-item], [class*='CommentItem'], [class*='ReplyContainer']");
+        let editor = null;
+        if (replyTo) {
+          const before = new Set(editors());
+          const comment = await replyToComment(replyTo, argument.replyText);
+          const follows = element => comment.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING;
+          // The reply box is inside the replied comment, or a reply field after it, or a field
+          // Responder just opened. The main field is never used: the reply would become a comment.
+          const replyBox = () => {
+            const boxes = editors().filter(element => comment.contains(element) || !before.has(element) ||
+              (inComment(element) && follows(element)));
+            return boxes.find(element => comment.contains(element)) || boxes.find(follows) || boxes[0] || null;
+          };
+          for (const limit = Date.now() + 2000; Date.now() < limit && !editor; await sleep(100)) editor = replyBox();
+          if (!editor) throw new Error("A caixa de resposta do TikTok não abriu. Nada foi enviado.");
+        } else {
+          // A new comment never goes into a reply box left open inside a comment.
+          editor = editors().find(element => !inComment(element)) || editors()[0];
+        }
         const sameVideo = () => commentsVideo && commentsVideo.video === activeVideo() &&
           commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
         if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
-        const editor = [...document.querySelectorAll(
-          "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
-        )].find(visible);
         if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
-        if (normalizedText(editor.textContent)) throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
-        editor.focus();
-        editor.textContent = text;
-        editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
-        await sleep(150);
-        const post = [...document.querySelectorAll(
-          "button[data-e2e=comment-post], [data-e2e=comment-post], button"
-        )].find(element => visible(element) && /publicar|post/i.test(normalizedText(element.textContent)));
-        if (!post) throw new Error("Não foi possível localizar Publicar comentário.");
+        // A reply may start with the mention TikTok fills in; anything else is the person's draft.
+        const prefix = normalizedText(editor.textContent);
+        if (prefix && !(replyTo && /^@\S+$/.test(prefix))) {
+          throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
+        }
+        const expected = normalizedText(`${prefix} ${text}`);
+        // TikTok's editor ignores text set from script, so the application types it
+        // as trusted keyboard input after a real click places the caret in the field.
+        await trustedClick(editor);
+        // The click may land inside a mention; type after everything already in the field.
+        const caret = document.createRange();
+        caret.selectNodeContents(editor);
+        caret.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(caret);
+        const typed = await transport.runtime.sendMessage({type: "accessible-reels-trusted-text", text});
+        if (!typed?.ok) throw new Error(typed?.error || "Não foi possível digitar o comentário.");
+        // The button of the editor in use, so a reply is not sent by the main field's button.
+        // A new comment keeps the page-wide search by name as a last resort.
+        const findPost = () => postButtonFor(editor) || (replyTo ? null :
+          [...document.querySelectorAll(POST_CANDIDATES)].find(element =>
+            enabledControl(element) && POST_NAME.test(controlName(element))) || null);
+        let post = null;
+        for (const limit = Date.now() + 2000; Date.now() < limit && !post; await sleep(100)) {
+          if (normalizedText(editor.textContent) === expected) post = findPost();
+        }
+        if (normalizedText(editor.textContent) !== expected) {
+          throw new Error("O TikTok não aceitou o texto digitado. Nada foi enviado.");
+        }
+        if (!post) {
+          const error = new Error("Não foi possível localizar Publicar comentário. O texto ficou no campo do TikTok; " +
+            "confira pela página (F6) antes de tentar de novo.");
+          error.details = describePostArea(editor);
+          throw error;
+        }
         if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
         await trustedClick(post);
+        const shown = () => commentRows().map(row => normalizedText(row.text)).concat(
+          [...document.querySelectorAll("[data-e2e=comment-level-2], [data-e2e=comment-reply-item]")]
+            .filter(visible).map(element => normalizedText(element.innerText)));
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           await sleep(200);
-          if (sameVideo() && editor.isConnected && !normalizedText(editor.textContent) &&
-              commentRows().some(row => normalizedText(row.text).includes(text))) return {};
+          if (sameVideo() && !(editor.isConnected && normalizedText(editor.textContent)) &&
+              shown().some(row => row.includes(text))) return {};
         }
         throw new Error("O envio não foi confirmado. Confira os comentários antes de tentar novamente.");
       } finally {
@@ -1455,6 +1672,14 @@
     if (action === "close_comments") {
       await closeComments();
       return {};
+    }
+    if (action === "toggle_live_chat") {
+      if (!isLivePage()) throw new Error("Você não está em uma live.");
+      const elements = liveChatElements();
+      if (!elements.length) throw new Error("O chat da live ainda está carregando ou não está disponível.");
+      liveChatHidden = !liveChatHidden;
+      elements.forEach(liveChatHidden ? hideLiveChat : showLiveChat);
+      return {hidden: liveChatHidden};
     }
     if (action === "diagnostics") {
       return {message: `Extensão conectada; página ${location.hostname}; ` +

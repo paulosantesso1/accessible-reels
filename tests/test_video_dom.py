@@ -129,6 +129,120 @@ def test_search_waits_for_delayed_cards_without_needing_a_video(page):
                                   'author': '@ana', 'description': 'Resultado tardio'}]
 
 
+def test_search_collects_live_cards_next_to_videos(page):
+    page.set_content('''<main>
+      <div data-e2e="search-card-live-container">
+        <a href="https://www.tiktok.com/@bia/live?enter_from=search"><img alt="Live da Bia"></a>
+      </div>
+      <a href="https://www.tiktok.com/@ana/video/123"><img alt="Vídeo da Ana"></a>
+      <a href="https://www.tiktok.com/@ana/live/replay">Não é uma live</a>
+    </main>''')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('collect_search_results')")
+    assert result['ok'] is True
+    assert result['results'] == [
+        {'url': 'https://www.tiktok.com/@bia/live', 'author': '@bia', 'description': 'Live da Bia'},
+        {'url': 'https://www.tiktok.com/@ana/video/123', 'author': '@ana', 'description': 'Vídeo da Ana'},
+    ]
+
+
+TIKTOK_COMMENT_PAGE = '''
+  <style>
+    video { display:block; width:400px; height:300px; }
+    [role=button], button { display:block; width:140px; height:30px; }
+    #panel { display:none; }
+    #panel [contenteditable] { display:block; width:300px; height:40px; }
+    [data-e2e=comment-level-1] { display:block; min-height:20px; }
+  </style>
+  <article>
+    <video id="active"></video>
+    <div role="button" data-e2e="comment-icon" aria-label="Comentários"
+      onclick="document.getElementById('panel').style.display='block'">Comentários</div>
+  </article>
+  <section id="panel">
+    <div data-e2e="comment-level-1">ana: Primeiro comentário</div>
+    <div id="list"></div>
+    <div data-e2e="comment-input">
+      <div contenteditable="true" role="textbox"
+        oninput="document.getElementById('post').setAttribute('aria-disabled', String(!this.textContent.trim()))"></div>
+    </div>
+    <button id="post" data-e2e="comment-post" aria-disabled="true" onclick="
+      const editor = document.querySelector('[data-e2e=comment-input] [contenteditable]');
+      if (this.getAttribute('aria-disabled') === 'true') return;
+      const row = document.createElement('div');
+      row.dataset.e2e = 'comment-level-1';
+      row.textContent = 'eu: ' + editor.textContent;
+      document.getElementById('list').append(row);
+      editor.textContent = '';
+      window.published = (window.published || 0) + 1;">Publicar</button>
+    <button aria-label="Fechar" onclick="document.getElementById('panel').style.display='none'">X</button>
+  </section>
+'''
+
+
+def install_trusted_typing(page, accept=True):
+    """Fake the application side: real clicks focus, trusted text types into the focused field."""
+    page.evaluate('''accept => {
+      window.typed = [];
+      window.__accessibleTransport.runtime.sendMessage = async message => {
+        if (message.type === 'accessible-reels-trusted-text') {
+          window.typed.push(message.text);
+          if (accept) document.execCommand('insertText', false, message.text);
+          return {ok: true};
+        }
+        const hit = document.elementFromPoint(message.x, message.y);
+        hit.focus();
+        hit.click();
+        return {ok: true};
+      };
+    }''', accept)
+
+
+def test_tiktok_comment_is_typed_by_the_application_and_confirmed(page):
+    page.set_content(TIKTOK_COMMENT_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    result = page.evaluate("command('post_comment', {text: 'Comentário novo'})")
+    assert result == {'ok': True}
+    assert page.evaluate('window.typed') == ['Comentário novo']
+    assert page.evaluate('window.published') == 1
+    assert page.locator('#list').inner_text() == 'eu: Comentário novo'
+    assert not page.locator('#panel').is_visible()
+
+
+def test_tiktok_comment_is_not_published_when_the_editor_rejects_the_text(page):
+    page.set_content(TIKTOK_COMMENT_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page, accept=False)
+    result = page.evaluate("command('post_comment', {text: 'Comentário novo'})")
+    assert result['ok'] is False
+    assert 'não aceitou o texto' in result['error']
+    assert page.evaluate('window.published') is None
+
+
+def test_tiktok_comment_keeps_a_draft_left_on_the_page(page):
+    page.set_content(TIKTOK_COMMENT_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("document.querySelector('[contenteditable]').textContent = 'Rascunho'")
+    result = page.evaluate("command('post_comment', {text: 'Comentário novo'})")
+    assert result['ok'] is False
+    assert 'rascunho' in result['error']
+    assert page.evaluate('window.typed') == []
+    assert page.locator('[contenteditable]').inner_text() == 'Rascunho'
+
+
+def test_tiktok_comment_reports_when_the_network_does_not_show_it(page):
+    page.set_content(TIKTOK_COMMENT_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    # The site accepts the click but never lists the comment.
+    page.evaluate("document.getElementById('post').onclick = () => { window.published = 1; }")
+    result = page.evaluate("command('post_comment', {text: 'Comentário novo'})")
+    assert result['ok'] is False
+    assert 'não foi confirmado' in result['error']
+
+
 def test_initial_details_refresh_waits_for_delayed_video(page):
     page.set_content('<main id="player"></main>')
     install_embedded_tiktok(page)
@@ -1093,3 +1207,423 @@ def test_tiktok_not_interested_does_not_skip_when_the_feed_already_moved_on(page
     }''')
     install_embedded_tiktok(page)
     assert page.evaluate("command('not_interested')") == {"ok": True}
+
+
+LIVE_CHAT_PAGE = """<video id="active" style="width:600px;height:400px"></video>
+  <div data-e2e="chat-room" aria-live="polite">mensagem</div>"""
+
+
+def test_live_chat_toggle_hides_and_restores_chat_on_a_live(page):
+    load_tiktok_page(page, "/@ana/live", LIVE_CHAT_PAGE)
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('toggle_live_chat')") == {"ok": True, "hidden": True}
+    assert page.evaluate("document.querySelector('[data-e2e=chat-room]').style.display") == "none"
+    assert page.evaluate("command('toggle_live_chat')") == {"ok": True, "hidden": False}
+    assert page.evaluate("document.querySelector('[data-e2e=chat-room]').style.display") == ""
+
+
+def test_live_chat_toggle_reports_loading_on_unmounted_chat(page):
+    load_tiktok_page(page, "/@ana/live", '<video id="active" style="width:600px;height:400px"></video>')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('toggle_live_chat')")
+    assert result["ok"] is False
+    assert result["error"] == "O chat da live ainda está carregando ou não está disponível."
+
+
+def test_embedded_copy_link_returns_canonical_live_link(page):
+    load_tiktok_page(page, "/@ana/live", '<video id="active" style="width:600px;height:400px"></video>')
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('copy_link')")
+    assert result["ok"] is True
+    assert result["link"] == "https://www.tiktok.com/@ana/live"
+
+
+def test_live_chat_toggle_restores_the_sites_own_aria_attributes(page):
+    load_tiktok_page(page, "/@ana/live", LIVE_CHAT_PAGE)
+    install_embedded_tiktok(page)
+    chat = "document.querySelector('[data-e2e=chat-room]')"
+    page.evaluate("command('toggle_live_chat')")
+    assert page.evaluate(f"{chat}.getAttribute('aria-live')") == "off"
+    page.evaluate("command('toggle_live_chat')")
+    assert page.evaluate(f"{chat}.getAttribute('aria-live')") == "polite"
+    assert page.evaluate(f"{chat}.hasAttribute('aria-hidden')") is False
+
+
+def test_live_chat_toggle_outside_a_live_changes_nothing(page):
+    load_tiktok_page(page, "/@ana/video/123", LIVE_CHAT_PAGE)
+    install_embedded_tiktok(page)
+    result = page.evaluate("command('toggle_live_chat')")
+    assert result["ok"] is False
+    assert result["error"] == "Você não está em uma live."
+    assert page.evaluate("document.querySelector('[data-e2e=chat-room]').style.display") == ""
+
+
+
+
+def test_transport_sends_trusted_text_only_during_an_app_command(page):
+    page.set_content('<main></main>')
+    page.evaluate("() => { window.posted = []; window.reelsHost = {postMessage: m => window.posted.push(JSON.parse(m))}; }")
+    page.add_script_tag(content=(Path(__file__).resolve().parents[1] / "ui/web_scripts/transport.js").read_text(encoding="utf-8"))
+    result = page.evaluate('''async () => {
+      const runtime = __accessibleTransport.runtime;
+      const outside = await runtime.sendMessage({type: 'accessible-reels-trusted-text', text: 'fora'});
+      runtime.onMessage.addListener((message, _sender, respond) => {
+        runtime.sendMessage({type: 'accessible-reels-trusted-text', text: message.argument.text}).then(respond);
+        setTimeout(() => __accessibleClickDone(1, {ok: true}), 10);
+      });
+      const inside = await __accessibleRun('post_comment', {text: 'Olá'}, 'token-1', 'tiktok');
+      return {outside, inside, posted: window.posted};
+    }''')
+    assert result['outside']['ok'] is False
+    assert result['inside'] == {'ok': True}
+    assert result['posted'] == [{'type': 'text', 'token': 'token-1', 'id': 1, 'text': 'Olá'}]
+
+
+def test_transport_trusted_click_message_is_unchanged(page):
+    page.set_content('<main></main>')
+    page.evaluate("() => { window.posted = []; window.reelsHost = {postMessage: m => window.posted.push(JSON.parse(m))}; }")
+    page.add_script_tag(content=(Path(__file__).resolve().parents[1] / "ui/web_scripts/transport.js").read_text(encoding="utf-8"))
+    result = page.evaluate('''async () => {
+      const runtime = __accessibleTransport.runtime;
+      runtime.onMessage.addListener((_message, _sender, respond) => {
+        runtime.sendMessage({type: 'accessible-reels-trusted-click', x: 10, y: 20, follow_diagnostic: {target: 'x'}}).then(respond);
+        setTimeout(() => __accessibleClickDone(1, {ok: true}), 10);
+      });
+      const done = await __accessibleRun('toggle_like', null, 'token-2', 'tiktok');
+      const unknown = await runtime.sendMessage({type: 'outro-tipo'});
+      return {done, unknown, posted: window.posted};
+    }''')
+    assert result['done'] == {'ok': True}
+    assert result['unknown']['ok'] is False
+    assert result['posted'] == [{'type': 'click', 'token': 'token-2', 'id': 1, 'x': 10, 'y': 20,
+                                 'follow_diagnostic': {'target': 'x'}}]
+
+
+TIKTOK_REPLY_PAGE = TIKTOK_COMMENT_PAGE.replace(
+    '<div data-e2e="comment-level-1">ana: Primeiro comentário</div>',
+    '''<div data-e2e="comment-level-1" id="ana">ana: Primeiro comentário
+      <button onclick="
+        const box = document.createElement('div');
+        box.className = 'reply';
+        box.innerHTML = '<div contenteditable=true role=textbox style=white-space:pre-wrap></div>' +
+          '<button data-e2e=comment-post aria-disabled=true>Publicar</button>';
+        const editor = box.firstChild, post = box.lastChild;
+        editor.textContent = window.replyMention || '';
+        editor.oninput = () => post.setAttribute('aria-disabled', String(!editor.textContent.trim()));
+        post.onclick = () => {
+          const row = document.createElement('div');
+          row.dataset.e2e = 'comment-level-2';
+          row.textContent = 'eu: ' + editor.textContent;
+          document.getElementById('ana').append(row);
+          box.remove();
+          window.replies = (window.replies || 0) + 1;
+        };
+        this.after(box);
+        editor.focus();">Responder</button></div>''')
+
+
+def tiktok_reply_target(page):
+    comments = page.evaluate("command('comments')")['comments']
+    return next(item for item in comments if 'Primeiro comentário' in item['text'])
+
+
+def test_tiktok_reply_is_typed_in_the_reply_editor_and_confirmed(page):
+    page.set_content(TIKTOK_REPLY_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result == {'ok': True}
+    assert page.evaluate('window.typed') == ['Concordo']
+    assert page.evaluate('window.replies') == 1
+    assert page.locator('[data-e2e=comment-level-2]').inner_text() == 'eu: Concordo'
+    # The main field was not used.
+    assert page.evaluate('window.published') is None
+
+
+def test_tiktok_reply_keeps_the_mention_tiktok_fills_in(page):
+    page.set_content(TIKTOK_REPLY_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("window.replyMention = '@ana '")
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result == {'ok': True}
+    assert page.locator('[data-e2e=comment-level-2]').inner_text() == 'eu: @ana Concordo'
+
+
+def test_tiktok_reply_keeps_a_draft_in_the_reply_editor(page):
+    page.set_content(TIKTOK_REPLY_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("window.replyMention = 'Rascunho meu'")
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result['ok'] is False
+    assert 'rascunho' in result['error']
+    assert page.evaluate('window.typed') == []
+
+
+def test_tiktok_reply_reports_a_comment_that_disappeared(page):
+    page.set_content(TIKTOK_REPLY_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    result = page.evaluate("command('post_comment', {text: 'Concordo', replyTo: 'nao-existe', replyText: 'zé: sumiu'})")
+    assert result['ok'] is False
+    assert 'não está mais disponível' in result['error']
+    assert page.evaluate('window.typed') == []
+
+
+def test_tiktok_reply_is_not_sent_when_the_mention_would_merge_with_the_text(page):
+    # An editor that collapses the mention's trailing space would publish "@anaConcordo".
+    page.set_content(TIKTOK_REPLY_PAGE.replace(" style=white-space:pre-wrap", ""))
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("window.replyMention = '@ana '")
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result['ok'] is False
+    assert 'não aceitou o texto' in result['error']
+    assert page.evaluate('window.replies') is None
+
+
+def test_tiktok_new_comment_ignores_a_reply_box_left_open(page):
+    page.set_content(TIKTOK_REPLY_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("window.replyMention = '@ana '")
+    page.evaluate("document.getElementById('panel').style.display = 'block'; document.querySelector('#ana button').click()")
+    result = page.evaluate("command('post_comment', {text: 'Comentário normal'})")
+    assert result == {'ok': True}
+    assert page.locator('#list').inner_text() == 'eu: Comentário normal'
+    assert page.evaluate('window.replies') is None
+
+
+SEND_BUTTONS = {
+    'texto': '<button class="send">Publicar</button>',
+    'icone_data_e2e': ('<div role="button" class="send" data-e2e="comment-post">'
+                       '<svg viewBox="0 0 10 10" width="20" height="20"><path d="M0 0L10 5L0 10z" fill="currentColor"/></svg></div>'),
+    'icone_so_cor': ('<div role="button" class="send">'
+                     '<svg viewBox="0 0 10 10" width="20" height="20"><path d="M0 0L10 5L0 10z" fill="currentColor"/></svg></div>'),
+}
+
+
+def draft_field(kind, send):
+    """A comment field shaped like TikTok's Draft.js editor: the text box sits 7 levels below the send button's area."""
+    return (f'<div class="DivCommentInputWrapper" data-kind="{kind}"><div class="DivInputAreaContainer">'
+            '<div class="DivInputEditorContainer"><div class="DraftEditor-root"><div class="DraftEditor-editorContainer">'
+            '<div class="public-DraftStyleDefault-block"><div>'
+            '<div contenteditable="true" role="textbox" style="white-space:pre-wrap"></div>'
+            '</div></div></div></div></div>'
+            '<div role="button" data-e2e="comment-emoji" aria-label="Emoji">😀</div></div>'
+            f'{send}</div>')
+
+
+def tiktok_draft_page(send):
+    return f'''
+      <style>
+        video {{ display:block; width:400px; height:200px; }}
+        [role=button], button {{ display:block; min-width:40px; min-height:28px; }}
+        #panel {{ display:none; }}
+        [contenteditable] {{ display:block; width:300px; min-height:30px; }}
+        [data-e2e=comment-level-1] {{ display:block; min-height:20px; }}
+      </style>
+      <article><video id="active"></video>
+        <div role="button" data-e2e="comment-icon" aria-label="Comentários"
+          onclick="document.getElementById('panel').style.display='block'">Comentários</div></article>
+      <section id="panel">
+        <div data-e2e="comment-level-1" id="ana">ana: Primeiro comentário
+          <button id="reply-trigger" onclick="this.insertAdjacentHTML('afterend', window.replyField); wire(this.nextElementSibling);">Responder</button></div>
+        <div id="list"></div>
+        {draft_field('main', send)}
+        <button aria-label="Fechar" onclick="document.getElementById('panel').style.display='none'">X</button>
+      </section>
+      <script>
+        window.replyField = {draft_field('reply', send)!r};
+        function wire(wrapper) {{
+          const editor = wrapper.querySelector('[contenteditable]'), send = wrapper.querySelector('.send');
+          if (!send) return;
+          const update = () => {{
+            const on = Boolean(editor.textContent.trim());
+            send.setAttribute('aria-disabled', String(!on));
+            send.style.color = on ? 'rgb(254, 44, 85)' : 'rgb(160, 160, 160)';
+          }};
+          editor.addEventListener('input', update);
+          update();
+          send.addEventListener('click', () => {{
+            if (send.getAttribute('aria-disabled') === 'true') return;
+            const reply = wrapper.dataset.kind === 'reply';
+            const row = document.createElement('div');
+            row.dataset.e2e = reply ? 'comment-level-2' : 'comment-level-1';
+            row.textContent = 'eu: ' + editor.textContent;
+            (reply ? document.getElementById('ana') : document.getElementById('list')).append(row);
+            editor.textContent = '';
+            update();
+            if (reply) wrapper.remove();
+            window.sent = (window.sent || []).concat(wrapper.dataset.kind);
+          }});
+        }}
+        document.querySelectorAll('.DivCommentInputWrapper').forEach(wire);
+      </script>'''
+
+
+@pytest.mark.parametrize('send', sorted(SEND_BUTTONS))
+def test_tiktok_reply_finds_the_send_button_of_a_deep_draft_editor(page, send):
+    page.set_content(tiktok_draft_page(SEND_BUTTONS[send]))
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result == {'ok': True}
+    assert page.evaluate('window.sent') == ['reply']
+    assert page.locator('[data-e2e=comment-level-2]').inner_text() == 'eu: Concordo'
+
+
+@pytest.mark.parametrize('send', sorted(SEND_BUTTONS))
+def test_tiktok_new_comment_finds_the_send_button_of_a_deep_draft_editor(page, send):
+    page.set_content(tiktok_draft_page(SEND_BUTTONS[send]))
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    result = page.evaluate("command('post_comment', {text: 'Comentário novo'})")
+    assert result == {'ok': True}
+    assert page.evaluate('window.sent') == ['main']
+    assert page.locator('#list').inner_text() == 'eu: Comentário novo'
+
+
+@pytest.mark.parametrize('send', sorted(SEND_BUTTONS))
+def test_tiktok_new_comment_uses_its_own_button_while_a_reply_box_is_open(page, send):
+    page.set_content(tiktok_draft_page(SEND_BUTTONS[send]))
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("document.getElementById('panel').style.display = 'block'; document.getElementById('reply-trigger').click()")
+    result = page.evaluate("command('post_comment', {text: 'Comentário novo'})")
+    assert result == {'ok': True}
+    assert page.evaluate('window.sent') == ['main']
+
+
+def test_tiktok_reply_never_uses_the_emoji_button_or_another_fields_button(page):
+    # The reply box has only an emoji button; the main field's button must not send the reply.
+    page.set_content(tiktok_draft_page(SEND_BUTTONS['icone_so_cor']))
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("f => { window.replyField = f; }", draft_field('reply', ''))
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result['ok'] is False
+    assert 'Não foi possível localizar Publicar comentário' in result['error']
+    assert page.evaluate('window.sent') is None
+    # The log gets the controls around the field, to fix the selector with the real page.
+    area = result['details']['post_area']
+    assert any('comment-emoji' in line for line in area)
+    assert all('Concordo' not in line for line in area)
+
+
+def test_tiktok_reply_is_cancelled_when_the_reply_box_does_not_open(page):
+    page.set_content(tiktok_draft_page(SEND_BUTTONS['texto']))
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("document.getElementById('reply-trigger').onclick = null")
+    target = tiktok_reply_target(page)
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result['ok'] is False
+    assert 'caixa de resposta do TikTok não abriu' in result['error']
+    assert page.evaluate('window.typed') == []
+    assert page.evaluate('window.sent') is None
+
+
+def tiktok_comment_item(author, text, reply_thread=''):
+    """A comment shaped like TikTok's: the text paragraph is comment-level-1 inside the item with Responder."""
+    return f'''
+      <div class="css-1i7ohvi-DivCommentItemContainer eo72wou0" data-author="{author}">
+        <div class="css-x-DivCommentContentContainer"><div class="css-x-DivContentContainer">
+          <a href="/@{author}"><span data-e2e="comment-username-1">{author}</span></a>
+          <p data-e2e="comment-level-1"><span>{text}</span></p>
+          <p class="css-x-PCommentSubContent"><span data-e2e="comment-time-1">2d</span>
+            <span data-e2e="comment-reply-1" role="button" onclick="openReply(this)">Responder</span></p>
+        </div></div>
+        <div class="css-x-DivReplyContainer">{reply_thread}</div>
+      </div>'''
+
+
+TIKTOK_REAL_COMMENTS_PAGE = '''
+  <style>
+    video { display:block; width:400px; height:200px; }
+    [role=button], button { display:inline-block; min-width:40px; min-height:24px; }
+    #panel { display:none; }
+    [contenteditable] { display:block; width:300px; min-height:30px; }
+  </style>
+  <article><video id="active"></video>
+    <div role="button" data-e2e="comment-icon" aria-label="Comentários"
+      onclick="document.getElementById('panel').style.display='block'">Comentários</div></article>
+  <section id="panel">
+    <div id="comments">''' + tiktok_comment_item('ana', 'Primeiro comentário', '''
+      <div class="css-y-DivCommentItemContainer"><span data-e2e="comment-username-2">carla</span>
+        <p data-e2e="comment-level-2"><span>Resposta antiga</span></p></div>''') + tiktok_comment_item('bia', 'Segundo comentário') + '''
+    </div>
+    <button aria-label="Fechar" onclick="document.getElementById('panel').style.display='none'">X</button>
+  </section>
+  <script>
+    function openReply(control) {
+      const item = control.closest('[class*=DivCommentItemContainer]');
+      const box = document.createElement('div');
+      box.innerHTML = '<div contenteditable="true" role="textbox" style="white-space:pre-wrap"></div><button>Publicar</button>';
+      const editor = box.firstChild, send = box.lastChild;
+      send.onclick = () => {
+        const row = document.createElement('div');
+        row.innerHTML = '<p data-e2e="comment-level-2"></p>';
+        row.firstChild.textContent = editor.textContent;
+        item.querySelector('[class*=DivReplyContainer]').append(row);
+        box.remove();
+        window.sentTo = (window.sentTo || []).concat(item.dataset.author);
+      };
+      item.querySelector('[class*=DivContentContainer]').append(box);
+      editor.focus();
+    }
+  </script>'''
+
+
+def test_tiktok_lists_each_comment_once_with_its_author(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    comments = page.evaluate("command('comments')")['comments']
+    assert [item['text'] for item in comments] == ['ana: Primeiro comentário', 'bia: Segundo comentário']
+    assert len({item['id'] for item in comments}) == 2
+
+
+@pytest.mark.parametrize('index, author', [(0, 'ana'), (1, 'bia')])
+def test_tiktok_reply_uses_the_responder_of_the_chosen_comment(page, index, author):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    target = page.evaluate("command('comments')")['comments'][index]
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result == {'ok': True}
+    assert page.evaluate('window.sentTo') == [author]
+
+
+def test_tiktok_reply_reports_the_shape_of_a_comment_without_responder(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    target = page.evaluate("command('comments')")['comments'][0]
+    page.evaluate("document.querySelectorAll('[data-e2e=comment-reply-1]').forEach(e => e.remove())")
+    result = page.evaluate("t => command('post_comment', {text: 'Concordo', replyTo: t.id, replyText: t.text})", target)
+    assert result['ok'] is False
+    assert result['error'] == 'Não foi possível localizar Responder neste comentário.'
+    shape = result['details']['comment_item']
+    assert any('DivCommentItemContainer' in line for line in shape)
+    assert any('comment-level-1' in line for line in shape)
+    # Neither the comment's text nor its author goes to the log.
+    assert not any('Primeiro' in line or 'ana' in line.split('|') for line in shape)
+    assert page.evaluate('window.typed') == []
+
+
+def test_tiktok_comment_ids_never_repeat_after_the_list_is_rebuilt(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    first = page.evaluate("command('comments')")['comments']
+    # TikTok renders the comments again with new elements.
+    page.evaluate("document.getElementById('comments').innerHTML = document.getElementById('comments').innerHTML"
+                  ".replace(/ data-accessible-reels-comment-id=\"[^\"]*\"/g, '')")
+    second = page.evaluate("command('comments')")['comments']
+    assert not {item['id'] for item in first} & {item['id'] for item in second}

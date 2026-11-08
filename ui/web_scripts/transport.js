@@ -17,21 +17,27 @@
     runtime: {
       onMessage: {addListener: fn => { listener = fn; }},
       sendMessage: message => {
-        const isClick = message.type === 'accessible-reels-trusted-click';
-        const isKey = message.type === 'accessible-reels-trusted-key';
-        if ((!isClick && !isKey) || !commandToken) {
+        const kind = {
+          'accessible-reels-trusted-click': 'click',
+          'accessible-reels-trusted-key': 'key',
+          'accessible-reels-trusted-text': 'text',
+        }[message.type];
+        if (!kind || !commandToken) {
           return Promise.resolve({ok:false, error:'Nenhum comando do aplicativo em execução.'});
         }
         return new Promise(resolve => {
           const id = ++clickId;
-          const timeout = setTimeout(() => { waiting.delete(id); resolve({ok:false, error:'O comando não respondeu a tempo.'}); }, 5000);
+          const timeout = setTimeout(() => { waiting.delete(id); resolve({ok:false, error:'O aplicativo não respondeu a tempo.'}); }, 5000);
           waiting.set(id, result => { clearTimeout(timeout); resolve(result); });
-          window.reelsHost.postMessage(JSON.stringify(isKey ? {
-            type:'key', token:commandToken, id, key:message.key
-          } : {
-            type:'click', token:commandToken, id, x:message.x, y:message.y,
-            follow_diagnostic: message.follow_diagnostic
-          }));
+          let payload;
+          if (kind === 'click') {
+            payload = {type:'click', token:commandToken, id, x:message.x, y:message.y, follow_diagnostic: message.follow_diagnostic};
+          } else if (kind === 'key') {
+            payload = {type:'key', token:commandToken, id, key:message.key};
+          } else {
+            payload = {type:'text', token:commandToken, id, text:message.text};
+          }
+          window.reelsHost.postMessage(JSON.stringify(payload));
         });
       }
     }

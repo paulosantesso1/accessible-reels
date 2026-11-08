@@ -139,410 +139,6 @@
     probe();
   }
   setTimeout(startInitialPlaybackWhenReady, 0);
-  function reelRoot(video = activeVideo()) {
-    let root = video;
-    for (let p = video?.parentElement; p && p !== document.body; p = p.parentElement) {
-      if ([...p.querySelectorAll("video")].some(item => item !== video)) break;
-      // Never include the global sidebar, or a dialog belonging to another action.
-      if (p.matches("main, [role=main]") || p.querySelector("nav")) break;
-      root = p;
-    }
-    return root;
-  }
-  function label(element) {
-    return clean(element.getAttribute("aria-label") || element.getAttribute("title") ||
-      element.querySelector("svg[aria-label],img[alt]")?.getAttribute("aria-label") ||
-      element.querySelector("img[alt]")?.getAttribute("alt") || element.textContent);
-  }
-  function buttonNamed(root, pattern) {
-    if (!root) return null;
-    const candidates = [...root.querySelectorAll("button,[role=button],svg[aria-label]")]
-      .filter(el => visible(el) && pattern.test(label(el)))
-      .map(el => el.closest("button,[role=button]") || el);
-    // Nested role=button wrappers exist around Save. Prefer the actual inner button.
-    return candidates.find(el => !candidates.some(other => other !== el && el.contains(other))) || null;
-  }
-  function followState(element) {
-    if (!element) return null;
-    const value = clean([
-      element.getAttribute("aria-label"), element.getAttribute("title"), element.textContent
-    ].filter(Boolean).join(" ")).toLowerCase();
-    if (/deixar de seguir|parar de seguir|\bunfollow\b|\bseguindo\b|\bfollowing\b/.test(value)) return true;
-    if (/\bseguir\b|\bfollow\b/.test(value)) {
-      return element.getAttribute("aria-pressed") === "true";
-    }
-    return null;
-  }
-  function followButton(root) {
-    return [...root.querySelectorAll("button, [role='button']")]
-      .find(element => visible(element) && followState(element) !== null) || null;
-  }
-  async function click(element) {
-    if (!visible(element) || element.disabled || element.getAttribute("aria-disabled") === "true") {
-      throw new Error("O controle não está disponível no Instagram.");
-    }
-    element.scrollIntoView({block: "nearest", inline: "nearest"});
-    await sleep(80);
-    const rect = element.getBoundingClientRect();
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    if (!hit || (hit !== element && !element.contains(hit))) {
-      throw new Error("Outro painel está cobrindo o controle. Feche-o no Instagram antes de continuar.");
-    }
-    const result = await transport.runtime.sendMessage({
-      type: "accessible-reels-trusted-click", x: rect.left + rect.width / 2, y: rect.top + rect.height / 2
-    });
-    if (!result?.ok) throw new Error(result?.error || "O navegador recusou o clique.");
-  }
-  // Best-effort: Instagram's own player already advances on a real
-  // ArrowDown/ArrowUp key press, independent of whatever nav-button markup
-  // or preloaded Reels are present -- try that before the click/scroll
-  // fallback, which depends on markup that can change. Never throws.
-  async function trustedKeyPress(key) {
-    try {
-      await transport.runtime.sendMessage({type: "accessible-reels-trusted-key", key});
-    } catch (_) {}
-  }
-  async function waitFor(read, message, timeout = 5000) {
-    const deadline = Date.now() + timeout;
-    do {
-      const value = read();
-      if (value) return value;
-      await sleep(150);
-    } while (Date.now() < deadline);
-    throw new Error(message);
-  }
-  function canonicalLink(value) {
-    try {
-      const url = new URL(value, location.href);
-      const match = url.pathname.match(/^\/(reels?|p)\/([\w-]+)\/?$/);
-      if (url.protocol !== "https:" || !["www.instagram.com", "instagram.com"].includes(url.hostname) ||
-          url.username || url.password || url.port || !match || match[2] === "audio") return "";
-      return `https://www.instagram.com/${match[1] === "p" ? "p" : "reel"}/${match[2]}/`;
-    } catch (_error) { return ""; }
-  }
-  function snapshot() {
-    const video = activeVideo();
-    if (!video) throw new Error("Abra um Reel no Instagram antes de usar os controles.");
-    const root = reelRoot(video);
-    const anchors = [...root.querySelectorAll("a[href]")];
-    const profile = anchors.find(a => /^\/[\w.]+\/reels\/?$/.test(new URL(a.href).pathname)) ||
-      anchors.find(a => /^\/[\w.]+\/$/.test(new URL(a.href).pathname) && !/^\/(?:reels|explore|direct|accounts)\//.test(new URL(a.href).pathname));
-    const author = profile ? `@${new URL(profile.href).pathname.split("/")[1]}` : "Autor não encontrado";
-    const group = video.closest('[role="group"]') || root;
-    const captions = [...group.querySelectorAll("button,[role=button]")].filter(el =>
-      !el.contains(video) && !el.querySelector("button,[role=button],svg") &&
-      !el.getAttribute("aria-label") && clean(el.textContent) &&
-      !/^(seguir|seguindo|follow|following|\d[\d.,\s]*|mais|more)$/i.test(clean(el.textContent)));
-    const description = clean(captions[0]?.textContent).replace(/\s*…?\s*(mais|more)$/i, "").replace(/\s*…$/, "") ||
-      clean(root.querySelector("h1")?.textContent) || "Descrição não encontrada";
-    const link = anchors.map(a => canonicalLink(a.href)).find(Boolean) || canonicalLink(location.href);
-    let profile_url = "";
-    if (profile) {
-        let username = new URL(profile.href).pathname.split("/")[1];
-        if (username) profile_url = `https://www.instagram.com/${username}/reels/`;
-    }
-
-    return {author, description, link, profile_url};
-  }
-  function commentDialog() {
-    return [...document.querySelectorAll('[role="dialog"]')].find(el => visible(el) &&
-      /comentários|comments/i.test(el.innerText));
-  }
-  function commentRows(dialog) {
-    const rows = [];
-    for (const time of dialog.querySelectorAll("time")) {
-      let row = time;
-      for (let p = time.parentElement; p && p !== dialog; p = p.parentElement) {
-        if (p.querySelectorAll("time").length > 1 || p.querySelector("input,textarea")) break;
-        row = p;
-      }
-      const text = clean(row.innerText);
-      if (text && !rows.some(item => item.text === text)) {
-        const id = row.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${rows.length + 1}`;
-        row.setAttribute("data-accessible-reels-comment-id", id);
-        rows.push({id, text});
-      }
-      if (rows.length >= 200) break;
-    }
-    return rows;
-  }
-  async function closeComments() {
-    const dialog = commentDialog();
-    if (dialog) {
-      const button = buttonNamed(dialog, /^(fechar|close)$/i);
-      if (!button) throw new Error("Não foi possível localizar Fechar comentários.");
-      await click(button);
-      await waitFor(() => !commentDialog(), "O Instagram não fechou os comentários.", 2000);
-    }
-    commentsVideo = null;
-  }
-  async function openComments(video) {
-    let dialog = commentDialog();
-    if (!dialog) {
-      const button = buttonNamed(reelRoot(video), /^(comentar|comment)(\s+.*)?$/i);
-      if (!button) throw new Error("Não foi possível localizar Comentar neste Reel.");
-      await click(button);
-      dialog = await waitFor(commentDialog, "O Instagram não abriu os comentários.");
-    }
-    commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
-    await waitFor(() => commentRows(dialog).length || !dialog.querySelector('[role="status"]'),
-      "Os comentários ainda estão carregando. Tente novamente.", 5000);
-    return dialog;
-  }
-  async function replyToComment(dialog, identifier, text) {
-    const rows = commentRows(dialog);
-    const target = rows.find(item => item.id === String(identifier || "")) ||
-      rows.find(item => item.text === clean(text));
-    if (!target) throw new Error("O comentário selecionado não está mais disponível.");
-    const element = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(target.id)}"]`);
-    const reply = buttonNamed(element, /^(responder|reply)$/i);
-    if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
-    await click(reply);
-    return clean(element.innerText);
-  }
-  const NOT_INTERESTED = /^(não tenho interesse|não me interessa|não estou interessado|not interested|ocultar anúncio|hide ad)\b/i;
-  function findNotInterestedItem() {
-    const matches = [...document.querySelectorAll("[role=menuitem], button, [role=button], li, a")]
-      .filter(el => visible(el) && NOT_INTERESTED.test(clean(el.getAttribute("aria-label") || el.textContent)));
-    return matches.find(el => !matches.some(other => other !== el && el.contains(other))) || null;
-  }
-  // The platform may move on by itself after a mark; only ask for a skip when the same Reel is still there.
-  async function afterMark(video, link, extra = {}) {
-    const deadline = Date.now() + 1500;
-    while (Date.now() < deadline) {
-      await sleep(150);
-      if (activeVideo() !== video || snapshot().link !== link) return extra;
-    }
-    return {...extra, advance: true};
-  }
-  async function markNotInterested() {
-    const video = activeVideo();
-    if (!video) throw new Error("Não foi possível localizar o Reel atual.");
-    try {
-      let item = findNotInterestedItem();
-      if (!item) {
-        const more = buttonNamed(reelRoot(video), /^(mais|more|mais opções|more options|opções|options)$/i);
-        if (!more) throw new Error("Não foi possível localizar o menu Mais no Reel atual.");
-        await click(more);
-        item = await waitFor(findNotInterestedItem,
-          "Este Reel não oferece a opção Não tenho interesse. Use F6 para acessar a página.", 3000);
-      }
-      const isAd = /^(ocultar anúncio|hide ad)/i.test(clean(item.getAttribute("aria-label") || item.textContent));
-      const link = snapshot().link;
-      await click(item);
-      await waitFor(() => !item.isConnected || !visible(item),
-        "O Instagram não confirmou a marcação. Confira na página (F6).", 3000);
-      return afterMark(video, link, isAd ? {ad: true} : {});
-    } catch (error) {
-      error.details = {controls: [...reelRoot(video).querySelectorAll("button,[role=button],svg[aria-label]")]
-        .filter(visible).slice(0, 60).map(el => `${el.tagName.toLowerCase()}|${label(el)}`),
-        popups: [...document.querySelectorAll("[role=menu],[role=dialog]")].filter(visible)
-          .map(el => clean(el.textContent).slice(0, 120))};
-      document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
-      throw error;
-    }
-  }
-  async function toggleSocial(pattern, undoPattern, name) {
-    const video = activeVideo();
-    const button = buttonNamed(reelRoot(video), pattern);
-    if (!button) throw new Error(`Não foi possível localizar ${name} no Reel atual.`);
-    const before = undoPattern.test(label(button));
-    await click(button);
-    const state = () => {
-      if (activeVideo() !== video) throw new Error("O Reel mudou durante o comando; confira o estado antes de repetir.");
-      const current = buttonNamed(reelRoot(video), pattern);
-      return current && undoPattern.test(label(current)) !== before;
-    };
-    await waitFor(state, `O Instagram não confirmou ${name}; confira o estado antes de repetir.`, 3500);
-    await sleep(700);
-    if (!state()) throw new Error(`O Instagram reverteu ${name}.`);
-    return {state: !before};
-  }
-  function collectSearchResults() {
-    const results = [];
-    const seen = new Set();
-    // Search cards can be mounted outside <main> while Instagram replaces the
-    // page shell. canonicalLink below keeps this broad selector restricted to
-    // actual Instagram posts and Reels.
-    for (const anchor of document.querySelectorAll('a[href]')) {
-      const url = canonicalLink(anchor.href);
-      if (!url || seen.has(url)) continue;
-      seen.add(url);
-      const image = anchor.querySelector("img");
-      const description = clean(image?.alt || anchor.getAttribute("aria-label") || anchor.textContent);
-      results.push({url, author: "Instagram", description: description && !/^reel$/i.test(description) ?
-        description : `Resultado ${results.length + 1}; abra para ler autor e descrição`});
-      if (results.length >= 50) break;
-    }
-    return {results};
-  }
-  function resultMetadata(html) {
-    const document = new DOMParser().parseFromString(html, "text/html");
-    const value = document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "";
-    // Instagram's public description is usually: "likes - author on date:
-    // \"caption\"" (with localized variants for "on").
-    const match = value.match(/-\s+(.+?)\s+(?:no|em|on)\s+.+?:\s*["“]([\s\S]*?)["”](?:\.|$)/i);
-    if (!match) return null;
-    const author = clean(match[1]).replace(/^@/, "");
-    const description = clean(match[2].split(/\n|\.{3}/)[0]);
-    return {author: author ? `@${author}` : "Instagram", description};
-  }
-  async function enrichSearchResults(results) {
-    // Test pages and login shells have no Instagram origin to query. The
-    // visible card data remains the safe fallback in those contexts.
-    if (!/(^|\.)instagram\.com$/i.test(location.hostname) &&
-        globalThis.__accessibleInstagramEnableMetadataTest !== true) return results;
-    const enriched = [...results];
-    const inspect = async index => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      try {
-        const response = await fetch(enriched[index].url, {
-          credentials: "same-origin", signal: controller.signal,
-        });
-        if (!response.ok) return;
-        const metadata = resultMetadata(await response.text());
-        if (metadata?.description) enriched[index] = {...enriched[index], ...metadata};
-      } catch (_error) {
-        // A card without metadata remains available to open.
-      } finally {
-        clearTimeout(timer);
-      }
-    };
-    // Limit background requests and run small batches so search stays prompt.
-    for (let index = 0; index < Math.min(enriched.length, 6); index += 3) {
-      await Promise.all([...Array(Math.min(3, enriched.length - index))].map((_, offset) => inspect(index + offset)));
-    }
-    return enriched;
-  }
-  async function execute(action, argument) {
-    await audioReady;
-    if (action === "diagnostics") return {message: `Instagram conectado; ${document.querySelectorAll("video").length} vídeo(s); Reel ativo ${activeVideo() ? "sim" : "não"}.`};
-    if (action === "collect_search_results") {
-      const deadline = Date.now() + 12000;
-      const collected = new Map();
-      let firstResultAt = 0;
-      let lastGrowthAt = 0;
-      let profileScrolls = 0;
-      const collectingProfile = argument === "profile";
-      const collectingMore = argument?.mode === "more";
-      const requiredSearchScrolls = collectingMore ? 12 : 8;
-      do {
-        const result = collectSearchResults();
-        const before = collected.size;
-        for (const item of result.results) collected.set(item.url, item);
-        const now = Date.now();
-        if (collected.size && !firstResultAt) firstResultAt = now;
-        if (collected.size > before) lastGrowthAt = now;
-        // Once cards start arriving, allow a short settling period for the
-        // current batch instead of waiting for an arbitrary 50 results.
-        const settledSearch = firstResultAt && profileScrolls >= requiredSearchScrolls && now - lastGrowthAt >= 1200;
-        const settledProfile = firstResultAt && profileScrolls >= 5 && now - lastGrowthAt >= 1200;
-        if (collected.size >= 50 || (collectingProfile ? settledProfile : settledSearch)) {
-          return {results: await enrichSearchResults([...collected.values()])};
-        }
-        if (collected.size) {
-          window.scrollBy(0, window.innerHeight);
-          profileScrolls += 1;
-        }
-        if (/\/accounts\//.test(location.pathname)) throw new Error("Faça login no Instagram pelo navegador.");
-        await sleep(300);
-      } while (Date.now() < deadline);
-      return {results: await enrichSearchResults([...collected.values()])};
-    }
-    if (action === "close_comments") { await closeComments(); return {}; }
-    const video = await waitFor(activeVideo, "Abra os Reels e faça login no Instagram pelo navegador.");
-    if (action === "seek") {
-      if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
-      if (!Number.isFinite(video.duration) || video.duration <= 0) {
-        throw new Error("Este vídeo ainda não permite avançar ou voltar no tempo.");
-      }
-      video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + argument));
-      return {position: video.currentTime};
-    }
-    if (["author", "description", "refresh_info", "copy_link", "download_link"].includes(action)) {
-      const info = snapshot();
-      if (action === "author") {
-        let followStatus = " (Não foi possível verificar se você segue)";
-        const root = reelRoot(video);
-        const state = followState(followButton(root));
-        if (state === true) followStatus = " (Você já segue)";
-        else if (state === false) followStatus = " (Não segue)";
-        info.author += followStatus;
-      }
-      if (action === "download_link") return {...info, media_url: video.currentSrc || video.src || ""};
-      if (action === "copy_link" && !info.link) throw new Error("Não foi possível identificar o link do Reel atual.");
-      return info;
-    }
-    if (action === "next" || action === "previous") {
-      await closeComments();
-      const before = video.currentSrc;
-      const triggerNav = async () => {
-        const nav = buttonNamed(document, action === "next" ?
-          /^(navegar para o próximo reel|go to next reel|next reel)$/i :
-          /^(navegar para o reel anterior|go to previous reel|previous reel)$/i);
-        if (nav) {
-          await click(nav);
-          return true;
-        }
-        // Instagram removes the arrow buttons in the narrower layout used by
-        // the embedded WebView. Move to the adjacent loaded Reel instead.
-        const currentRect = video.getBoundingClientRect();
-        const candidates = [...document.querySelectorAll("video")]
-          .filter(item => item !== video && visible(item))
-          .map(item => ({item, rect: item.getBoundingClientRect()}))
-          .filter(({rect}) => action === "next" ? rect.top > currentRect.top + 20 : rect.top < currentRect.top - 20)
-          .sort((a, b) => action === "next" ? a.rect.top - b.rect.top : b.rect.top - a.rect.top);
-        if (!candidates.length) return false;
-        candidates[0].item.scrollIntoView({block: "center", inline: "nearest"});
-        return true;
-      };
-      const moved = () => {const active = activeVideo(); return active && (active !== video || active.currentSrc !== before);};
-      // Try a real key press first -- Instagram's own player already
-      // advances on ArrowDown/ArrowUp, independent of whichever nav-button
-      // markup is in the DOM at the moment (that markup is what the
-      // click/scroll fallback above depends on).
-      await trustedKeyPress(action === "next" ? "ArrowDown" : "ArrowUp");
-      let triedNav = false;
-      const deadline = Date.now() + 4000;
-      while (Date.now() < deadline && !moved()) {
-        if (!triedNav && Date.now() >= deadline - 2500) {
-          triedNav = true;
-          if (!await triggerNav()) {
-            throw new Error(action === "next" ?
-              "Não há um próximo Reel carregado." : "Você está no primeiro Reel carregado.");
-          }
-          continue;
-        }
-        await sleep(150);
-      }
-      if (!moved()) {
-        throw new Error("O Instagram não mudou de Reel; você pode estar no início ou fim da lista.");
-      }
-      // Espera o feed parar de rolar antes de ler os detalhes; o Reel seguinte
-      // já cobre a maior parte da tela enquanto a rolagem ainda anima.
-      let previous = null, steady = 0;
-      const settleBy = Date.now() + 3000;
-      while (Date.now() < settleBy && steady < 3) {
-        await sleep(150);
-        const active = activeVideo();
-        const state = active && {active, top: Math.round(active.getBoundingClientRect().top),
-          source: active.currentSrc};
-        steady = state && previous && state.active === previous.active &&
-          state.top === previous.top && state.source === previous.source ? steady + 1 : 0;
-        previous = state;
-      }
-      stabilizeAudio();
-      return snapshot();
-    }
-    if (action === "toggle" || action === "play") {
-      // O play automático depois de abrir um link chega antes do vídeo estar
-      // pronto; deixa a rotina de início decidir o momento em vez de tocar já.
-      if (action === "play" && !initialPlaybackReleased) {
-        const limit = Date.now() + 13000;
-        while (!initialPlaybackReleased && Date.now() < limit) await sleep(100);
-      }
-      initialPlaybackReleased = true;
       if (video.paused) {
         applyAudio(video);
         await Promise.race([video.play(), sleep(3000).then(() => { throw new Error("Reprodução não confirmada. Interaja uma vez com o Reel no navegador."); })]);
@@ -632,6 +228,8 @@
     if (action === "post_comment") {
       const text = String(typeof argument === "object" ? argument.text : argument || "").trim();
       if (!text) throw new Error("Digite um comentário antes de publicar.");
+      // The mention Instagram filled for a reply that was not sent; it would block the next comment.
+      let leftoverMention = null;
       try {
         const dialog = await openComments(video);
         const replyTo = typeof argument === "object" ? argument.replyTo : "";
@@ -642,18 +240,43 @@
         const editor = [...dialog.querySelectorAll('input[placeholder],textarea[placeholder]')]
           .find(el => visible(el) && /coment|comment/i.test(el.placeholder));
         if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
-        if (editor.value.trim()) throw new Error("Há um comentário não enviado no navegador. Revise-o antes de publicar pela interface.");
-        editor.focus();
-        const prototype = editor.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        Object.getOwnPropertyDescriptor(prototype, "value").set.call(editor, text);
-        editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
-        const post = await waitFor(() => buttonNamed(dialog, /^(publicar|post)$/i), "Não foi possível localizar Publicar comentário.", 2000);
+        // Responder fills the field with "@author " shortly after the click.
+        if (replyTo) {
+          for (const limit = Date.now() + 1000; Date.now() < limit && !editor.value; ) await sleep(100);
+        }
+        const prefix = editor.value;
+        if (prefix.trim() && !(replyTo && /^@[\w.]+\s*$/.test(prefix))) {
+          throw new Error("Há um comentário não enviado no navegador. Revise-o antes de publicar pela interface.");
+        }
+        if (replyTo && prefix) leftoverMention = {editor, prefix};
+        // A real click places the caret and the application types the approved text
+        // as trusted keyboard input, so Instagram sees what a person would do.
+        await click(editor);
+        // Type after the mention; moving the caret sets no text.
+        editor.setSelectionRange(prefix.length, prefix.length);
+        const typed = await transport.runtime.sendMessage({type: "accessible-reels-trusted-text", text});
+        if (!typed?.ok) throw new Error(typed?.error || "Não foi possível digitar o comentário.");
+        await waitFor(() => editor.value === prefix + text, "O Instagram não aceitou o texto digitado. Nada foi enviado.", 2000);
+        const post = await waitFor(() => {
+          const button = buttonNamed(dialog, /^(publicar|post)$/i);
+          return button && !button.disabled && button.getAttribute("aria-disabled") !== "true" ? button : null;
+        }, "Não foi possível localizar Publicar comentário.", 2000);
         if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
         await click(post);
         await waitFor(() => sameReel() && editor.isConnected && editor.value === "" &&
           commentRows(dialog).some(row => row.text.includes(clean(text))),
           "O envio não foi confirmado. Confira no Instagram antes de tentar novamente.", 4000);
+        leftoverMention = null;
         return {};
+      } catch (error) {
+        // Only the untouched mention is removed; anything typed stays for the person to review.
+        const leftover = leftoverMention;
+        if (leftover && leftover.editor.isConnected && leftover.editor.value === leftover.prefix) {
+          const prototype = leftover.editor.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(prototype, "value").set.call(leftover.editor, "");
+          leftover.editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "deleteContentBackward"}));
+        }
+        throw error;
       } finally {
         await closeComments();
       }

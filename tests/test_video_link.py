@@ -15,6 +15,9 @@ from ui.webview_client import WebViewClient
     ('https://vm.tiktok.com/ABC123/', 'TikTok', 'https://vm.tiktok.com/ABC123/'),
     ('https://vt.tiktok.com/ABC123/?x=1', 'TikTok', 'https://vt.tiktok.com/ABC123/'),
     ('https://www.tiktok.com/t/ABC123/', 'TikTok', 'https://www.tiktok.com/t/ABC123/'),
+    ('https://www.tiktok.com/@ana/live', 'TikTok', 'https://www.tiktok.com/@ana/live'),
+    ('https://live.tiktok.com/@ana', 'TikTok', 'https://www.tiktok.com/@ana/live'),
+    ('https://www.youtube.com/shorts/AbCdEfGhI_j', 'YouTube', 'https://www.youtube.com/shorts/AbCdEfGhI_j'),
 ])
 def test_recognizes_video_links(value, platform, url):
     assert parse_video_link(value) == (platform, url)
@@ -23,7 +26,11 @@ def test_recognizes_video_links(value, platform, url):
 @pytest.mark.parametrize('value', ['', 'javascript:alert(1)', 'https://example.com/reel/ABC/',
     'https://instagram.com.evil.test/reel/ABC/', 'https://user@instagram.com/reel/ABC/',
     'https://instagram.com:444/reel/ABC/', 'https://instagram.com/ana/',
-    'https://vm.tiktok.com/', 'https://instagram.com\\@evil.test/reel/ABC/'])
+    'https://instagram.com/p/ABC_123/', 'https://www.instagram.com/p/ABC_123/?igsh=x',
+    'https://vm.tiktok.com/', 'https://instagram.com\\@evil.test/reel/ABC/',
+    'https://www.youtube.com/watch?v=AbCdEfGhI_j', 'https://youtu.be/AbCdEfGhI_j',
+    'https://music.youtube.com/watch?v=AbCdEfGhI_j', 'https://www.tiktok.com/@ana/livestream',
+    'https://www.tiktok.com/@ana/live/extra'])
 def test_rejects_invalid_links(value):
     with pytest.raises(VideoControlError):
         parse_video_link(value)

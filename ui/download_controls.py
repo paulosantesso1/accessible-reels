@@ -186,6 +186,11 @@ class DownloadControlsMixin:
             self._download_busy = False
             self.status(result.get('error') or 'Não foi possível identificar o vídeo ativo.')
             return
+        link = result.get('link') or ''
+        if '/live' in link:
+            self._download_busy = False
+            self.status('Não é possível baixar uma transmissão ao vivo em andamento.')
+            return
         target = self.choose_download_file(name, result, audio)
         if target is None:
             self._download_busy = False

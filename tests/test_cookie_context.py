@@ -131,7 +131,7 @@ class FakeContext:
 
 def make_worker(context: FakeContext, events: list) -> BrowserWorker:
     worker = BrowserWorker(Path("profile-ficticio"), events.append)
-    worker._context = context
+    worker._browser_context = context
     worker._page = context.page
     return worker
 
@@ -165,7 +165,7 @@ def test_same_context_and_page_are_reused_through_import():
     worker = make_worker(context, [])
     with patch("tiktok.client.load_cookie_file", return_value=make_result()):
         worker._import_cookies(Path("cookies.txt"))
-    assert worker._context is context
+    assert worker._browser_context is context
     assert worker._page is original_page
     assert original_page.context is context
 
@@ -239,7 +239,7 @@ def test_close_still_closes_persistent_context():
     worker = make_worker(context, [])
     worker._close_resources()
     assert context.closed is True
-    assert worker._context is None
+    assert worker._browser_context is None
     assert worker._page is None
 
 

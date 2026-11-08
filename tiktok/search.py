@@ -11,14 +11,20 @@ SEARCH_RESULTS_SCRIPT = r"""() => {
     const clean = value => (value || '').replace(/\s+/g, ' ').trim();
     const results = [];
     const seen = new Set();
-    for (const anchor of document.querySelectorAll('a[href*="/video/"]')) {
+    const videoAnchors = [...document.querySelectorAll('a[href*="/video/"]')];
+    const liveAnchors = [...document.querySelectorAll('a[href*="/live"]')];
+    for (const anchor of [...videoAnchors, ...liveAnchors]) {
         let url;
         try { url = new URL(anchor.href, location.href).href; } catch (_error) { continue; }
-        const match = new URL(url).pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
-        if (!match || seen.has(match[0])) continue;
-        seen.add(match[0]);
+        const pathname = new URL(url).pathname;
+        const liveMatch = pathname.match(/\/(\@[^/?#]+)\/live\/?$/);
+        const videoMatch = pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
+        if (!liveMatch && !videoMatch) continue;
+        const key = liveMatch ? liveMatch[0] : videoMatch[0];
+        if (seen.has(key)) continue;
+        seen.add(key);
         const container = anchor.closest(
-            '[data-e2e="search-card-video-container"], [data-e2e="user-post-item"], li'
+            '[data-e2e="search-card-video-container"], [data-e2e="user-post-item"], [data-e2e="search-card-live-container"], li'
         ) || anchor.parentElement;
         const image = anchor.querySelector('img') || (container && container.querySelector('img'));
         const description = clean(
@@ -28,8 +34,9 @@ SEARCH_RESULTS_SCRIPT = r"""() => {
         );
         results.push({
             url,
-            author: decodeURIComponent(match[1]),
-            description
+            author: decodeURIComponent(liveMatch ? liveMatch[1] : videoMatch[1]),
+            description,
+            is_live: Boolean(liveMatch)
         });
         if (results.length >= 50) break;
     }
@@ -42,17 +49,21 @@ class SearchResult:
     url: str
     author: str
     description: str
+    is_live: bool = False
 
     @property
     def label(self) -> str:
-        detail = self.description or "Vídeo sem descrição"
-        return f"{self.author}: {detail}"
+        prefix = "[AO VIVO] " if self.is_live else ""
+        detail = self.description or ("Transmissão ao vivo" if self.is_live else "Vídeo sem descrição")
+        return f"{prefix}{self.author}: {detail}"
 
 
-def search_url(query: str) -> str:
+def search_url(query: str, include_lives: bool = False) -> str:
     normalized = " ".join(str(query or "").split())
     if not normalized:
         raise VideoControlError("Digite algo para pesquisar.")
+    if include_lives:
+        return f"https://www.tiktok.com/search?q={quote_plus(normalized)}"
     return f"https://www.tiktok.com/search/video?q={quote_plus(normalized)}"
 
 
@@ -76,7 +87,8 @@ def normalize_search_results(values: Any, limit: int = 50) -> tuple[SearchResult
         seen.add(url)
         author = " ".join(str(value.get("author") or "Autor desconhecido").split())
         description = " ".join(str(value.get("description") or "").split())
-        results.append(SearchResult(url, author, description))
+        is_live = bool(value.get("is_live")) or url.endswith("/live")
+        results.append(SearchResult(url, author, description, is_live=is_live))
         if len(results) >= limit:
             break
     return tuple(results)

@@ -54,7 +54,8 @@ def test_open_in_default_browser_reports_failure_without_browser(monkeypatch):
     assert not open_in_default_browser('https://a.test/')
 
 
-def test_browser_candidates_prefer_current_then_remembered_and_never_ourselves(monkeypatch):
+def test_browser_candidates_prefer_current_then_remembered_and_never_ourselves(monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
     commands = {'Other': 'other.exe %1', 'Old': 'old.exe %1'}
     monkeypatch.setattr(link_router, 'current_default_progid', lambda: link_router.PROG_ID)
     monkeypatch.setattr(link_router, 'remembered_progid', lambda: 'Old')
@@ -71,6 +72,57 @@ def test_remember_default_browser_ignores_this_application(monkeypatch, tmp_path
     monkeypatch.setattr(link_router, 'current_default_progid', lambda: link_router.PROG_ID)
     link_router.remember_default_browser()
     assert link_router.remembered_progid() == 'ChromeHTML'
+
+
+def test_preferred_browser_takes_precedence_in_browser_commands(monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.setattr(link_router, 'registered_browsers', lambda: {'Google Chrome': 'chrome.exe %1', 'Edge': 'edge.exe %1'})
+    monkeypatch.setattr(link_router, 'current_default_progid', lambda: 'MSEdgeHTM')
+    monkeypatch.setattr(link_router, '_progid_command', lambda progid: 'edge.exe %1')
+    monkeypatch.setattr(link_router, '_registered_browser_commands', lambda: ['edge.exe %1'])
+
+    link_router.set_preferred_browser('Google Chrome')
+    candidates = list(link_router._browser_commands())
+    assert candidates[0] == 'chrome.exe %1'
+
+
+def test_without_a_choice_the_windows_default_comes_first(monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.setattr(link_router, 'registered_browsers', lambda: {'Google Chrome': 'chrome.exe %1', 'Edge': 'edge.exe %1'})
+    monkeypatch.setattr(link_router, 'current_default_progid', lambda: 'MSEdgeHTM')
+    monkeypatch.setattr(link_router, '_progid_command', lambda progid: 'edge.exe %1')
+    monkeypatch.setattr(link_router, '_registered_browser_commands', lambda: ['chrome.exe %1', 'edge.exe %1'])
+
+    assert link_router.get_preferred_browser() is None
+    assert list(link_router._browser_commands())[0] == 'edge.exe %1'
+    link_router.set_preferred_browser('Google Chrome')
+    link_router.set_preferred_browser(None)
+    assert link_router.get_preferred_browser() is None
+    assert list(link_router._browser_commands())[0] == 'edge.exe %1'
+
+
+def test_browser_commands_excludes_own_command_and_app_name(monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.setattr(link_router, 'get_preferred_browser', lambda: None)
+    monkeypatch.setattr(link_router, 'current_default_progid', lambda: 'MSEdgeHTM')
+    monkeypatch.setattr(link_router, '_progid_command', lambda progid: f'"{link_router.APP_NAME}.exe" %1')
+    monkeypatch.setattr(link_router, '_registered_browser_commands', lambda: ['iexplore.exe', 'valid_browser.exe %1'])
+
+    commands = list(link_router._browser_commands())
+    assert commands == ['valid_browser.exe %1']
+
+
+def test_browser_commands_deduplicates_by_executable_path(monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.setattr(link_router, 'get_preferred_browser', lambda: None)
+    monkeypatch.setattr(link_router, 'current_default_progid', lambda: 'ChromeHTML')
+    monkeypatch.setattr(link_router, '_progid_command', lambda progid: '"C:\\Program Files\\Chrome\\chrome.exe" -- "%1"')
+    monkeypatch.setattr(link_router, '_registered_browser_commands', lambda: ['"C:\\Program Files\\Chrome\\chrome.exe"', 'edge.exe %1'])
+
+    commands = list(link_router._browser_commands())
+    assert len(commands) == 2
+    assert commands[0] == '"C:\\Program Files\\Chrome\\chrome.exe" -- "%1"'
+    assert commands[1] == 'edge.exe %1'
 
 
 @pytest.fixture

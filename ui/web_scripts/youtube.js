@@ -196,6 +196,111 @@
         try {
             await transport.runtime.sendMessage({type: "accessible-reels-trusted-key", key});
         } catch (_) {}
+
+    // Clique real pelo aplicativo: o campo de comentário do YouTube só abre e só
+    // aceita digitação depois de uma interação que o navegador considere humana.
+    async function trustedClick(element) {
+        element.scrollIntoView({block: "center", inline: "center"});
+        await sleep(80);
+        const rect = element.getBoundingClientRect();
+        const result = await transport.runtime.sendMessage({
+            type: "accessible-reels-trusted-click",
+            x: rect.left + rect.width / 2, y: rect.top + rect.height / 2
+        });
+        if (!result?.ok) throw new Error(result?.error || "O navegador recusou o clique.");
+    }
+
+    async function waitFor(read, message, timeout) {
+        const deadline = Date.now() + timeout;
+        do {
+            const value = read();
+            if (value) return value;
+            await sleep(150);
+        } while (Date.now() < deadline);
+        throw new Error(message);
+    }
+
+    const cleanText = value => String(value || "").replace(/\s+/g, " ").trim();
+
+    async function postComment(argument) {
+        const text = cleanText(argument?.text);
+        if (!text) throw new Error("Digite um comentário antes de publicar.");
+        const video = activeVideo();
+        if (!video) throw new Error("Vídeo não encontrado.");
+        const link = location.href;
+        const sameShort = () => location.href === link && activeVideo() === video;
+        const placeholder = () => [...document.querySelectorAll("#simplebox-placeholder")].find(visible);
+        const editorIn = root => [...root.querySelectorAll('#contenteditable-root[contenteditable="true"]')].find(visible);
+        const threads = () => [...document.querySelectorAll("ytd-comment-thread-renderer, ytd-comment-renderer")].filter(visible);
+        // Clicking the comments button of an open panel would close it. The panel is
+        // open when it shows the placeholder, an editor the person expanded or comments.
+        if (!placeholder() && !editorIn(document) && !threads().length) {
+            const opener = document.querySelector('ytd-button-renderer#comments-button button, [aria-label*="coment" i], [aria-label*="comment" i]');
+            if (!opener) throw new Error("Não foi possível localizar o botão de comentários.");
+            await trustedClick(opener);
+        }
+        try {
+            const replyText = argument?.replyTo ? cleanText(argument.replyText) : "";
+            // Where the editor and its button live: the replied conversation or the whole panel.
+            let area = document;
+            let editor;
+            if (replyText) {
+                // Same "author: text" form the comment list uses.
+                const comment = await waitFor(() => threads().find(item => {
+                    const author = item.querySelector("#author-text");
+                    const content = item.querySelector("#content-text");
+                    return cleanText((author ? author.innerText.trim() + ": " : "") + (content ? content.innerText : "")) === replyText;
+                }), "O comentário selecionado não está mais disponível.", 4000);
+                const reply = [...comment.querySelectorAll('#reply-button-end button, [aria-label="Responder" i], [aria-label="Reply" i]')].find(visible);
+                if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+                area = comment.closest("ytd-comment-thread-renderer") || comment;
+                await trustedClick(reply);
+                editor = await waitFor(() => editorIn(area), "O campo de resposta do YouTube não abriu.", 3000);
+            } else {
+                // A new comment uses the panel's own box, never a reply box left open in a conversation.
+                const mainEditor = () => [...document.querySelectorAll('#contenteditable-root[contenteditable="true"]')]
+                    .find(element => visible(element) && !element.closest("ytd-comment-thread-renderer"));
+                editor = mainEditor();
+                if (!editor) {
+                    await trustedClick(await waitFor(placeholder,
+                        "Não foi possível localizar o campo de comentário. Confira se a conta tem um canal no YouTube.", 4000));
+                    editor = await waitFor(mainEditor, "O campo de comentário do YouTube não abriu.", 3000);
+                }
+            }
+            // A reply may start with the mention YouTube fills in; anything else is the person's draft.
+            const prefix = cleanText(editor.innerText);
+            if (prefix && !(replyText && /^@\S+$/.test(prefix))) {
+                throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
+            }
+            const expected = cleanText(`${prefix} ${text}`);
+            if (!sameShort()) throw new Error("O Short mudou. O comentário não foi enviado.");
+            // Places the caret in the editor instead of relying on the site to move focus,
+            // then after everything already there, since the click may land inside a mention.
+            await trustedClick(editor);
+            const caret = document.createRange();
+            caret.selectNodeContents(editor);
+            caret.collapse(false);
+            getSelection().removeAllRanges();
+            getSelection().addRange(caret);
+            const typed = await transport.runtime.sendMessage({type: "accessible-reels-trusted-text", text});
+            if (!typed?.ok) throw new Error(typed?.error || "Não foi possível digitar o comentário.");
+            await waitFor(() => cleanText(editor.innerText) === expected,
+                "O YouTube não aceitou o texto digitado. Nada foi enviado.", 2000);
+            const submit = await waitFor(() => {
+                const button = [...area.querySelectorAll("#submit-button button, ytd-button-renderer#submit-button button")].find(visible);
+                return button && !button.disabled && button.getAttribute("aria-disabled") !== "true" ? button : null;
+            }, "O botão Comentar não ficou disponível.", 3000);
+            if (!sameShort()) throw new Error("O Short mudou. O comentário não foi enviado.");
+            await trustedClick(submit);
+            await waitFor(() => sameShort() && !(editor.isConnected && cleanText(editor.innerText)) &&
+                [...area.querySelectorAll("ytd-comment-thread-renderer #content-text, ytd-comment-renderer #content-text")]
+                    .some(element => cleanText(element.innerText).includes(text)),
+                "O envio não foi confirmado. Confira os comentários no YouTube antes de tentar novamente.", 6000);
+            return {};
+        } finally {
+            const close = document.querySelector('ytd-engagement-panel-section-list-renderer[visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"] #visibility-button button');
+            if (close) close.click();
+        }
     }
 
     const NOT_INTERESTED = /^(não tenho interesse|não me interessa|não estou interessado|not interested)\b/i;
@@ -477,6 +582,9 @@
                 const closeBtn = document.querySelector('ytd-engagement-panel-section-list-renderer[visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"] #visibility-button button, [aria-label*="fechar" i], [aria-label*="close" i]');
                 if (closeBtn) closeBtn.click();
             }
+        }
+        else if (action === "post_comment") {
+            return postComment(argument);
         }
         else if (action === "close_comments") {
             const closeBtn = document.querySelector('ytd-engagement-panel-section-list-renderer[visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"] #visibility-button button, [aria-label*="fechar" i], [aria-label*="close" i]');

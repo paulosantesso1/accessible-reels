@@ -600,10 +600,14 @@ def select_current_url(video_url: Any, page_url: Any) -> str:
     ):
         raise VideoControlError("Não foi possível identificar o link do vídeo atual")
     match = re.search(r"/(@[^/?#]+)/video/(\d+)", parsed.path)
-    if not match:
-        raise VideoControlError("Não foi possível identificar o link do vídeo atual")
-    path = f"/{match.group(1)}/video/{match.group(2)}"
-    return urlunsplit(("https", "www.tiktok.com", path, "", ""))
+    if match:
+        path = f"/{match.group(1)}/video/{match.group(2)}"
+        return urlunsplit(("https", "www.tiktok.com", path, "", ""))
+    live_match = re.search(r"/(@[^/?#]+)/live/?$", parsed.path)
+    if live_match:
+        path = f"/{live_match.group(1)}/live"
+        return urlunsplit(("https", "www.tiktok.com", path, "", ""))
+    raise VideoControlError("Não foi possível identificar o link do vídeo atual")
 
 
 def clamp_volume(value: float) -> float:

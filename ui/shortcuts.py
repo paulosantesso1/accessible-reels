@@ -33,7 +33,7 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("download_list", "Baixar todos os vídeos da lista", "Ctrl+Shift+L"),
     ShortcutDefinition("open_liked", "Abrir meus vídeos curtidos (TikTok)", "Alt+Shift+L"),
     ShortcutDefinition("open_favorites", "Abrir meus vídeos favoritos (TikTok)", "Alt+Shift+F"),
-    ShortcutDefinition("return_results", "Voltar aos resultados", "Ctrl+R"),
+    ShortcutDefinition("return_results", "Voltar aos resultados (na lista de comentários: responder ao comentário selecionado)", "Ctrl+R"),
     ShortcutDefinition("home", "Ir para o início", "Ctrl+Home"),
     ShortcutDefinition("next_video", "Próximo vídeo", "Alt+Down"),
     ShortcutDefinition("previous_video", "Vídeo anterior", "Alt+Up"),
@@ -55,12 +55,14 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("read_follow_status", "Ler estado de seguindo", "Alt+G"),
     ShortcutDefinition("copy_link", "Copiar link", "Alt+C"),
     ShortcutDefinition("open_comments", "Abrir comentários", "Alt+Shift+C"),
+    ShortcutDefinition("write_comment", "Escrever comentário no vídeo atual", "Alt+V"),
     ShortcutDefinition("toggle_like", "Curtir ou descurtir", "Alt+L"),
     ShortcutDefinition("toggle_favorite", "Favoritar ou desfavoritar", "Alt+F"),
     ShortcutDefinition("not_interested", "Marcar como não tenho interesse", "Alt+Shift+N"),
     ShortcutDefinition("open_profile", "Abrir perfil", "Alt+Shift+P"),
     ShortcutDefinition("search", "Pesquisar", "Alt+E"),
     ShortcutDefinition("toggle_auto_scroll", "Ativar ou desativar rolagem automática (válido em todas as redes)", "Alt+R"),
+    ShortcutDefinition("toggle_live_chat", "Ativar ou desativar chat ao vivo da live", "Alt+Shift+C"),
     ShortcutDefinition("exit", "Sair", "Alt+S"),
 )
 

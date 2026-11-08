@@ -18,240 +18,21 @@ PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow', 'not_interested',
-           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step'}
+           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step',
+           'toggle_live_chat', 'post_comment'}
+# Longest comment any supported network accepts; anything longer is refused before typing.
+MAX_COMMENT_LENGTH = 10000
 logger = get_logger()
 # Commands the app starts by itself right after a page loads. If the platform
 # immediately re-navigates to the same page, they are simply run again on the
 # new document instead of being reported to the user as a failure.
-AUTOMATIC_ACTIONS = {'play', 'refresh_info'}
-MAX_AUTOMATIC_REARMS = 2
-# A load error saying the navigation was "aborted" only means that another
-# navigation replaced it. It is a failure only if no page loads afterwards.
-ABORT_GRACE_MS = 4000
-
-
-def belongs_to_platform(url, platform):
-    try:
-        parsed = urlsplit(url)
-        if platform == 'TikTok':
-            domain = 'tiktok.com'
-        elif platform == 'YouTube':
-            domain = 'youtube.com'
-        else:
-            domain = 'instagram.com'
-        return (parsed.scheme == 'https' and parsed.hostname in (domain, 'www.' + domain, 'm.' + domain)
-                and not parsed.username and not parsed.password and parsed.port in (None, 443))
-    except ValueError:
-        return False
-
-
-def same_page_target(url, expected_url):
-    """Compare a loaded top-level page with an exact callback destination."""
-    try:
-        current = urlsplit(url)
-        expected = urlsplit(expected_url)
-        current_host = (current.hostname or '').removeprefix('www.').removeprefix('m.')
-        expected_host = (expected.hostname or '').removeprefix('www.').removeprefix('m.')
-        current_path = current.path.rstrip('/').casefold()
-        expected_path = expected.path.rstrip('/').casefold()
-        return (current.scheme == expected.scheme == 'https' and current_host == expected_host
-                and current_path == expected_path and not current.username and not current.password)
-    except (TypeError, ValueError):
-        return False
-
-
-def scripts_for(platform):
-    root = Path(__file__).with_name('web_scripts')
-    if platform == 'TikTok':
-        domain = 'tiktok.com'
-    elif platform == 'YouTube':
-        domain = 'youtube.com'
-    else:
-        domain = 'instagram.com'
-    source = '\n'.join((root / name).read_text(encoding='utf-8') for name in
-                       ('transport.js', 'audio_guard.js', 'media_capture.js', platform.lower() + '.js'))
-    return f"if (window === top && ['{domain}', 'www.{domain}', 'm.{domain}'].includes(location.hostname)) {{\n{source}\n}}"
-
-
-class WebViewClient:
-    def __init__(self, view, platform, on_loaded, on_error, *, prelude='', before_load=None):
-        self.view, self.platform = view, platform
-        self.prelude = prelude
-        self.before_load = before_load
-        self.on_loaded, self.on_error = on_loaded, on_error
-        self.generation = 0
-        self.pending = None
-        self.alive = True
-        self.ready = False
-        self.active = True
-        self.target_url = PLATFORM_URLS[platform]
-        self.after_load = None
-        self._after_load_expected_url = None
-        self._after_load_unexpected = None
-        self._retry_url = None
-        self._retry_after_load = None
-        self._retry_expected_url = None
-        self._retry_unexpected = None
-        self._retry_attempted = False
-        self._last_after_load = None
-        self._rearms = 0
-        self._abort_watch = None
-        view.Bind(wx.PyEventBinder(html2.wxEVT_WEBVIEW_CREATED, 1), self._created)
-        view.Bind(html2.EVT_WEBVIEW_NAVIGATING, self._navigating)
-        view.Bind(html2.EVT_WEBVIEW_LOADED, self._loaded)
-        view.Bind(html2.EVT_WEBVIEW_ERROR, self._error)
-        view.Bind(html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._message)
-
-    def initialize(self):
-        """Install scripts after Create; some wx builds emit CREATED before Python binds."""
-        if self.ready or getattr(self, '_initialized', False):
-            return
-        if self.before_load:
-            self.before_load()
-        if not self.view.AddScriptMessageHandler('reelsHost') or not self.view.AddUserScript(
-                self.prelude + '\n' + scripts_for(self.platform)):
-            self.on_error('Não foi possível preparar os controles da página.')
-            return
-        self._initialized = True
-        self.view.LoadURL(self.target_url)
-
-    def _created(self, event):
-        self.initialize()
-
-    def _navigating(self, event):
-        # Iframes must not invalidate the command running in the top document.
-        if not event.IsTargetMainFrame():
-            event.Skip()
-            return
-        if (self.after_load and self._after_load_expected_url
-                and not same_page_target(event.GetURL(), self._after_load_expected_url)):
-            unexpected = self._after_load_unexpected
-            self.after_load = None
-            self._after_load_expected_url = None
-            self._after_load_unexpected = None
-            self._retry_url = None
-            self._retry_after_load = None
-            self._retry_expected_url = None
-            self._retry_unexpected = None
-            if unexpected:
-                wx.CallAfter(unexpected, event.GetURL())
-        self.generation += 1
-        self.ready = False
-        logger.info('Main navigation: platform=%s destination=%s action=%s',
-                    self.platform, event.GetURL(), self.pending.get('action') if self.pending else None)
-        # Invalidate immediately, but deliver cancellation after the native
-        # navigation event. Its callback may navigate back to the video.
-        pending, self.pending = self.pending, None
-        if pending:
-            pending['timer'].Stop()
-            if self._rerun_after_same_page_navigation(pending, event.GetURL()):
-                wx.CallAfter(lambda: pending['callback']({'ok': False, 'ignored': True}) if self.alive else None)
-            else:
-                wx.CallAfter(lambda: pending['callback']({
-                    'ok': False, 'error': 'A página mudou. Confira o vídeo antes de repetir a ação.'
-                }) if self.alive else None)
-        event.Skip()
-
-    def _rerun_after_same_page_navigation(self, pending, destination):
-        """True when an automatic command was cut short by a re-navigation to the same page."""
-        action = pending.get('action')
-        if action not in AUTOMATIC_ACTIONS:
-            return False
-        if not (same_page_target(destination, self.target_url)
-                or same_page_target(destination, self.view.GetCurrentURL())):
-            return False
-        if action == 'refresh_info':
-            # The next load reports readiness again and refreshes the details.
-            return True
-        if self._last_after_load is None or self._rearms >= MAX_AUTOMATIC_REARMS:
-            return False
-        self._rearms += 1
-        self.after_load = self._last_after_load
-        logger.info('Re-running post-load step after same-page navigation: platform=%s action=%s',
-                    self.platform, action)
-        return True
-
-    def _stop_abort_watch(self):
-        if self._abort_watch:
-            self._abort_watch.Stop()
-            self._abort_watch = None
-
-    def _loaded(self, event):
-        # wxWebViewEdge does not populate IsTargetMainFrame on LOADED events.
-        # The evaluation below always checks the current top document.
-        if not self.alive or not belongs_to_platform(self.view.GetCurrentURL(), self.platform):
-            return
-        generation = self.generation
-        def checked(value, error):
-            if not self.alive or generation != self.generation:
-                return
-            document_ready = value is True and not error
-            if (document_ready and self.after_load and self._after_load_expected_url
-                    and not same_page_target(self.view.GetCurrentURL(), self._after_load_expected_url)):
-                logger.info(
-                    'Ignoring loaded event before checked destination: platform=%s current=%s expected=%s',
-                    self.platform, self.view.GetCurrentURL(), self._after_load_expected_url,
-                )
-                return
-            was_ready = self.ready
-            self.ready = document_ready
-            if self.ready:
-                self._stop_abort_watch()
-                self.set_active(self.active)
-                if not was_ready:
-                    self.on_loaded()
-                self._retry_url = None
-                self._retry_after_load = None
-                self._retry_expected_url = None
-                self._retry_unexpected = None
-                if self.after_load:
-                    callback, self.after_load = self.after_load, None
-                    self._last_after_load = callback
-                    self._after_load_expected_url = None
-                    self._after_load_unexpected = None
-                    wx.CallAfter(lambda: callback() if self.alive and generation == self.generation else None)
-        webview_native.evaluate(self.view, self._prepare_script() +
-                                "Boolean(window.__accessibleIsReady?.())", checked)
-
-    def _prepare_script(self):
-        # Login redirects can replace the document. Repair a missing bridge in
-        # the current top document, without relying on a cached readiness flag.
-        return ("if (!window.__accessibleIsReady?.()) {\n" + scripts_for(self.platform) +
-                "\n}\n")
-
-    def _error(self, event):
-        if event.GetTarget() not in ('', '_self', '_top'):
-            return
-        logger.warning('WebView navigation error: platform=%s url=%s code=%s detail=%s current=%s',
-                       self.platform, event.GetURL(), event.GetInt(), event.GetString(),
-                       self.view.GetCurrentURL())
-        # WebView2 can report a late navigation/resource failure after the top
-        # document is already interactive. At that point the bridge is usable;
-        # treating the event as a page failure would cancel an in-flight social
-        # action and reload a page that is working.
-        current_url = self.view.GetCurrentURL()
-        if self.ready and belongs_to_platform(current_url, self.platform):
-            logger.info(
-                'Ignoring WebView load error after page became ready: platform=%s current=%s target=%s',
-                self.platform, current_url, event.GetTarget(),
-            )
-            return
-        detail = event.GetString()
-        if isinstance(detail, str) and 'CONNECTION_ABORTED' in detail:
-            generation = self.generation
-            logger.info('Ignoring aborted navigation superseded by another: platform=%s current=%s',
-                        self.platform, current_url)
-            self._stop_abort_watch()
-            self._abort_watch = wx.CallLater(ABORT_GRACE_MS, self._aborted_without_load, generation, event.GetTarget())
-            return
-        self._fail_load(event.GetTarget())
-
-    def _aborted_without_load(self, generation, target):
-        self._abort_watch = None
-        if self.alive and generation == self.generation and not self.ready:
-            self._fail_load(target)
-
-    def _fail_load(self, target):
+AUTOMATIC_ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
+           'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
+           'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow', 'not_interested',
+           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step',
+           'toggle_live_chat', 'post_comment'}
+# Longest comment any supported network accepts; anything longer is refused before typing.
+MAX_COMMENT_LENGTH = 10000
         # A platform can transiently reject a direct video URL immediately
         # after search. Retry that one explicit result navigation once,
         # retaining its callback and result list on every supported network.
@@ -273,6 +54,7 @@ class WebViewClient:
                     self.view.LoadURL(url)
             wx.CallLater(1200, retry)
             return
+
         # Clear failed-navigation state before notifying callers, which can
         # synchronously start a recovery navigation with its own callback.
         pending, self.pending = self.pending, None
@@ -288,6 +70,7 @@ class WebViewClient:
             pending['timer'].Stop()
             pending['callback']({'ok': False, 'error': 'Falha ao carregar a página. Tente recarregar.'})
             return
+
         self.on_error('A plataforma recusou carregar esta página. Tente outro resultado ou recarregue.')
 
     def navigate(self, url, after_load=None, *, expected_url=None, on_unexpected=None):
@@ -326,19 +109,25 @@ class WebViewClient:
         if not self.alive or not self.active or not belongs_to_platform(self.view.GetCurrentURL(), self.platform):
             callback({'ok':False, 'error':'Abra a rede selecionada e aguarde a página carregar.'})
             return
+
         if self.pending:
             callback({'ok':False, 'ignored':True})
             return
+
         if action not in ACTIONS:
             raise ValueError('Comando desconhecido')
         token = uuid.uuid4().hex
         generation = self.generation
         self.pending = {'token':token, 'callback':callback, 'clicks':set(), 'action':action}
+        if action == 'post_comment' and isinstance(argument, dict) and isinstance(argument.get('text'), str):
+            # The page may ask to type only this exact text, once.
+            self.pending['approved_text'] = argument['text']
         self.pending['timer'] = wx.CallLater(20000, self._timeout, token)
         arguments = json.dumps([action, argument, token, self.platform.lower()], ensure_ascii=True)
         def completed(value, error):
             if not self.alive or generation != self.generation or not self.pending or self.pending['token'] != token:
                 return
+
             self.ready = isinstance(value, dict) and not error
             self._finish(value if isinstance(value, dict) and not error else
                          {'ok':False, 'error':error or 'Resposta inválida da página.'})
@@ -367,6 +156,7 @@ class WebViewClient:
         event.Skip()
         if not self.alive or not self.active or not self.pending or not belongs_to_platform(event.GetURL(), self.platform):
             return
+
         try:
             value = json.loads(event.GetString())
             message_type = value.get('type')
@@ -388,8 +178,10 @@ class WebViewClient:
                     return
             if len(self.pending['clicks']) >= 4:
                 return
+
         except (TypeError, ValueError, AttributeError):
             return
+
         if self.pending['action'] == 'toggle_follow' and isinstance(value.get('follow_diagnostic'), dict):
             diagnostic = value['follow_diagnostic']
             logger.info(
@@ -410,6 +202,36 @@ class WebViewClient:
             webview_native.click(self.view, value.get('x'), value.get('y'), done, valid)
         else:
             webview_native.key_press(self.view, value.get('key'), done, valid)
+
+    def _type_text(self, value):
+        """Type the approved comment text, at most once per command."""
+        identifier, text = value.get('id'), value.get('text')
+        if type(identifier) is not int:
+            return
+
+        token, generation = self.pending['token'], self.generation
+        def valid():
+            return (self.alive and self.active and generation == self.generation and
+                    self.pending is not None and self.pending['token'] == token)
+        def typed(ok, error):
+            if valid():
+                response = json.dumps({'ok':ok, 'error':error}, ensure_ascii=True)
+                self.view.RunScriptAsync(f'window.__accessibleClickDone?.({identifier}, {response});')
+        approved = self.pending.get('approved_text')
+        # Refusals are answered at once so the person hears why, instead of a timeout.
+        if self.pending.get('typed'):
+            logger.warning('Refused repeated page text input: platform=%s', self.platform)
+            typed(False, 'O comentário já foi digitado uma vez. Nada mais foi digitado.')
+            return
+
+        if (approved is None or not isinstance(text, str) or text != approved or not text
+                or len(text) > MAX_COMMENT_LENGTH):
+            logger.warning('Refused page text input: platform=%s action=%s', self.platform, self.pending['action'])
+            typed(False, 'A página pediu para digitar um texto diferente do confirmado. Nada foi digitado.')
+            return
+
+        self.pending['typed'] = True
+        webview_native.insert_text(self.view, text, typed, valid)
 
     def close(self):
         self.alive = False

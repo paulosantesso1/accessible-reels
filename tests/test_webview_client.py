@@ -273,8 +273,7 @@ def test_inactive_network_does_not_execute_commands():
         evaluate.assert_not_called()
 
 
-@pytest.mark.parametrize('action', ('post_comment', 'reply_comment'))
-def test_comment_writing_commands_are_not_accepted(action):
+def test_comment_replies_are_not_accepted_yet():
     client = make_client()
     with pytest.raises(ValueError, match='Comando desconhecido'):
         client.execute(action, None, Mock())
@@ -392,3 +391,37 @@ def test_a_loaded_page_cancels_the_abort_watch():
     client._stop_abort_watch()
     watch.Stop.assert_called_once()
     assert client._abort_watch is None
+
+        client.execute('reply_comment', None, Mock())
+
+
+def test_live_chat_toggle_is_an_allowed_command():
+    from ui.webview_client import ACTIONS
+    assert 'toggle_live_chat' in ACTIONS
+
+
+def test_external_link_navigation_is_vetoed_and_opened_in_default_browser():
+    client = make_client()
+    client.ready = True
+    event = Mock()
+    event.IsTargetMainFrame.return_value = True
+    event.GetURL.return_value = 'https://open.spotify.com/track/123'
+    with patch('link_router.open_in_default_browser') as open_browser:
+        client._navigating(event)
+        event.Veto.assert_called_once()
+        open_browser.assert_called_once_with('https://open.spotify.com/track/123')
+        assert client.ready is True
+        assert client.generation == 0
+
+
+def test_auth_domain_navigation_is_allowed_in_webview():
+    client = make_client()
+    client.ready = True
+    event = Mock()
+    event.IsTargetMainFrame.return_value = True
+    event.GetURL.return_value = 'https://accounts.google.com/o/oauth2/auth'
+    with patch('link_router.open_in_default_browser') as open_browser:
+        client._navigating(event)
+        event.Veto.assert_not_called()
+        event.Skip.assert_called_once()
+        open_browser.assert_not_called()

@@ -22,7 +22,7 @@ from ui.download_controls import DownloadControlsMixin
 from ui.webview_client import WebViewClient, PLATFORM_URLS, belongs_to_platform
 from ui.video_link import parse_video_link
 from ui.shortcuts import (MEDIA_ACTIONS, SEEK_SECONDS, SHORTCUT_DEFINITIONS, accelerator_specs,
-                          action_shortcut, load_shortcut_settings,
+                          action_shortcut, load_shortcut_settings, set_shortcut,
                           shortcut_to_windows)
 from ui.nvda_announcer import speak_with_accessible_output, speak_with_nvda, raise_uia_notification
 from tiktok.search import search_url, normalize_search_results, validate_search_result_url, LIBRARY_LIMIT
@@ -199,6 +199,26 @@ def comment_list_label(index, count, text):
 def comment_details_text(index, count, text):
     """Expose the full selected comment in its own read-only field."""
     return f'Comentário {index} de {count}\n\n{str(text or "").strip() or "Sem texto disponível."}'
+
+
+# Longest comment each network's web page accepts.
+COMMENT_LIMITS = {'TikTok': 150, 'Instagram': 2200, 'YouTube': 10000}
+REPLY_LABEL = 'Responder ao comentário selecionado'
+CANCEL_REPLY_LABEL = 'Cancelar resposta'
+NEW_COMMENT_NAME = 'Escrever comentário para o vídeo atual. Enter publica após confirmação'
+COMMENTS_LIST_NAME = ('Lista de comentários do vídeo atual. {reply} sobre um comentário '
+                      'escreve uma resposta a esse comentário')
+
+
+def prepare_comment(text, platform):
+    """Return the single-line comment to publish, or raise ValueError with the reason."""
+    comment = ' '.join(str(text or '').split())
+    if not comment:
+        raise ValueError('Digite um comentário antes de publicar.')
+    limit = COMMENT_LIMITS.get(platform, min(COMMENT_LIMITS.values()))
+    if len(comment) > limit:
+        raise ValueError(f'O {platform} aceita até {limit} caracteres; o comentário tem {len(comment)}.')
+    return comment
 
 
 def keyboard_help_text(shortcuts=None):
@@ -392,6 +412,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
             ('Copiar link', 'copy_link'), ('Não tenho interesse', 'not_interested'),
             ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
+            ('Ativar ou desativar chat da live', 'toggle_live_chat'),
         ]:
             self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(actions, '&Ações')
@@ -850,9 +871,13 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
     def _build_comments(self):
         page = wx.Panel(self.activities)
         sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(wx.StaticText(page, label='Comentários do vídeo atual:'), 0, wx.ALL, 5)
+        shortcuts = getattr(self, 'shortcuts', None)
+        reply_key = action_shortcut('return_results', shortcuts)
+        write_key = action_shortcut('write_comment', shortcuts)
+        sizer.Add(wx.StaticText(page, label=f'Comentários do vídeo atual ({reply_key} sobre um comentário responde a ele):'),
+                  0, wx.ALL, 5)
         self.comments_list = wx.ListBox(page, style=wx.LB_SINGLE)
-        self.comments_list.SetName('Lista de comentários do vídeo atual')
+        self.comments_list.SetName(COMMENTS_LIST_NAME.format(reply=reply_key))
         self.comments_list.Bind(wx.EVT_LISTBOX, self._comment_selected)
         self.comments_list.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         sizer.Add(self.comments_list, 1, wx.EXPAND | wx.ALL, 5)
@@ -863,7 +888,24 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.comment_details_field.SetName('Detalhes do comentário selecionado, somente leitura')
         self.comment_details_field.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
         sizer.Add(self.comment_details_field, 0, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(wx.StaticText(page, label='Os comentários estão disponíveis somente para leitura. Esc volta ao player.'), 0, wx.ALL, 5)
+        self.reply_button = wx.Button(page, label=REPLY_LABEL)
+        self.reply_button.Bind(wx.EVT_BUTTON, self._toggle_reply)
+        self.reply_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        sizer.Add(self.reply_button, 0, wx.ALL, 5)
+        sizer.Add(wx.StaticText(page, label=f'Escrever comentário ({write_key}):'), 0, wx.LEFT | wx.TOP, 5)
+        self.comment_entry = wx.TextCtrl(page, style=wx.TE_PROCESS_ENTER)
+        self.comment_entry.SetName(NEW_COMMENT_NAME)
+        set_shortcut(self.comment_entry, shortcut=write_key)
+        self.comment_entry.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        self.comment_entry.Bind(wx.EVT_TEXT_ENTER, self._publish_comment)
+        sizer.Add(self.comment_entry, 0, wx.EXPAND | wx.ALL, 5)
+        self._reply_target = None
+        self.publish_button = wx.Button(page, label='Publicar comentário')
+        self.publish_button.SetName('Publicar comentário')
+        self.publish_button.Bind(wx.EVT_BUTTON, self._publish_comment)
+        self.publish_button.Bind(wx.EVT_KEY_DOWN, self._keep_tab_in_app)
+        sizer.Add(self.publish_button, 0, wx.ALL, 5)
+        sizer.Add(wx.StaticText(page, label='Esc volta ao player.'), 0, wx.ALL, 5)
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Comentários')
 
@@ -879,6 +921,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             comment_list_label(index, len(self._comment_items), item.get('text', ''))
             for index, item in enumerate(self._comment_items, start=1)
         ])
+        # A reply belongs to one comment; drop it when that comment is no longer listed
+        # (ids repeat between videos, so the text must match too).
+        target = getattr(self, '_reply_target', None)
+        if target and not any(item.get('id') == target['id'] and item.get('text') == target['text']
+                              for item in self._comment_items):
+            self._set_reply_target(None)
         selected_index = next(
             (index for index, item in enumerate(self._comment_items) if item.get('id') == selected_id),
             0,
@@ -908,6 +956,85 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         text = item.get('text', '')
         self.comment_details_field.ChangeValue(comment_details_text(index, count, text))
         self.comment_details_field.SetName(f'Detalhes do comentário {index} de {count}, somente leitura')
+
+    def _set_reply_target(self, target):
+        """Make the text field answer the given comment, or publish a new one with None."""
+        self._reply_target = target
+        if target:
+            self.reply_button.SetLabel(CANCEL_REPLY_LABEL)
+            self.comment_entry.SetName(f"Escrever resposta ao comentário {target['index']}: "
+                                       f"{target['text'][:80]}. Enter publica após confirmação")
+        else:
+            self.reply_button.SetLabel(REPLY_LABEL)
+            self.comment_entry.SetName(NEW_COMMENT_NAME)
+
+    def _toggle_reply(self, event=None):
+        if self._reply_target:
+            self._set_reply_target(None)
+            self.status('Resposta cancelada. O campo volta a publicar um comentário novo.')
+            self.comment_entry.SetFocus()
+            return
+        self._reply_to_selected()
+
+    def _reply_to_selected(self):
+        """Answer the comment selected in the list (the reply button and Ctrl+R on the list)."""
+        item = self._selected_comment()
+        if not item:
+            self.status('Escolha um comentário na lista antes de responder.')
+            self.comments_list.SetFocus()
+            return
+        index = self.comments_list.GetSelection() + 1
+        text = item.get('text', '')
+        self._set_reply_target({'id': item.get('id'), 'text': text, 'index': index})
+        self.status(f'Respondendo ao comentário {index}: {text[:80]}. '
+                    'Escreva a resposta e pressione Enter para publicar.')
+        self.comment_entry.SetFocus()
+
+    def write_comment(self):
+        """Alt+V: write a new comment on the current video, opening its comments if needed."""
+        if self._reply_target:
+            self._set_reply_target(None)
+        if self.activities.GetSelection() == 1:
+            self.comment_entry.SetFocus()
+            self.status('Escreva o comentário para o vídeo atual e pressione Enter para publicar.')
+            return
+        client = self.clients.get(self._active_name)
+        if client and client.pending:
+            self.status('Aguarde o comando anterior terminar antes de escrever um comentário.')
+            return
+        if self.current():
+            self.platform_data.setdefault(self._active_name, {})['focus_comment_entry'] = True
+        self.dispatch('open_comments')
+
+    def _publish_comment(self, event=None):
+        name = self._active_name
+        try:
+            text = prepare_comment(self.comment_entry.GetValue(), name)
+        except ValueError as error:
+            self.status(str(error))
+            self.comment_entry.SetFocus()
+            return
+        client = self.clients.get(name)
+        if not client or client.pending:
+            self.status('Aguarde o comando anterior terminar antes de publicar.')
+            return
+        target = self._reply_target
+        argument = {'text': text}
+        if target:
+            argument.update(replyTo=target['id'], replyText=target['text'])
+            question = (f"Responder ao comentário {target['index']} no {name}?\n\n"
+                        f"Comentário: {target['text']}\n\nResposta: {text}")
+        else:
+            question = f'Publicar este comentário no {name}?\n\n{text}'
+        answer = wx.MessageBox(question, 'Confirmar publicação', wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION, self)
+        if answer != wx.YES:
+            self.comment_entry.SetFocus()
+            return
+        # Focus stays on the text so it returns there when the page answers.
+        self.comment_entry.SetFocus()
+        self.publish_button.Disable()
+        self.status('Publicando resposta...' if target else 'Publicando comentário...')
+        self.dispatch('post_comment', argument)
 
     def _build_search(self):
         page = wx.Panel(self.activities)
@@ -1169,7 +1296,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         controls[(index + offset) % len(controls)].SetFocus()
 
     def _comment_focus_controls(self):
-        return self.comments_list, self.comment_details_field
+        controls = (self.comments_list, self.comment_details_field, getattr(self, 'reply_button', None),
+                    getattr(self, 'comment_entry', None), getattr(self, 'publish_button', None))
+        return tuple(control for control in controls if control is not None)
 
     def _cycle_comment_focus(self, source, backwards=False):
         controls = self._comment_focus_controls()
@@ -1179,7 +1308,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             controls[-1 if backwards else 0].SetFocus()
             return
         offset = -1 if backwards else 1
-        controls[(index + offset) % len(controls)].SetFocus()
+        # Publicar is disabled while a comment is being sent; skip it.
+        for step in range(1, len(controls) + 1):
+            control = controls[(index + offset * step) % len(controls)]
+            if control.IsEnabled():
+                control.SetFocus()
+                return
 
     def _query_key_down(self, event):
         if event.GetKeyCode() == wx.WXK_DOWN and not event.HasAnyModifiers() and self._results:
@@ -1367,6 +1501,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.status('Voltando ao feed do ' + self._active_name + '...')
 
     def return_to_results(self, event=None):
+        # On a comment of the list, Ctrl+R answers that comment instead.
+        if self.activities.GetSelection() == 1 and wx.Window.FindFocus() is self.comments_list:
+            self._reply_to_selected()
+            return
         if not self.platform_data.get(self._active_name, {}).get('results'):
             self.activities.SetSelection(2)
             self.query_field.SetFocus()
@@ -1441,7 +1579,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         
         # Travas de segurança: se rolar manualmente ou pausar, pede pra monitorar o vídeo novamente
-        if getattr(self, 'auto_scroll_enabled', False):
+        if getattr(self, 'auto_scroll_enabled', False) and wx.GetApp():
             if action in ('next_video', 'previous_video', 'toggle_playback', 'play'):
                 wx.CallLater(1500, self._start_dynamic_timer)
 
@@ -1467,12 +1605,22 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if action in ('read_follow_status', 'toggle_follow') and self._tiktok_follow_verification_active():
             self.status('Aguarde a verificação do estado de seguimento terminar.')
             return
-        if action in ('post_comment', 'reply_comment'):
-            self.status('A publicação e as respostas a comentários estão desativadas temporariamente.')
-            return
         if action == 'search':
             self.activities.SetSelection(2)
             self.query_field.SetFocus()
+            return
+        if action == 'write_comment':
+            self.write_comment()
+            return
+        if action == 'toggle_live_chat':
+            if self._active_name != 'TikTok':
+                self.status('O chat ao vivo está disponível apenas em transmissões do TikTok.')
+                return
+            client = self.clients.get('TikTok')
+            if not client or not client.active:
+                self.status('Abra o TikTok antes de alternar o chat.')
+                return
+            client.execute('toggle_live_chat', None, lambda result: self._on_live_chat_toggled(result))
             return
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
@@ -1664,6 +1812,10 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.dispatch(action, argument)
 
     def _result(self, name, action, argument, result):
+        if action == 'post_comment':
+            self.publish_button.Enable()
+        # Alt+V asked to land in the text field once the comments are loaded.
+        focus_entry = action == 'open_comments' and self.platform_data.get(name, {}).pop('focus_comment_entry', False)
         if result.get('ignored'):
             return
         if name == 'TikTok' and action == 'profile_follow':
@@ -1767,11 +1919,26 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             message = 'Não foi possível identificar o perfil para confirmar o seguimento.'
         elif action == 'toggle_follow':
             message = 'Você começou a seguir este autor.' if result.get('state') else 'Você deixou de seguir este autor.'
+        elif action == 'post_comment':
+            # The text is cleared only after the network showed the comment.
+            reply = isinstance(argument, dict) and bool(argument.get('replyTo'))
+            self.comment_entry.Clear()
+            self._set_reply_target(None)
+            data['comment_posted'] = 'Resposta publicada.' if reply else 'Comentário publicado.'
+            message = f"{data['comment_posted']} Atualizando a lista de comentários."
+            wx.CallAfter(self.dispatch, 'open_comments')
         elif action == 'open_comments' and active:
             self.activities.SetSelection(1)
             self.current().SetCanFocus(False)
-            self.comments_list.SetFocus()
             message = f"{len(data.get('comments', []))} comentários carregados."
+            if focus_entry:
+                self.comment_entry.SetFocus()
+                message += ' Escreva o comentário e pressione Enter para publicar.'
+            else:
+                self.comments_list.SetFocus()
+            posted = data.pop('comment_posted', None)
+            if posted:
+                message = f'{posted} {message}'
         elif action == 'close_comments' and active:
             self.focus_controls()
             return
@@ -1827,6 +1994,19 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         success = _copy_text_to_clipboard(link)
         self.status('Link copiado.' if success else 'Não foi possível copiar o link.')
 
+    def _on_live_chat_toggled(self, result):
+        if isinstance(result, dict) and result.get('ignored'):
+            self.status('Aguarde o comando anterior terminar e tente novamente.')
+            return
+        if not result or not result.get('ok'):
+            error = result.get('error') if isinstance(result, dict) else None
+            self.status(error or 'Não foi possível alternar o chat da live.')
+            return
+        if result.get('hidden'):
+            self.status('Chat ao vivo da live desativado e silenciado.')
+        else:
+            self.status('Chat ao vivo da live ativado.')
+
     def search(self, event=None):
         query = self.query_field.GetValue().strip()
         if not query:
@@ -1841,7 +2021,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         self.platform_data[name].pop('opening_profile', None)
         if name == 'TikTok':
-            url = search_url(query)
+            from video_download import load_download_settings
+            include_lives = load_download_settings().get('include_tiktok_lives', False)
+            url = search_url(query, include_lives=include_lives)
         elif name == 'YouTube':
             # YouTube's Shorts search filter keeps ordinary long-form videos
             # out of the results that this player can open.
