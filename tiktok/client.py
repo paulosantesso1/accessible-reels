@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextvars
+import inspect
 import queue
 import re
 import threading
@@ -123,7 +125,8 @@ class BrowserWorker(threading.Thread):
         self._video_controller_factory = video_controller_factory
         self._commands: queue.Queue[BrowserCommand] = queue.Queue()
         self._playwright: Playwright | None = None
-        self._context: BrowserContext | None = None
+        self._browser_context: BrowserContext | None = None
+        self._thread_context = getattr(self, "_context", None)
         self._page: Page | None = None
         self._browser_visible = True
         self._last_command_sent = "nenhum"
@@ -133,6 +136,21 @@ class BrowserWorker(threading.Thread):
             profile_dir.parent / "preferences.json"
         )
         self._volume = self._preferences.load()
+
+    @property
+    def _context(self):
+        frame = inspect.currentframe()
+        back = frame.f_back if frame else None
+        if back and back.f_code.co_name in ("_bootstrap_inner", "start"):
+            return getattr(self, "_thread_context", None)
+        return self._browser_context
+
+    @_context.setter
+    def _context(self, value):
+        if isinstance(value, getattr(contextvars, "Context", ())):
+            self._thread_context = value
+        else:
+            self._browser_context = value
 
     def open_tiktok(self) -> None:
         self._enqueue("open")
