@@ -1987,7 +1987,9 @@
         }
         return {comments: Array.from(accumulated.values())};
       } finally {
-        await closeComments();
+        // Best-effort: a failed close must not discard comments already
+        // read successfully above by replacing the return with this error.
+        try { await closeComments(); } catch (_) {}
       }
     }
     if (action === "reply_comment") {
@@ -2077,7 +2079,9 @@
         }
         throw new Error("O envio não foi confirmado. Confira os comentários antes de tentar novamente.");
       } finally {
-        await closeComments();
+        // Same reasoning as the "comments" handler: don't let a failed close
+        // mask a comment that was already confirmed as posted above.
+        try { await closeComments(); } catch (_) {}
       }
     }
     if (action === "close_comments") {
