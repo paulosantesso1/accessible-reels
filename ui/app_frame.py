@@ -1807,6 +1807,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         elif action == 'diagnostics':
             message = result.get('message', 'Página incorporada conectada.')
             report = result.get('report') or message
+            logger.info('Diagnostics message: platform=%s %s', name, message)
             logger.info('Diagnostics report: platform=%s %s', name, report)
             if active and _copy_text_to_clipboard(report):
                 message += ' Diagnóstico copiado para a área de transferência.'

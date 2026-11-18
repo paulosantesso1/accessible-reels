@@ -1107,9 +1107,17 @@ class TikTokVideoController:
                             Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
                     };
                     let ancestor = active.video.parentElement;
+                    // TikTok can mount the action rail one level above the element that
+                    // exclusively wraps the active video, alongside a sibling item's
+                    // preloaded (not yet visible) <video>. Allow climbing past exactly
+                    // one such level before giving up, instead of stopping immediately.
+                    let sharedLevelsAllowed = 1;
                     for (let depth = 0; ancestor && ancestor !== document.body && depth < 12; depth++) {
                         const videos = [...ancestor.querySelectorAll('video')];
-                        if (videos.some(video => video !== active.video)) break;
+                        if (videos.some(video => video !== active.video)) {
+                            if (sharedLevelsAllowed <= 0) break;
+                            sharedLevelsAllowed -= 1;
+                        }
                         for (const selector of selectors) {
                             const button = [...ancestor.querySelectorAll(selector)].find(visible);
                             if (button) {
@@ -1118,6 +1126,17 @@ class TikTokVideoController:
                             }
                         }
                         ancestor = ancestor.parentElement;
+                    }
+                    // TikTok currently renders the action rail outside any element
+                    // shared with the video, so it is never found by climbing
+                    // ancestors. Only the active item's rail is visible at a time,
+                    // so a document-wide, visibility-filtered search is unambiguous.
+                    for (const selector of selectors) {
+                        const button = [...document.querySelectorAll(selector)].find(visible);
+                        if (button) {
+                            button.click();
+                            return true;
+                        }
                     }
                     return false;""",
                     "selectors",
@@ -1153,15 +1172,32 @@ class TikTokVideoController:
                 element.closest('button, [role="button"], input, a[href], [tabindex]') || element
             );
             let ancestor = active.video.parentElement;
+            // TikTok can mount the action rail one level above the element that
+            // exclusively wraps the active video, alongside a sibling item's
+            // preloaded (not yet visible) <video>. Allow climbing past exactly
+            // one such level before giving up, instead of stopping immediately.
+            let sharedLevelsAllowed = 1;
             for (let depth = 0; ancestor && ancestor !== document.body && depth < 14; depth++) {
                 const videos = [...ancestor.querySelectorAll('video')];
-                if (videos.some(video => video !== active.video)) break;
+                if (videos.some(video => video !== active.video)) {
+                    if (sharedLevelsAllowed <= 0) break;
+                    sharedLevelsAllowed -= 1;
+                }
                 for (const selector of options.selectors) {
                     const match = [...ancestor.querySelectorAll(selector)].find(visible);
                     const button = clickable(match);
                     if (button && visible(button)) return button;
                 }
                 ancestor = ancestor.parentElement;
+            }
+            // TikTok currently renders the action rail outside any element shared
+            // with the video, so it is never found by climbing ancestors. Only the
+            // active item's rail is visible at a time, so a document-wide,
+            // visibility-filtered search is unambiguous.
+            for (const selector of options.selectors) {
+                const match = [...document.querySelectorAll(selector)].find(visible);
+                const button = clickable(match);
+                if (button && visible(button)) return button;
             }
             return null;""",
             "options",
@@ -1251,9 +1287,15 @@ class TikTokVideoController:
                             return null;
                         };
                         let ancestor = active.video.parentElement;
+                        // See the matching comment above: the action rail can sit one
+                        // level above the element exclusive to the active video.
+                        let sharedLevelsAllowed = 1;
                         for (let depth = 0; ancestor && ancestor !== document.body && depth < 14; depth++) {
                             const videos = [...ancestor.querySelectorAll('video')];
-                            if (videos.some(video => video !== active.video)) break;
+                            if (videos.some(video => video !== active.video)) {
+                                if (sharedLevelsAllowed <= 0) break;
+                                sharedLevelsAllowed -= 1;
+                            }
                             for (const selector of options.selectors) {
                                 const match = [...ancestor.querySelectorAll(selector)].find(visible);
                                 const button = match && (match.closest(
@@ -1266,6 +1308,19 @@ class TikTokVideoController:
                                 return confirmed ? {state} : false;
                             }
                             ancestor = ancestor.parentElement;
+                        }
+                        // See the matching comment above: fall back to a document-wide
+                        // search when the rail is not nested near the active video.
+                        for (const selector of options.selectors) {
+                            const match = [...document.querySelectorAll(selector)].find(visible);
+                            const button = match && (match.closest(
+                                'button, [role="button"], input, a[href], [tabindex]'
+                            ) || match);
+                            if (!button || !visible(button)) continue;
+                            const state = readState(button);
+                            const confirmed = options.expected === null ?
+                                state !== null : state === options.expected;
+                            return confirmed ? {state} : false;
                         }
                         return false;""",
                         "options",

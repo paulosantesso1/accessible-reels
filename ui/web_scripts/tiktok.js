@@ -396,9 +396,17 @@
   function ancestorsFor(video) {
     const result = [];
     let ancestor = video && video.parentElement;
+    // TikTok can mount the action rail (like/comment/favorite/share) one level
+    // above the element that exclusively wraps the active video, alongside a
+    // sibling item's preloaded (not yet visible) <video>. Allow climbing past
+    // exactly one such level before giving up, instead of stopping immediately.
+    let sharedLevelsAllowed = 1;
     for (let depth = 0; ancestor && ancestor !== document.body && depth < 15; depth++) {
       const videos = [...ancestor.querySelectorAll("video")];
-      if (videos.some(item => item !== video)) break;
+      if (videos.some(item => item !== video)) {
+        if (sharedLevelsAllowed <= 0) break;
+        sharedLevelsAllowed -= 1;
+      }
       result.push(ancestor);
       ancestor = ancestor.parentElement;
     }
@@ -413,6 +421,14 @@
         const match = [...ancestor.querySelectorAll(selector)].find(visible);
         if (match) return match.closest("button, [role=button], a[href], [tabindex]") || match;
       }
+    }
+    // TikTok currently renders the action rail (like/comment/favorite/share)
+    // outside any element shared with the video, so it is never found by
+    // climbing ancestors. Only the active item's rail is visible at a time, so
+    // a document-wide, visibility-filtered search stays unambiguous.
+    for (const selector of selectors) {
+      const match = [...document.querySelectorAll(selector)].find(visible);
+      if (match) return match.closest("button, [role=button], a[href], [tabindex]") || match;
     }
     return null;
   }
@@ -521,29 +537,35 @@
     return {nativeCopied: true};
   }
 
-  function sharePanelDiagnostics() {
-    const panels = [...document.querySelectorAll("[role=dialog], [role=menu], [data-e2e*=share i]")]
-      .filter(visible);
-    const controls = panels.flatMap(panel => [...panel.querySelectorAll(
-      "button, [role=button], [role=menuitem], [data-e2e], [data-testid]"
-    )]).filter(visible).slice(0, 20).map(element => {
-      const role = element.getAttribute("role");
-      const e2e = element.getAttribute("data-e2e");
-      const testId = element.getAttribute("data-testid");
-      return element.tagName.toLowerCase() + (role ? `[role=${role}]` : "") +
-        (e2e ? `[data-e2e=${/^share-(?!group|avatar$)/.test(e2e) ? "recipient" : e2e}]` : "") +
-        (testId ? `[data-testid=${testId}]` : "");
+  // Anonymized structural dump of an element: tags, attributes, classes --
+  // enough to find the right selector -- with anything that could be a
+  // person's name, avatar or caption removed instead of merely guessed at
+  // attribute-by-attribute. Any text node over 20 chars (likely a video
+  // description, username or comment) is replaced with a placeholder, and
+  // every image source is stripped.
+  function anonymizedOuterHTML(element, limit = 6000) {
+    if (!element) return "(elemento não encontrado)";
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll("img, picture source").forEach(node => {
+      node.removeAttribute("src");
+      node.removeAttribute("srcset");
     });
-    const buttons = panels.flatMap(panel => [...panel.querySelectorAll("button")]).filter(visible)
-      .slice(0, 8).map(button => {
-        const aria = normalizedText(button.getAttribute("aria-label"));
-        const title = normalizedText(button.getAttribute("title"));
-        const testId = normalizedText(button.getAttribute("data-testid"));
-        return `button[aria=${aria || "vazio"}; title=${title || "vazio"}; data-testid=${testId || "vazio"}]`;
-      });
-    return `painel de compartilhamento ${panels.length ? "visível" : "não visível"}; ` +
-      `${controls.length} controle(s) estrutural(is): ${controls.join(", ") || "nenhum"}; ` +
-      `botões: ${buttons.join(", ") || "nenhum"}.`;
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+    const toRedact = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = (node.nodeValue || "").trim();
+      if (text.length > 20) toRedact.push(node);
+    }
+    for (const textNode of toRedact) textNode.nodeValue = "[texto]";
+    return clone.outerHTML.slice(0, limit);
+  }
+
+  function sharePanelDiagnostics() {
+    const panel = [...document.querySelectorAll("[role=dialog], [role=menu], [data-e2e*=share i]")]
+      .filter(visible)[0] || null;
+    return `painel de compartilhamento ${panel ? "visível" : "não visível"}; ` +
+      `html=${anonymizedOuterHTML(panel)}`;
   }
 
   function canonicalLink(value) {
@@ -723,6 +745,10 @@
     const video = activeVideo();
     if (!video) throw new Error("Não foi possível localizar o vídeo atual.");
     const ancestors = ancestorsFor(video);
+    // TikTok can render the active item's author/description/link overlay
+    // outside any element shared with the video (same as the action rail).
+    // Fall back to a document-wide, visibility-filtered search: only one
+    // such overlay is visible at a time, so this stays unambiguous.
     const query = selectors => {
       for (const root of ancestors) {
         for (const selector of selectors) {
@@ -731,11 +757,24 @@
           if (text) return text;
         }
       }
+      for (const selector of selectors) {
+        const element = [...document.querySelectorAll(selector)].find(visible);
+        const text = normalizedText(element && (element.getAttribute("aria-label") || element.textContent));
+        if (text) return text;
+      }
       return "";
     };
-    const profile = (() => {
-      for (const root of ancestors) {
+    const findProfileAnchor = roots => {
+      for (const root of roots) {
         for (const anchor of root.querySelectorAll("a[href^='/@'], a[href*='tiktok.com/@']")) {
+          if (!visible(anchor)) continue;
+          // The document-wide fallback must not pick up the signed-in account's
+          // own profile link or any other navigation/header/sidebar chrome --
+          // only the active video's own author credit is a valid match here.
+          if (anchor.closest(
+            "nav, header, [role=navigation], [data-e2e*='nav' i], [data-e2e*='sidebar' i], " +
+            "[data-e2e*='sidenav' i], [data-e2e*='top-bar' i]"
+          )) continue;
           try {
             const raw = anchor.getAttribute("href") || "";
             const candidate = raw.startsWith("/") ? null : new URL(anchor.href, location.href);
@@ -749,7 +788,8 @@
         }
       }
       return null;
-    })();
+    };
+    const profile = findProfileAnchor(ancestors) || findProfileAnchor([document]);
     let author = query([
       "[data-e2e=video-author-uniqueid]", "[data-e2e=browse-username]",
     ]);
@@ -764,6 +804,16 @@
       const anchor = root.querySelector("a[href*='/video/']");
       link = anchor ? canonicalLink(anchor.href) : "";
       if (link) break;
+    }
+    if (!link) {
+      // Same caveat as the profile fallback above: exclude navigation/sidebar
+      // chrome, which can otherwise link to an unrelated suggested video.
+      const anchor = [...document.querySelectorAll("a[href*='/video/']")].find(element =>
+        visible(element) && !element.closest(
+          "nav, header, [role=navigation], [data-e2e*='nav' i], [data-e2e*='sidebar' i], " +
+          "[data-e2e*='sidenav' i], [data-e2e*='top-bar' i]"
+        ));
+      link = anchor ? canonicalLink(anchor.href) : "";
     }
     link ||= canonicalLink(location.href);
     if (!link) {
@@ -1204,7 +1254,18 @@
         info.needs_profile_follow = state === null && Boolean(info.profile_url);
       }
       if (action === "download_link") return {...info, media_url: downloadMedia(video, info.link || "")};
-      if (action === "copy_link" && !info.link) return copyLinkFromTikTok(video);
+      if (action === "copy_link" && !info.link) {
+        try {
+          return await copyLinkFromTikTok(video);
+        } catch (error) {
+          // The DOM may have settled (author/video id now resolvable) by the
+          // time the fragile share-panel click failed. Prefer copying the
+          // link ourselves over surfacing an avoidable UI error.
+          const retryLink = snapshot().link;
+          if (retryLink) return {...info, link: retryLink};
+          throw error;
+        }
+      }
       return info;
     }
     if (action === "next" || action === "previous") {
@@ -1457,10 +1518,20 @@
       return {};
     }
     if (action === "diagnostics") {
+      const active = activeVideo();
+      // The scope findNearVideo searches for curtir/favoritar/compartilhar: the
+      // outermost ancestor that still (mostly) belongs only to this video.
+      const likeScope = active ? ancestorsFor(active).slice(-1)[0] : null;
+      const likeMatches = [...document.querySelectorAll(LIKE_SELECTORS.join(","))].filter(visible);
       return {message: `Extensão conectada; página ${location.hostname}; ` +
         `${document.querySelectorAll("video").length} vídeo(s); ` +
-        `vídeo ativo ${activeVideo() ? "sim" : "não"}; ${sharePanelDiagnostics()}`,
-        report: activeVideo() ? JSON.stringify(describeControls(activeVideo())) : ""};
+        `vídeo ativo ${active ? "sim" : "não"}; ${sharePanelDiagnostics()}`,
+        report: JSON.stringify({
+          controls: active ? describeControls(active) : null,
+          likeScopeHtml: anonymizedOuterHTML(likeScope),
+          likeMatchesDocumentWide: likeMatches.length,
+          likeMatchesHtml: likeMatches.slice(0, 2).map(element => anonymizedOuterHTML(element, 1500)),
+        })};
     }
     throw new Error("Comando desconhecido recebido pela extensão.");
   }
