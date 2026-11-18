@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from ui.webview_client import WebViewClient
+from ui.webview_client import ACTIONS, WebViewClient
 
 
 def make_client(platform='TikTok'):
@@ -38,8 +38,9 @@ def test_failed_silence_installation_does_not_load_auxiliary_profile():
     failed.assert_called_once()
 
 
-def test_unnamed_child_navigation_does_not_disable_controls():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_unnamed_child_navigation_does_not_disable_controls(platform):
+    client = make_client(platform)
     client.ready = True
     pending = {'callback': Mock(), 'timer': Mock()}
     client.pending = pending
@@ -52,8 +53,9 @@ def test_unnamed_child_navigation_does_not_disable_controls():
     assert client.generation == 0
 
 
-def test_main_navigation_cancels_pending_command():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_main_navigation_cancels_pending_command(platform):
+    client = make_client(platform)
     callback = Mock()
     client.pending = {'callback': callback, 'timer': Mock()}
     event = Mock()
@@ -225,8 +227,9 @@ def test_loaded_event_waits_for_the_checked_destination_url():
     assert client.ready is False
 
 
-def test_command_recovers_when_cached_ready_flag_is_false():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_command_recovers_when_cached_ready_flag_is_false(platform):
+    client = make_client(platform)
     callback = Mock()
     with patch('ui.webview_client.wx.CallLater'), patch('ui.webview_client.webview_native.evaluate') as evaluate:
         client.execute('toggle', None, callback)
@@ -265,8 +268,9 @@ def test_load_error_preserves_recovery_started_by_command_callback():
     client.on_error.assert_not_called()
 
 
-def test_inactive_network_does_not_execute_commands():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_inactive_network_does_not_execute_commands(platform):
+    client = make_client(platform)
     client.active = False
     with patch('ui.webview_client.webview_native.evaluate') as evaluate:
         client.execute('toggle', None, Mock())
@@ -396,13 +400,24 @@ def test_a_loaded_page_cancels_the_abort_watch():
 
 
 
-def test_live_chat_toggle_is_an_allowed_command():
-    from ui.webview_client import ACTIONS
-    assert 'toggle_live_chat' in ACTIONS
+def test_internal_platform_navigation_is_not_vetoed():
+    view = Mock()
+    client = WebViewClient(view, "TikTok", Mock(), Mock())
+    client.ready = True
+
+    event = Mock()
+    event.IsTargetMainFrame.return_value = True
+    event.GetURL.return_value = "https://www.tiktok.com/@ana/video/456"
+
+    with patch("link_router.open_in_default_browser") as mock_open:
+        client._navigating(event)
+        event.Veto.assert_not_called()
+        mock_open.assert_not_called()
 
 
-def test_external_link_navigation_is_vetoed_and_opened_in_default_browser():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_external_link_navigation_is_vetoed_and_opened_in_default_browser(platform):
+    client = make_client(platform)
     client.ready = True
     event = Mock()
     event.IsTargetMainFrame.return_value = True
@@ -415,8 +430,9 @@ def test_external_link_navigation_is_vetoed_and_opened_in_default_browser():
         assert client.generation == 0
 
 
-def test_auth_domain_navigation_is_allowed_in_webview():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_auth_domain_navigation_is_allowed_in_webview(platform):
+    client = make_client(platform)
     client.ready = True
     event = Mock()
     event.IsTargetMainFrame.return_value = True
@@ -426,3 +442,37 @@ def test_auth_domain_navigation_is_allowed_in_webview():
         event.Veto.assert_not_called()
         event.Skip.assert_called_once()
         open_browser.assert_not_called()
+
+
+def test_live_chat_commands_are_allowed_actions():
+    assert 'toggle_live_chat' in ACTIONS
+    assert 'read_live_chat' in ACTIONS
+
+
+def test_live_subdomain_navigation_is_not_vetoed():
+    view = Mock()
+    client = WebViewClient(view, "TikTok", Mock(), Mock())
+    client.ready = True
+
+    event = Mock()
+    event.IsTargetMainFrame.return_value = True
+    event.GetURL.return_value = "https://live.tiktok.com/@ana"
+
+    with patch("link_router.open_in_default_browser") as mock_open:
+        client._navigating(event)
+        event.Veto.assert_not_called()
+        mock_open.assert_not_called()
+
+
+def test_spontaneous_live_chat_message_is_dispatched_to_handler():
+    client = make_client("TikTok")
+    client.ready = True
+    received = []
+    client.on_live_chat = lambda text: received.append(text)
+
+    event = Mock()
+    event.GetURL.return_value = "https://www.tiktok.com/@ana/live"
+    event.GetString.return_value = json.dumps({"type": "live_chat", "text": "Bruno: Olá a todos!"})
+
+    client._message(event)
+    assert received == ["Bruno: Olá a todos!"]

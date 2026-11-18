@@ -210,7 +210,8 @@ def test_ctrl_number_shortcuts_open_the_requested_platform():
     harness = AcceleratorHarness()
     harness.handlers[harness._accelerator_ids['select_tiktok']](object())
     harness.handlers[harness._accelerator_ids['select_instagram']](object())
-    assert harness.opened_platforms == ['TikTok', 'Instagram']
+    harness.handlers[harness._accelerator_ids['select_youtube']](object())
+    assert harness.opened_platforms == ['TikTok', 'Instagram', 'YouTube']
 
 
 def test_video_details_keep_author_and_description_in_one_read_only_value():
@@ -227,19 +228,20 @@ def test_comments_use_a_short_list_label_and_full_read_only_details():
 
 
 
-def test_platform_menu_action_selects_and_opens_the_requested_platform():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_platform_menu_action_selects_and_opens_the_requested_platform(platform):
     frame = type('Frame', (), {})()
     frame._tiktok_follow_verification_active = Mock(return_value=False)
-    frame._active_name = 'TikTok'
+    frame._active_name = 'TikTok' if platform != 'TikTok' else 'Instagram'
     frame.current = Mock(return_value=False)
-    frame.platform_data = {'Instagram': {}}
-    frame.clients = {'Instagram': Mock()}
+    frame.platform_data = {platform: {}}
+    frame.clients = {platform: Mock()}
     frame._select_platform = Mock()
     frame.network = Mock()
-    frame.network.GetStringSelection.return_value = 'Instagram'
+    frame.network.GetStringSelection.return_value = platform
     frame.open_network = Mock()
-    MainFrame._open_platform(frame, 'Instagram')
-    frame._select_platform.assert_called_once_with('Instagram')
+    MainFrame._open_platform(frame, platform)
+    frame._select_platform.assert_called_once_with(platform)
     frame.open_network.assert_called_once_with()
 
 

@@ -23,7 +23,7 @@ def browser():
         browser.close()
 
 
-@pytest.mark.parametrize('platform', ['tiktok', 'instagram'])
+@pytest.mark.parametrize('platform', ['tiktok', 'instagram', 'youtube'])
 @pytest.mark.parametrize('delta, start, duration, expected', [
     (-15, 50, 120, 35), (15, 50, 120, 65),
     (-30, 50, 120, 20), (30, 50, 120, 80),

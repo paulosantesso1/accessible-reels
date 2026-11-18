@@ -5,6 +5,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import wx
 
@@ -187,7 +188,7 @@ class DownloadControlsMixin:
             self.status(result.get('error') or 'Não foi possível identificar o vídeo ativo.')
             return
         link = result.get('link') or ''
-        if '/live' in link:
+        if re.search(r'/@[^/?#]+/live(?:[/?#]|$)', link) or 'live.tiktok.com' in link:
             self._download_busy = False
             self.status('Não é possível baixar uma transmissão ao vivo em andamento.')
             return

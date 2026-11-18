@@ -61,7 +61,6 @@ class SettingsDialog(wx.Dialog):
                 self.current_folder = Path(folder)
             self.check_ytdlp = value.get("check_ytdlp_updates", True)
             self.avoid_real_minimize = value.get("avoid_real_minimize", True)
-            self.include_tiktok_lives = value.get("include_tiktok_lives", False)
         except Exception:
             pass
         try:
@@ -108,10 +107,6 @@ class SettingsDialog(wx.Dialog):
             else:
                 self.browser_choice.SetSelection(0)
             box.Add(self.browser_choice, 0, wx.EXPAND | wx.ALL, 5)
-        self.cb_include_lives = wx.CheckBox(panel, label="Incluir &transmissões ao vivo (lives) nas pesquisas do TikTok")
-        self.cb_include_lives.SetName("Incluir transmissões ao vivo (lives) nas pesquisas do TikTok")
-        self.cb_include_lives.SetValue(getattr(self, "include_tiktok_lives", False))
-        box.Add(self.cb_include_lives, 0, wx.ALL, 5)
         self.cb_auto_update = wx.CheckBox(panel, label="Verificar a&tualizações do motor de download automaticamente ao abrir")
         self.cb_auto_update.SetValue(self.check_ytdlp)
         box.Add(self.cb_auto_update, 0, wx.ALL, 5)
@@ -210,6 +205,18 @@ class SettingsDialog(wx.Dialog):
             self._refresh_shortcut_list(index)
 
     def on_restore_all(self, event):
+        # BUG-14: Pede confirmação antes de apagar todos os atalhos customizados.
+        # Para usuários cegos, atalhos memorizados são críticos; esta ação é
+        # irreversível se o diálogo de configurações for salvo na sequência.
+        result = wx.MessageBox(
+            "Tem certeza que deseja restaurar todos os atalhos para o padrão de fábrica?\n"
+            "Seus atalhos personalizados serão perdidos.",
+            "Restaurar todos os atalhos",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
         self.shortcuts = dict(DEFAULT_SHORTCUTS)
         self.global_shortcuts = set(DEFAULT_GLOBAL_ACTIONS)
         self._refresh_shortcut_list(0)
@@ -233,7 +240,18 @@ class SettingsDialog(wx.Dialog):
             return
         progress = wx.ProgressDialog("Atualizando motor", "Buscando atualizações...", parent=self, style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE)
         progress.Pulse()
+        # BUG-13: Pulsa o diálogo de progresso periodicamente via Timer para
+        # que o Windows não marque a janela como "Não respondendo" quando a
+        # checagem do yt-dlp demora mais que alguns segundos.
+        pulse_timer = wx.Timer(self)
+        def _on_pulse(e):
+            if progress and not progress.WasCancelled():
+                progress.Pulse()
+        self.Bind(wx.EVT_TIMER, _on_pulse, pulse_timer)
+        pulse_timer.Start(300)
         def finish(message, error=False):
+            pulse_timer.Stop()
+            self.Unbind(wx.EVT_TIMER, handler=_on_pulse, source=pulse_timer)
             progress.Destroy()
             wx.MessageBox(message, "Erro" if error else "Atualização concluída", wx.OK | (wx.ICON_ERROR if error else wx.ICON_INFORMATION), self)
         def worker():
@@ -256,8 +274,7 @@ class SettingsDialog(wx.Dialog):
             save_download_settings({
                 "folder": str(self.current_folder),
                 "check_ytdlp_updates": self.cb_auto_update.GetValue(),
-                "avoid_real_minimize": self.cb_avoid_minimize.GetValue() if hasattr(self, "cb_avoid_minimize") else True,
-                "include_tiktok_lives": self.cb_include_lives.GetValue() if hasattr(self, "cb_include_lives") else False
+                "avoid_real_minimize": self.cb_avoid_minimize.GetValue() if hasattr(self, "cb_avoid_minimize") else True
             }, path=self.settings_file)
             if hasattr(self, "browser_choice"):
                 index = self.browser_choice.GetSelection()

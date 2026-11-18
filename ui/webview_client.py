@@ -19,7 +19,7 @@ ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description'
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow', 'not_interested',
            'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step',
-           'toggle_live_chat', 'post_comment'}
+           'post_comment', 'toggle_live_chat', 'read_live_chat'}
 # Longest comment any supported network accepts; anything longer is refused before typing.
 MAX_COMMENT_LENGTH = 10000
 logger = get_logger()
@@ -38,13 +38,13 @@ def belongs_to_platform(url, platform):
         parsed = urlsplit(url)
         if platform == 'TikTok':
             domain = 'tiktok.com'
+            allowed_hosts = [domain, 'www.' + domain, 'm.' + domain, 'live.' + domain]
         elif platform == 'YouTube':
             domain = 'youtube.com'
+            allowed_hosts = [domain, 'www.' + domain, 'm.' + domain]
         else:
             domain = 'instagram.com'
-        allowed_hosts = [domain, 'www.' + domain, 'm.' + domain]
-        if platform == 'TikTok':
-            allowed_hosts.append('live.' + domain)
+            allowed_hosts = [domain, 'www.' + domain, 'm.' + domain]
         return (parsed.scheme == 'https' and parsed.hostname in allowed_hosts
                 and not parsed.username and not parsed.password and parsed.port in (None, 443))
     except ValueError:
@@ -353,7 +353,8 @@ class WebViewClient:
         self.pending = {'token':token, 'callback':callback, 'clicks':set(), 'action':action}
         if action == 'post_comment' and isinstance(argument, dict) and isinstance(argument.get('text'), str):
             self.pending['approved_text'] = argument['text']
-        self.pending['timer'] = wx.CallLater(20000, self._timeout, token)
+        timeout_ms = 40000 if action == 'comments' else 20000
+        self.pending['timer'] = wx.CallLater(timeout_ms, self._timeout, token)
         arguments = json.dumps([action, argument, token, self.platform.lower()], ensure_ascii=True)
         def completed(value, error):
             if not self.alive or generation != self.generation or not self.pending or self.pending['token'] != token:
@@ -384,11 +385,20 @@ class WebViewClient:
 
     def _message(self, event):
         event.Skip()
-        if not self.alive or not self.active or not self.pending or not belongs_to_platform(event.GetURL(), self.platform):
+        url = event.GetURL() or (self.view.GetCurrentURL() if hasattr(self.view, 'GetCurrentURL') else '')
+        if not self.alive or not self.active or not belongs_to_platform(url, self.platform):
             return
         try:
             value = json.loads(event.GetString())
             message_type = value.get('type')
+            if message_type == 'live_chat':
+                text = value.get('text')
+                handler = getattr(self, 'on_live_chat', None)
+                if text and handler:
+                    handler(text)
+                return
+            if not self.pending:
+                return
             if message_type not in ('click', 'key', 'text') or value.get('token') != self.pending['token']:
                 return
 

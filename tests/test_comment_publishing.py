@@ -24,9 +24,14 @@ def start_post(client, text='Comentário aprovado'):
     return client.pending['token']
 
 
-def text_message(token, text, identifier=1):
+def text_message(token, text, identifier=1, platform='TikTok'):
+    urls = {
+        'TikTok': 'https://www.tiktok.com/',
+        'Instagram': 'https://www.instagram.com/reels/',
+        'YouTube': 'https://www.youtube.com/shorts/',
+    }
     event = Mock()
-    event.GetURL.return_value = 'https://www.tiktok.com/'
+    event.GetURL.return_value = urls[platform]
     event.GetString.return_value = json.dumps({'type': 'text', 'token': token, 'id': identifier, 'text': text})
     return event
 
@@ -40,21 +45,23 @@ def test_post_comment_is_sent_to_the_page_with_its_text(platform):
     assert '"post_comment", {"text": "Ol\\u00e1"}' in evaluate.call_args.args[1]
 
 
-def test_page_can_type_only_the_approved_text_once():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_page_can_type_only_the_approved_text_once(platform):
+    client = make_client(platform)
     token = start_post(client)
     with patch('ui.webview_client.webview_native.insert_text') as insert:
-        client._message(text_message(token, 'Comentário aprovado'))
-        client._message(text_message(token, 'Comentário aprovado', identifier=2))
+        client._message(text_message(token, 'Comentário aprovado', platform=platform))
+        client._message(text_message(token, 'Comentário aprovado', identifier=2, platform=platform))
     insert.assert_called_once()
     assert insert.call_args.args[1] == 'Comentário aprovado'
 
 
-def test_page_cannot_type_a_different_text():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_page_cannot_type_a_different_text(platform):
+    client = make_client(platform)
     token = start_post(client)
     with patch('ui.webview_client.webview_native.insert_text') as insert:
-        client._message(text_message(token, 'Texto trocado pelo site', identifier=3))
+        client._message(text_message(token, 'Texto trocado pelo site', identifier=3, platform=platform))
     insert.assert_not_called()
     # The page learns at once why nothing was typed.
     script = client.view.RunScriptAsync.call_args.args[0]
@@ -62,38 +69,42 @@ def test_page_cannot_type_a_different_text():
     assert '"ok": false' in script and 'diferente do confirmado' in json.loads(script.split(', ', 1)[1][:-2])['error']
 
 
-def test_typing_is_refused_outside_a_comment_command():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_typing_is_refused_outside_a_comment_command(platform):
+    client = make_client(platform)
     with patch('ui.webview_client.wx.CallLater'), patch('ui.webview_client.webview_native.evaluate'):
         client.execute('toggle_like', 'Comentário aprovado', Mock())
     with patch('ui.webview_client.webview_native.insert_text') as insert:
-        client._message(text_message(client.pending['token'], 'Comentário aprovado'))
+        client._message(text_message(client.pending['token'], 'Comentário aprovado', platform=platform))
     insert.assert_not_called()
 
 
-def test_typing_is_refused_with_another_commands_token():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_typing_is_refused_with_another_commands_token(platform):
+    client = make_client(platform)
     start_post(client)
     with patch('ui.webview_client.webview_native.insert_text') as insert:
-        client._message(text_message('outro-token', 'Comentário aprovado'))
+        client._message(text_message('outro-token', 'Comentário aprovado', platform=platform))
     insert.assert_not_called()
 
 
-def test_typing_refuses_text_longer_than_any_network_accepts():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_typing_refuses_text_longer_than_any_network_accepts(platform):
+    client = make_client(platform)
     text = 'a' * (MAX_COMMENT_LENGTH + 1)
     token = start_post(client, text)
     with patch('ui.webview_client.webview_native.insert_text') as insert:
-        client._message(text_message(token, text))
+        client._message(text_message(token, text, platform=platform))
     insert.assert_not_called()
 
 
-def test_typing_result_is_returned_to_the_waiting_page():
-    client = make_client()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_typing_result_is_returned_to_the_waiting_page(platform):
+    client = make_client(platform)
     token = start_post(client)
     with patch('ui.webview_client.webview_native.insert_text',
                side_effect=lambda view, text, callback, valid: callback(True, None)):
-        client._message(text_message(token, 'Comentário aprovado', identifier=7))
+        client._message(text_message(token, 'Comentário aprovado', identifier=7, platform=platform))
     script = client.view.RunScriptAsync.call_args.args[0]
     assert script.startswith('window.__accessibleClickDone?.(7, ')
     assert '"ok": true' in script
@@ -124,9 +135,10 @@ def test_prepare_comment_keeps_a_single_line(platform):
     assert prepare_comment('  Muito\n bom   vídeo ', platform) == 'Muito bom vídeo'
 
 
-def test_prepare_comment_refuses_empty_text():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_prepare_comment_refuses_empty_text(platform):
     with pytest.raises(ValueError, match='Digite um comentário'):
-        prepare_comment(' \n ', 'TikTok')
+        prepare_comment(' \n ', platform)
 
 
 @pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
@@ -157,8 +169,9 @@ def test_publish_sends_the_comment_after_confirmation(platform):
     frame.dispatch.assert_called_once_with('post_comment', {'text': 'Comentário novo'})
 
 
-def test_publish_does_nothing_when_the_confirmation_is_refused():
-    frame = publish_frame()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_publish_does_nothing_when_the_confirmation_is_refused(platform):
+    frame = publish_frame(platform=platform)
     with patch('ui.app_frame.wx.MessageBox', return_value=wx.NO):
         MainFrame._publish_comment(frame)
     frame.dispatch.assert_not_called()
@@ -166,16 +179,18 @@ def test_publish_does_nothing_when_the_confirmation_is_refused():
     frame.comment_entry.SetFocus.assert_called()
 
 
-def test_publish_does_not_ask_while_another_command_runs():
-    frame = publish_frame(pending={'token': 'x'})
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_publish_does_not_ask_while_another_command_runs(platform):
+    frame = publish_frame(platform=platform, pending={'token': 'x'})
     with patch('ui.app_frame.wx.MessageBox') as confirm:
         MainFrame._publish_comment(frame)
     confirm.assert_not_called()
     frame.dispatch.assert_not_called()
 
 
-def test_publish_explains_an_empty_comment_without_asking():
-    frame = publish_frame(text='   ')
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_publish_explains_an_empty_comment_without_asking(platform):
+    frame = publish_frame(platform=platform, text='   ')
     with patch('ui.app_frame.wx.MessageBox') as confirm:
         MainFrame._publish_comment(frame)
     confirm.assert_not_called()
@@ -189,32 +204,36 @@ def result_frame(platform='TikTok'):
     return frame
 
 
-def test_published_comment_clears_the_text_and_reloads_the_list():
-    frame = result_frame()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_published_comment_clears_the_text_and_reloads_the_list(platform):
+    frame = result_frame(platform)
     with patch('ui.app_frame.wx.CallAfter') as deferred:
-        MainFrame._result(frame, 'TikTok', 'post_comment', {'text': 'Oi'}, {'ok': True})
+        MainFrame._result(frame, platform, 'post_comment', {'text': 'Oi'}, {'ok': True})
     frame.publish_button.Enable.assert_called_once()
     frame.comment_entry.Clear.assert_called_once()
     deferred.assert_called_once_with(frame.dispatch, 'open_comments')
-    assert frame.platform_data['TikTok']['comment_posted'] == 'Comentário publicado.'
+    assert frame.platform_data[platform]['comment_posted'] == 'Comentário publicado.'
 
 
-def test_failed_comment_keeps_the_text_and_enables_publish_again():
-    frame = result_frame()
-    MainFrame._result(frame, 'TikTok', 'post_comment', {'text': 'Oi'},
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_failed_comment_keeps_the_text_and_enables_publish_again(platform):
+    frame = result_frame(platform)
+    MainFrame._result(frame, platform, 'post_comment', {'text': 'Oi'},
                       {'ok': False, 'error': 'O vídeo mudou. O comentário não foi enviado.'})
     frame.publish_button.Enable.assert_called_once()
     frame.comment_entry.Clear.assert_not_called()
-    frame._platform_error.assert_called_once_with('TikTok', 'O vídeo mudou. O comentário não foi enviado.')
+    frame._platform_error.assert_called_once_with(platform, 'O vídeo mudou. O comentário não foi enviado.')
 
 
-def test_reloaded_list_announces_the_published_comment():
-    frame = result_frame()
-    frame.platform_data['TikTok'] = {'comment_posted': 'Comentário publicado.'}
-    MainFrame._result(frame, 'TikTok', 'open_comments', None,
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_reloaded_list_announces_the_published_comment(platform):
+    frame = result_frame(platform)
+    frame.current.return_value = Mock()
+    frame.platform_data[platform] = {'comment_posted': 'Comentário publicado.'}
+    MainFrame._result(frame, platform, 'open_comments', None,
                       {'ok': True, 'comments': [{'id': '1', 'text': 'a'}, {'id': '2', 'text': 'b'}]})
     frame.status.assert_called_with('Comentário publicado. 2 comentários carregados.')
-    assert 'comment_posted' not in frame.platform_data['TikTok']
+    assert 'comment_posted' not in frame.platform_data[platform]
 
 
 def reply_frame(selection=1, items=({'id': 'c1', 'text': 'ana: Primeiro'}, {'id': 'c2', 'text': 'bia: Segundo'})):
@@ -270,40 +289,44 @@ def test_reply_is_sent_with_the_replied_comment_after_confirmation(platform):
         'post_comment', {'text': 'Concordo', 'replyTo': 'c2', 'replyText': 'bia: Segundo'})
 
 
-def test_published_reply_is_announced_and_the_field_returns_to_new_comments():
-    frame = result_frame()
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_published_reply_is_announced_and_the_field_returns_to_new_comments(platform):
+    frame = result_frame(platform)
     with patch('ui.app_frame.wx.CallAfter'):
-        MainFrame._result(frame, 'TikTok', 'post_comment', {'text': 'Oi', 'replyTo': 'c2', 'replyText': 'bia'},
+        MainFrame._result(frame, platform, 'post_comment', {'text': 'Oi', 'replyTo': 'c2', 'replyText': 'bia'},
                           {'ok': True})
     frame._set_reply_target.assert_called_once_with(None)
-    assert frame.platform_data['TikTok']['comment_posted'] == 'Resposta publicada.'
+    assert frame.platform_data[platform]['comment_posted'] == 'Resposta publicada.'
     frame.status.assert_called_with('Resposta publicada. Atualizando a lista de comentários.')
 
 
-def test_failed_reply_keeps_the_reply_target():
-    frame = result_frame()
-    MainFrame._result(frame, 'TikTok', 'post_comment', {'text': 'Oi', 'replyTo': 'c2'},
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_failed_reply_keeps_the_reply_target(platform):
+    frame = result_frame(platform)
+    MainFrame._result(frame, platform, 'post_comment', {'text': 'Oi', 'replyTo': 'c2'},
                       {'ok': False, 'error': 'O comentário selecionado não está mais disponível.'})
     frame._set_reply_target.assert_not_called()
     frame.comment_entry.Clear.assert_not_called()
 
 
-def test_reply_target_is_dropped_when_its_comment_is_no_longer_listed():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_reply_target_is_dropped_when_its_comment_is_no_longer_listed(platform):
     frame = reply_frame()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     frame._reply_target = {'id': 'c1', 'text': 'ana: Primeiro', 'index': 1}
     # Another video: same id, different comment.
-    frame.platform_data = {'TikTok': {'comments': [{'id': 'c1', 'text': 'carla: Outro vídeo'}]}}
+    frame.platform_data = {platform: {'comments': [{'id': 'c1', 'text': 'carla: Outro vídeo'}]}}
     MainFrame._render_comments(frame)
     assert frame._reply_target is None
 
 
-def test_reply_target_survives_a_refresh_of_the_same_comments():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_reply_target_survives_a_refresh_of_the_same_comments(platform):
     frame = reply_frame()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     target = {'id': 'c1', 'text': 'ana: Primeiro', 'index': 1}
     frame._reply_target = target
-    frame.platform_data = {'TikTok': {'comments': [{'id': 'c1', 'text': 'ana: Primeiro'}]}}
+    frame.platform_data = {platform: {'comments': [{'id': 'c1', 'text': 'ana: Primeiro'}]}}
     MainFrame._render_comments(frame)
     assert frame._reply_target is target
 
@@ -320,35 +343,38 @@ def test_ctrl_r_on_a_comment_answers_that_comment():
     frame.query_field.SetFocus.assert_not_called()
 
 
-def test_ctrl_r_elsewhere_still_returns_to_the_results():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_ctrl_r_elsewhere_still_returns_to_the_results(platform):
     frame = reply_frame()
     frame.activities.GetSelection.return_value = 1
-    frame.platform_data = {'TikTok': {}}
-    frame._active_name = 'TikTok'
+    frame.platform_data = {platform: {}}
+    frame._active_name = platform
     with patch('ui.app_frame.wx.Window.FindFocus', return_value=frame.comment_entry):
         MainFrame.return_to_results(frame)
     assert frame._reply_target is None
     frame.status.assert_called_once_with('Faça uma pesquisa para carregar a lista de resultados.')
 
 
-def write_frame(page=0, pending=None):
+def write_frame(platform='TikTok', page=0, pending=None):
     frame = reply_frame()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     frame.activities.GetSelection.return_value = page
-    frame.clients = {'TikTok': Mock(pending=pending)}
-    frame.platform_data = {'TikTok': {}}
+    frame.clients = {platform: Mock(pending=pending)}
+    frame.platform_data = {platform: {}}
     return frame
 
 
-def test_alt_v_from_the_player_opens_the_comments_in_the_text_field():
-    frame = write_frame(page=0)
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_alt_v_from_the_player_opens_the_comments_in_the_text_field(platform):
+    frame = write_frame(platform=platform, page=0)
     MainFrame.write_comment(frame)
-    assert frame.platform_data['TikTok']['focus_comment_entry'] is True
+    assert frame.platform_data[platform]['focus_comment_entry'] is True
     frame.dispatch.assert_called_once_with('open_comments')
 
 
-def test_alt_v_on_the_comments_screen_goes_to_the_field_for_a_new_comment():
-    frame = write_frame(page=1)
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_alt_v_on_the_comments_screen_goes_to_the_field_for_a_new_comment(platform):
+    frame = write_frame(platform=platform, page=1)
     frame._reply_target = {'id': 'c1', 'text': 'ana: Primeiro', 'index': 1}
     MainFrame.write_comment(frame)
     assert frame._reply_target is None
@@ -357,35 +383,41 @@ def test_alt_v_on_the_comments_screen_goes_to_the_field_for_a_new_comment():
     frame.status.assert_called_once_with('Escreva o comentário para o vídeo atual e pressione Enter para publicar.')
 
 
-def test_alt_v_waits_for_a_running_command():
-    frame = write_frame(page=0, pending={'token': 'x'})
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_alt_v_waits_for_a_running_command(platform):
+    frame = write_frame(platform=platform, page=0, pending={'token': 'x'})
     MainFrame.write_comment(frame)
     frame.dispatch.assert_not_called()
-    assert 'focus_comment_entry' not in frame.platform_data['TikTok']
+    assert 'focus_comment_entry' not in frame.platform_data[platform]
 
 
-def test_comments_opened_by_alt_v_land_in_the_text_field():
-    frame = result_frame()
-    frame.platform_data['TikTok'] = {'focus_comment_entry': True}
-    MainFrame._result(frame, 'TikTok', 'open_comments', None, {'ok': True, 'comments': [{'id': '1', 'text': 'a'}]})
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_comments_opened_by_alt_v_land_in_the_text_field(platform):
+    frame = result_frame(platform)
+    frame.current.return_value = Mock()
+    frame.platform_data[platform] = {'focus_comment_entry': True}
+    MainFrame._result(frame, platform, 'open_comments', None, {'ok': True, 'comments': [{'id': '1', 'text': 'a'}]})
     frame.comment_entry.SetFocus.assert_called_once()
     frame.comments_list.SetFocus.assert_not_called()
     frame.status.assert_called_with('1 comentários carregados. Escreva o comentário e pressione Enter para publicar.')
-    assert 'focus_comment_entry' not in frame.platform_data['TikTok']
+    assert 'focus_comment_entry' not in frame.platform_data[platform]
 
 
-def test_comments_opened_normally_still_start_on_the_list():
-    frame = result_frame()
-    MainFrame._result(frame, 'TikTok', 'open_comments', None, {'ok': True, 'comments': []})
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_comments_opened_normally_still_start_on_the_list(platform):
+    frame = result_frame(platform)
+    frame.current.return_value = Mock()
+    MainFrame._result(frame, platform, 'open_comments', None, {'ok': True, 'comments': []})
     frame.comments_list.SetFocus.assert_called_once()
     frame.comment_entry.SetFocus.assert_not_called()
 
 
-def test_failed_alt_v_does_not_leave_the_field_focus_for_later():
-    frame = result_frame()
-    frame.platform_data['TikTok'] = {'focus_comment_entry': True}
-    MainFrame._result(frame, 'TikTok', 'open_comments', None, {'ok': False, 'error': 'Sem comentários.'})
-    assert 'focus_comment_entry' not in frame.platform_data['TikTok']
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_failed_alt_v_does_not_leave_the_field_focus_for_later(platform):
+    frame = result_frame(platform)
+    frame.platform_data[platform] = {'focus_comment_entry': True}
+    MainFrame._result(frame, platform, 'open_comments', None, {'ok': False, 'error': 'Sem comentários.'})
+    assert 'focus_comment_entry' not in frame.platform_data[platform]
 
 
 def test_alt_v_and_ctrl_r_are_listed_with_their_meaning():

@@ -216,7 +216,7 @@ def test_video_command_activates_persistent_tiktok_page_first():
     assert worker._page.brought_to_front == 1
 
 
-def test_worker_prefers_most_recent_live_tiktok_tab():
+def test_worker_prefers_most_recent_active_tiktok_tab():
     context = FakeContext()
     older = FakePage()
     newer = FakePage()

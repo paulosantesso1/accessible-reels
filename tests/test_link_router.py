@@ -2,6 +2,7 @@ import json
 import sys
 import threading
 import uuid
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -32,6 +33,8 @@ def test_build_command_cannot_break_out_of_quotes():
 
 @pytest.mark.parametrize('url, expected', [
     ('https://www.tiktok.com/@ana/video/123', True),
+    ('https://www.tiktok.com/@ana/live', True),
+    ('https://live.tiktok.com/@ana', True),
     ('https://vm.tiktok.com/ABC123/', True),
     ('https://example.com/', False),
     ('http://www.tiktok.com/@ana/video/123', False),
@@ -192,3 +195,29 @@ def test_route_launch_first_instance_queues_its_own_link(pipe, monkeypatch):
         assert received == [{'action': 'open', 'url': 'https://www.tiktok.com/t/ABC123/'}]
     finally:
         server.close()
+
+
+def test_is_forbidden_browser_filters_app_and_ie():
+    assert link_router._is_forbidden_browser("") is True
+    assert link_router._is_forbidden_browser("   ") is True
+    assert link_router._is_forbidden_browser("iexplore.exe") is True
+    assert link_router._is_forbidden_browser('"C:\\Program Files\\Internet Explorer\\iexplore.exe"') is True
+    assert link_router._is_forbidden_browser(f'"{link_router.APP_NAME}.exe" %1') is True
+    assert link_router._is_forbidden_browser('"C:\\Program Files\\Google\\Chrome\\chrome.exe" -- "%1"') is False
+
+
+def test_open_in_default_browser_skips_forbidden_and_opens_valid(monkeypatch):
+    monkeypatch.setattr(link_router, "_browser_commands", lambda: ['iexplore.exe', '"C:\\Chrome\\chrome.exe" %1'])
+    launched = []
+    with patch("subprocess.Popen", side_effect=lambda cmd, **kw: launched.append(cmd) or Mock()):
+        result = link_router.open_in_default_browser("https://example.com")
+        assert result is True
+        assert len(launched) == 1
+        assert "chrome.exe" in str(launched[0]).lower()
+
+
+def test_link_server_set_handler_properly_assigns_handler():
+    server = link_router.LinkServer()
+    mock_handler = Mock()
+    server.set_handler(mock_handler)
+    assert server._handler is mock_handler

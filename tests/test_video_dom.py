@@ -57,11 +57,15 @@ def install_embedded_tiktok(page):
     ).read_text(encoding="utf-8"))
 
 
-def load_tiktok_page(page, path, body):
+def load_tiktok_page(page, path_or_url, body):
     page.route("https://www.tiktok.com/**", lambda route: route.fulfill(
-        status=200, content_type="text/html", body=body
+        status=200, content_type="text/html; charset=utf-8", body=body
     ))
-    page.goto("https://www.tiktok.com" + path)
+    page.route("https://live.tiktok.com/**", lambda route: route.fulfill(
+        status=200, content_type="text/html; charset=utf-8", body=body
+    ))
+    target = path_or_url if path_or_url.startswith("http") else ("https://www.tiktok.com" + path_or_url)
+    page.goto(target)
 
 
 def test_download_identifies_active_feed_media_without_search(page):
@@ -129,19 +133,19 @@ def test_search_waits_for_delayed_cards_without_needing_a_video(page):
                                   'author': '@ana', 'description': 'Resultado tardio'}]
 
 
-def test_search_collects_live_cards_next_to_videos(page):
+def test_search_collects_video_cards(page):
     page.set_content('''<main>
-      <div data-e2e="search-card-live-container">
-        <a href="https://www.tiktok.com/@bia/live?enter_from=search"><img alt="Live da Bia"></a>
+      <div data-e2e="search-card-video-container">
+        <a href="https://www.tiktok.com/@bia/video/456"><img alt="Vídeo da Bia"></a>
       </div>
       <a href="https://www.tiktok.com/@ana/video/123"><img alt="Vídeo da Ana"></a>
-      <a href="https://www.tiktok.com/@ana/live/replay">Não é uma live</a>
+      <a href="https://www.tiktok.com/@ana/other/page">Outra página</a>
     </main>''')
     install_embedded_tiktok(page)
     result = page.evaluate("command('collect_search_results')")
     assert result['ok'] is True
     assert result['results'] == [
-        {'url': 'https://www.tiktok.com/@bia/live', 'author': '@bia', 'description': 'Live da Bia'},
+        {'url': 'https://www.tiktok.com/@bia/video/456', 'author': '@bia', 'description': 'Vídeo da Bia'},
         {'url': 'https://www.tiktok.com/@ana/video/123', 'author': '@ana', 'description': 'Vídeo da Ana'},
     ]
 
@@ -1209,57 +1213,6 @@ def test_tiktok_not_interested_does_not_skip_when_the_feed_already_moved_on(page
     assert page.evaluate("command('not_interested')") == {"ok": True}
 
 
-LIVE_CHAT_PAGE = """<video id="active" style="width:600px;height:400px"></video>
-  <div data-e2e="chat-room" aria-live="polite">mensagem</div>"""
-
-
-def test_live_chat_toggle_hides_and_restores_chat_on_a_live(page):
-    load_tiktok_page(page, "/@ana/live", LIVE_CHAT_PAGE)
-    install_embedded_tiktok(page)
-    assert page.evaluate("command('toggle_live_chat')") == {"ok": True, "hidden": True}
-    assert page.evaluate("document.querySelector('[data-e2e=chat-room]').style.display") == "none"
-    assert page.evaluate("command('toggle_live_chat')") == {"ok": True, "hidden": False}
-    assert page.evaluate("document.querySelector('[data-e2e=chat-room]').style.display") == ""
-
-
-def test_live_chat_toggle_reports_loading_on_unmounted_chat(page):
-    load_tiktok_page(page, "/@ana/live", '<video id="active" style="width:600px;height:400px"></video>')
-    install_embedded_tiktok(page)
-    result = page.evaluate("command('toggle_live_chat')")
-    assert result["ok"] is False
-    assert result["error"] == "O chat da live ainda está carregando ou não está disponível."
-
-
-def test_embedded_copy_link_returns_canonical_live_link(page):
-    load_tiktok_page(page, "/@ana/live", '<video id="active" style="width:600px;height:400px"></video>')
-    install_embedded_tiktok(page)
-    result = page.evaluate("command('copy_link')")
-    assert result["ok"] is True
-    assert result["link"] == "https://www.tiktok.com/@ana/live"
-
-
-def test_live_chat_toggle_restores_the_sites_own_aria_attributes(page):
-    load_tiktok_page(page, "/@ana/live", LIVE_CHAT_PAGE)
-    install_embedded_tiktok(page)
-    chat = "document.querySelector('[data-e2e=chat-room]')"
-    page.evaluate("command('toggle_live_chat')")
-    assert page.evaluate(f"{chat}.getAttribute('aria-live')") == "off"
-    page.evaluate("command('toggle_live_chat')")
-    assert page.evaluate(f"{chat}.getAttribute('aria-live')") == "polite"
-    assert page.evaluate(f"{chat}.hasAttribute('aria-hidden')") is False
-
-
-def test_live_chat_toggle_outside_a_live_changes_nothing(page):
-    load_tiktok_page(page, "/@ana/video/123", LIVE_CHAT_PAGE)
-    install_embedded_tiktok(page)
-    result = page.evaluate("command('toggle_live_chat')")
-    assert result["ok"] is False
-    assert result["error"] == "Você não está em uma live."
-    assert page.evaluate("document.querySelector('[data-e2e=chat-room]').style.display") == ""
-
-
-
-
 def test_transport_sends_trusted_text_only_during_an_app_command(page):
     page.set_content('<main></main>')
     page.evaluate("() => { window.posted = []; window.reelsHost = {postMessage: m => window.posted.push(JSON.parse(m))}; }")
@@ -1627,3 +1580,88 @@ def test_tiktok_comment_ids_never_repeat_after_the_list_is_rebuilt(page):
                   ".replace(/ data-accessible-reels-comment-id=\"[^\"]*\"/g, '')")
     second = page.evaluate("command('comments')")['comments']
     assert not {item['id'] for item in first} & {item['id'] for item in second}
+
+
+# =============================================================================
+# TESTES DE LIVES NO TIKTOK E LEITURA DE CHAT COM NVDA
+# =============================================================================
+
+LIVE_CHAT_PAGE = """
+<article>
+  <div data-e2e="video-author-uniqueid">streamer_top</div>
+  <div data-e2e="video-desc">Live jogando ao vivo</div>
+  <video id="active" style="width:400px;height:400px"></video>
+  <div data-e2e="live-chat-room">
+    <div data-e2e="chat-message-list">
+      <div data-e2e="chat-message"><span>Ana</span>: Olá streamer</div>
+      <div data-e2e="chat-message"><span>Bruno</span>: Boa noite!</div>
+    </div>
+  </div>
+</article>
+"""
+
+
+def test_canonical_live_link_and_copy_on_standard_live_path(page):
+    load_tiktok_page(page, "/@streamer_top/live", LIVE_CHAT_PAGE)
+    install_embedded_tiktok(page)
+
+    info = page.evaluate("command('refresh_info')")
+    assert info["author"] == "@streamer_top"
+    assert info["link"] == "https://www.tiktok.com/@streamer_top/live"
+
+    copy_res = page.evaluate("command('copy_link')")
+    assert copy_res["ok"] is True
+    assert copy_res["link"] == "https://www.tiktok.com/@streamer_top/live"
+
+
+def test_canonical_live_link_on_subdomain(page):
+    html = """
+    <article>
+      <div data-e2e="video-author-uniqueid">streamer_sub</div>
+      <video id="active" style="width:400px;height:400px"></video>
+    </article>
+    """
+    load_tiktok_page(page, "https://live.tiktok.com/@streamer_sub", html)
+    install_embedded_tiktok(page)
+
+    info = page.evaluate("command('refresh_info')")
+    assert info["link"] == "https://www.tiktok.com/@streamer_sub/live"
+
+
+def test_live_chat_reading_and_toggle(page):
+    load_tiktok_page(page, "/@streamer_top/live", LIVE_CHAT_PAGE)
+    install_embedded_tiktok(page)
+
+    read_res = page.evaluate("command('read_live_chat')")
+    assert read_res["ok"] is True
+    assert read_res["count"] == 2
+    assert "Ana: Olá streamer" in read_res["messages"]
+    assert "Bruno: Boa noite!" in read_res["messages"]
+
+    toggle_on = page.evaluate("command('toggle_live_chat')")
+    assert toggle_on["ok"] is True
+    assert toggle_on["active"] is True
+    assert len(toggle_on["messages"]) >= 2
+
+    toggle_off = page.evaluate("command('toggle_live_chat')")
+    assert toggle_off["ok"] is True
+    assert toggle_off["active"] is False
+
+
+def test_live_chat_fails_gracefully_outside_live(page):
+    html = """
+    <article>
+      <div data-e2e="video-author-uniqueid">canal_padrao</div>
+      <video id="active" style="width:400px;height:400px"></video>
+    </article>
+    """
+    load_tiktok_page(page, "/@canal_padrao/video/123456789", html)
+    install_embedded_tiktok(page)
+
+    res_read = page.evaluate("command('read_live_chat')")
+    assert res_read["ok"] is False
+    assert "Você não está em uma live." in res_read["error"]
+
+    res_toggle = page.evaluate("command('toggle_live_chat')")
+    assert res_toggle["ok"] is False
+    assert "Você não está em uma live." in res_toggle["error"]

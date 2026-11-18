@@ -603,10 +603,13 @@ def select_current_url(video_url: Any, page_url: Any) -> str:
     if match:
         path = f"/{match.group(1)}/video/{match.group(2)}"
         return urlunsplit(("https", "www.tiktok.com", path, "", ""))
-    live_match = re.search(r"/(@[^/?#]+)/live/?$", parsed.path)
+    live_match = re.match(r"^/(@[\w.-]+)/live/?$", parsed.path)
     if live_match:
-        path = f"/{live_match.group(1)}/live"
-        return urlunsplit(("https", "www.tiktok.com", path, "", ""))
+        return f"https://www.tiktok.com/{live_match.group(1)}/live"
+    if hostname == "live.tiktok.com":
+        sub_match = re.match(r"^/(@[\w.-]+)(?:/live)?/?$", parsed.path)
+        if sub_match:
+            return f"https://www.tiktok.com/{sub_match.group(1)}/live"
     raise VideoControlError("Não foi possível identificar o link do vídeo atual")
 
 

@@ -60,6 +60,7 @@
     return candidates[0]?.video || null;
   }
   let initialPlaybackReleased = false;
+  let userPaused = false;
   // O Instagram começa a tocar assim que a primeira fonte aparece e depois
   // troca para a definitiva, reiniciando o vídeo. Até a liberação, qualquer
   // play antes da hora é desfeito logo no evento.
@@ -77,16 +78,30 @@
   function keepPositionAcrossPlayerSwap(first) {
     const deadline = Date.now() + 15000;
     const reelPath = () => location.pathname.replace(/^\/reels?\//, "");
-    const path = reelPath();
+    let path = reelPath();
     let tracked = first, source = first.currentSrc, position = 0;
     const resume = video => {
       if (position > 1 && video.currentTime < position) video.currentTime = position;
+      applyAudio(video);
+      if (!userPaused) {
+        if (video.paused) video.play().catch(() => {});
+        const ensurePlay = () => {
+          if (!userPaused && video.paused) video.play().catch(() => {});
+        };
+        video.addEventListener("canplay", ensurePlay, {once: true});
+        video.addEventListener("seeked", ensurePlay, {once: true});
+      }
     };
     const timer = setInterval(() => {
       if (Date.now() > deadline) { clearInterval(timer); return; }
       // Outro Reel (próximo/anterior): o elemento ou a fonte nova são de outro
       // vídeo e não podem herdar a posição deste.
-      if (reelPath() !== path) { clearInterval(timer); return; }
+      if (!path && reelPath()) {
+        path = reelPath();
+      } else if (path && reelPath() !== path) {
+        clearInterval(timer);
+        return;
+      }
       if (!tracked.isConnected) {
         const next = activeVideo();
         if (!next || next === tracked) return;
@@ -110,31 +125,69 @@
   }
   function startInitialPlaybackWhenReady() {
     const deadline = Date.now() + 12000;
+    const isRealInstagram = ["instagram.com", "www.instagram.com"].includes(location.hostname);
+    const settleTimeout = isRealInstagram ? 2200 : 750;
+    let firstSeenSource = null;
+    let firstSeenVideo = null;
+    let firstSeenAt = null;
+
     const release = video => {
+      if (initialPlaybackReleased) return;
       initialPlaybackReleased = true;
       if (!video) return;
       applyAudio(video);
       video.play().catch(() => {});
       keepPositionAcrossPlayerSwap(video);
     };
+
     const probe = () => {
       if (initialPlaybackReleased) return;
       const video = activeVideo();
-      if (!video || !video.currentSrc || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
-        if (Date.now() < deadline) setTimeout(probe, 150);
+      if (!video || !video.currentSrc) {
+        if (Date.now() < deadline) setTimeout(probe, 100);
         else release(video);
         return;
       }
-      const source = video.currentSrc;
-      video.pause();
-      setTimeout(() => {
-        const current = activeVideo();
-        if (current === video && current.currentSrc === source &&
-            current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-          release(video);
-        } else if (Date.now() < deadline) probe();
-        else release(current);
-      }, 750);
+      if (!firstSeenSource) {
+        firstSeenSource = video.currentSrc;
+        firstSeenVideo = video;
+        firstSeenAt = Date.now();
+        video.pause();
+      }
+
+      const current = activeVideo();
+      const currentSrc = current?.currentSrc;
+      // Detect if Instagram has already swapped to the definitive player or source:
+      const swapped = Boolean((firstSeenSource && currentSrc && currentSrc !== firstSeenSource) ||
+                              (firstSeenVideo && current && current !== firstSeenVideo));
+
+      if (swapped) {
+        // The swap happened! Release as soon as the definitive source has data.
+        if (current && current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          release(current);
+        } else if (Date.now() < deadline) {
+          setTimeout(probe, 100);
+        } else {
+          release(current);
+        }
+        return;
+      }
+
+      // No swap yet: wait for the stabilization window.
+      if (Date.now() - firstSeenAt < settleTimeout) {
+        if (current) current.pause();
+        setTimeout(probe, 100);
+        return;
+      }
+
+      // Stabilization window passed without a swap: release current video when ready.
+      if (current && current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+        release(current);
+      } else if (Date.now() < deadline) {
+        setTimeout(probe, 100);
+      } else {
+        release(current);
+      }
     };
     probe();
   }
@@ -245,11 +298,33 @@
     return {author, description, link, profile_url};
   }
   function commentDialog() {
-    return [...document.querySelectorAll('[role="dialog"]')].find(el => visible(el) &&
-      /comentários|comments/i.test(el.innerText));
+    return [...document.querySelectorAll('[role="dialog"], section[role="region"]')].find(el => visible(el) &&
+      (/coment/i.test(el.innerText) || /coment|comment/i.test(el.getAttribute("aria-label") || "") ||
+       el.querySelector('input[placeholder*="coment" i], textarea[placeholder*="coment" i], [aria-label*="coment" i]')));
+  }
+  function commentScrollContainer(dialog) {
+    if (!dialog) return null;
+    const candidates = [dialog, ...dialog.querySelectorAll("ul, div, section")];
+    for (const el of candidates) {
+      if (!visible(el)) continue;
+      if (el.scrollHeight > el.clientHeight + 20) {
+        const style = getComputedStyle(el);
+        if (/(auto|scroll)/.test(style.overflowY)) return el;
+      }
+    }
+    const firstTime = dialog.querySelector("time");
+    for (let p = firstTime?.parentElement; p && p !== dialog; p = p.parentElement) {
+      if (p.scrollHeight > p.clientHeight + 20) return p;
+    }
+    for (const el of candidates) {
+      if (visible(el) && el.scrollHeight > el.clientHeight + 20) return el;
+    }
+    return dialog;
   }
   function commentRows(dialog) {
+    if (!dialog) return [];
     const rows = [];
+    const seenTexts = new Set();
     for (const time of dialog.querySelectorAll("time")) {
       let row = time;
       for (let p = time.parentElement; p && p !== dialog; p = p.parentElement) {
@@ -257,19 +332,36 @@
         row = p;
       }
       const text = clean(row.innerText);
-      if (text && !rows.some(item => item.text === text)) {
+      if (text && !seenTexts.has(text)) {
+        seenTexts.add(text);
         const id = row.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${rows.length + 1}`;
         row.setAttribute("data-accessible-reels-comment-id", id);
         rows.push({id, text});
       }
-      if (rows.length >= 200) break;
+    }
+    if (rows.length < 2) {
+      const candidates = dialog.querySelectorAll("ul > li, ul > div > li, [role='listitem']");
+      for (const item of candidates) {
+        if (item.querySelector("input, textarea")) continue;
+        const text = clean(item.innerText);
+        if (text && text.length > 2 && !seenTexts.has(text) && !/^(comentários|comments)$/i.test(text)) {
+          seenTexts.add(text);
+          const id = item.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${rows.length + 1}`;
+          item.setAttribute("data-accessible-reels-comment-id", id);
+          rows.push({id, text});
+        }
+      }
     }
     return rows;
   }
   async function closeComments() {
     const dialog = commentDialog();
     if (dialog) {
-      const button = buttonNamed(dialog, /^(fechar|close)$/i);
+      let button = buttonNamed(dialog, /^(fechar|close|voltar|back)\b/i);
+      if (!button) {
+        button = [...dialog.querySelectorAll("button, [role=button], svg[aria-label]")].find(el =>
+          visible(el) && /fechar|close|dismiss/i.test(label(el)));
+      }
       if (!button) throw new Error("Não foi possível localizar Fechar comentários.");
       await click(button);
       await waitFor(() => !commentDialog(), "O Instagram não fechou os comentários.", 2000);
@@ -279,14 +371,25 @@
   async function openComments(video) {
     let dialog = commentDialog();
     if (!dialog) {
-      const button = buttonNamed(reelRoot(video), /^(comentar|comment)(\s+.*)?$/i);
+      let button = buttonNamed(reelRoot(video), /^(comentar|comment|comentários|comments)(\s+.*)?$/i);
+      if (!button) {
+        button = [...reelRoot(video).querySelectorAll("button, [role=button], svg[aria-label]")].find(el =>
+          visible(el) && /coment/i.test(label(el)));
+      }
       if (!button) throw new Error("Não foi possível localizar Comentar neste Reel.");
       await click(button);
-      dialog = await waitFor(commentDialog, "O Instagram não abriu os comentários.");
+      dialog = await waitFor(commentDialog, "O Instagram não abriu os comentários.", 7000);
     }
     commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
-    await waitFor(() => commentRows(dialog).length || !dialog.querySelector('[role="status"]'),
-      "Os comentários ainda estão carregando. Tente novamente.", 5000);
+    const waitDeadline = Date.now() + 5000;
+    while (Date.now() < waitDeadline) {
+      if (commentRows(dialog).length > 0) break;
+      const text = dialog.innerText || "";
+      if (/nenhum coment|no comments|seja o primeiro|be the first/i.test(text)) break;
+      const statusEl = dialog.querySelector('[role="status"], [role="progressbar"], svg[aria-label*="carregando" i], svg[aria-label*="loading" i]');
+      if (!statusEl && Date.now() > waitDeadline - 3500) break;
+      await sleep(150);
+    }
     return dialog;
   }
   async function replyToComment(dialog, identifier, text) {
@@ -295,7 +398,16 @@
       rows.find(item => item.text === clean(text));
     if (!target) throw new Error("O comentário selecionado não está mais disponível.");
     const element = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(target.id)}"]`);
-    const reply = buttonNamed(element, /^(responder|reply)$/i);
+    let reply = buttonNamed(element, /^(responder|reply)\b/i);
+    if (!reply && element) {
+      reply = [...element.querySelectorAll("button, [role=button], svg[aria-label]")].find(el =>
+        visible(el) && /\b(responder|reply)\b/i.test(label(el)));
+    }
+    if (!reply && element) {
+      // Fallback estrutural: controle interativo no comentário que não seja curtir ou menu
+      reply = [...element.querySelectorAll("button, [role=button]")].find(el =>
+        visible(el) && !/curtir|like|heart|gostei|mais|more|opç/i.test(label(el)));
+    }
     if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
     await click(reply);
     return clean(element.innerText);
@@ -475,6 +587,7 @@
       return info;
     }
     if (action === "next" || action === "previous") {
+      userPaused = false;
       await closeComments();
       const before = video.currentSrc;
       const triggerNav = async () => {
@@ -544,9 +657,13 @@
       }
       initialPlaybackReleased = true;
       if (video.paused) {
+        userPaused = false;
         applyAudio(video);
         await Promise.race([video.play(), sleep(3000).then(() => { throw new Error("Reprodução não confirmada. Interaja uma vez com o Reel no navegador."); })]);
-      } else if (action === "toggle") video.pause();
+      } else if (action === "toggle") {
+        userPaused = true;
+        video.pause();
+      }
       return {paused: video.paused};
     }
     if (["volume_up", "volume_down", "toggle_mute"].includes(action)) {
@@ -618,7 +735,47 @@
     if (action === "comments") {
       try {
         const dialog = await openComments(video);
-        return {comments: commentRows(dialog)};
+        const container = commentScrollContainer(dialog);
+        const accumulated = new Map();
+        for (const item of commentRows(dialog)) {
+          accumulated.set(item.id, item);
+        }
+        let lastCount = accumulated.size;
+        let staleCount = 0;
+        const deadline = Date.now() + 18000;
+        while (Date.now() < deadline && staleCount < 6) {
+          const moreBtn = [...dialog.querySelectorAll("button, [role=button], svg[aria-label]")].find(el =>
+            visible(el) && /carregar mais|load more|mais coment|view more|ver mais|anteriores/i.test(label(el)));
+          if (moreBtn) {
+            try { await click(moreBtn); } catch (_) {}
+            await sleep(600);
+          }
+          if (container && container.scrollHeight > container.clientHeight) {
+            container.scrollTop = container.scrollHeight;
+            container.dispatchEvent(new Event('scroll', {bubbles: true}));
+          }
+          for (const el of dialog.querySelectorAll("div, ul, section")) {
+            if (el.scrollHeight > el.clientHeight + 20) {
+              el.scrollTop = el.scrollHeight;
+              el.dispatchEvent(new Event('scroll', {bubbles: true}));
+            }
+          }
+          const times = dialog.querySelectorAll("time");
+          if (times.length) {
+            try { times[times.length - 1].scrollIntoView({block: "end", behavior: "instant"}); } catch (_) {}
+          }
+          await sleep(500);
+          for (const item of commentRows(dialog)) {
+            accumulated.set(item.id, item);
+          }
+          if (accumulated.size > lastCount) {
+            lastCount = accumulated.size;
+            staleCount = 0;
+          } else {
+            staleCount++;
+          }
+        }
+        return {comments: Array.from(accumulated.values())};
       } finally {
         await closeComments();
       }
@@ -641,41 +798,73 @@
         const sameReel = () => commentsVideo && commentsVideo.video === activeVideo() &&
           commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
         if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
-        const editor = [...dialog.querySelectorAll('input[placeholder],textarea[placeholder]')]
-          .find(el => visible(el) && /coment|comment/i.test(el.placeholder));
+        const editor = [...dialog.querySelectorAll('input[placeholder],textarea[placeholder],input,textarea')]
+          .find(el => visible(el) && /coment|comment/i.test(el.placeholder || el.getAttribute("aria-label") || ""));
         if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
         // Responder fills the field with "@author " shortly after the click.
         if (replyTo) {
-          for (const limit = Date.now() + 1000; Date.now() < limit && !editor.value; ) await sleep(100);
+          for (const limit = Date.now() + 2500; Date.now() < limit && !editor.value; ) await sleep(100);
         }
-        const prefix = editor.value;
+        let prefix = (editor.value || "").replace(/\u00a0/g, " ");
         if (prefix.trim() && !(replyTo && /^@[\w.]+\s*$/.test(prefix))) {
           throw new Error("Há um comentário não enviado no navegador. Revise-o antes de publicar pela interface.");
         }
-        if (replyTo && prefix) leftoverMention = {editor, prefix};
-        // A real click places the caret and the application types the approved text
-        // as trusted keyboard input, so Instagram sees what a person would do.
+        if (replyTo && prefix) {
+          if (!prefix.endsWith(" ")) prefix += " ";
+          leftoverMention = {editor, prefix: editor.value};
+        }
+        // Ensure the editor has DOM focus before and after the trusted click,
+        // so DevTools Input.insertText targets this element.
+        editor.focus();
         await click(editor);
-        // Type after the mention; moving the caret sets no text.
-        editor.setSelectionRange(prefix.length, prefix.length);
+        editor.focus();
+        // Type after the mention; place caret at the end of current content.
+        const currentLen = editor.value.length;
+        editor.setSelectionRange(currentLen, currentLen);
         const typed = await transport.runtime.sendMessage({type: "accessible-reels-trusted-text", text});
         if (!typed?.ok) throw new Error(typed?.error || "Não foi possível digitar o comentário.");
-        await waitFor(() => editor.value === prefix + text, "O Instagram não aceitou o texto digitado. Nada foi enviado.", 2000);
+
+        const norm = s => String(s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+        const cleanText = norm(text);
+        const cleanPrefix = norm(prefix);
+        const textAccepted = () => {
+          const current = norm(editor.value);
+          if (!current || !cleanText) return false;
+          if (cleanPrefix) {
+            return current === norm(`${cleanPrefix} ${cleanText}`) ||
+                   current === norm(prefix + text) ||
+                   (current.includes(cleanText) && current.includes(cleanPrefix));
+          }
+          return current === cleanText || current.includes(cleanText);
+        };
+        await waitFor(textAccepted, "O Instagram não aceitou o texto digitado. Nada foi enviado.", 3000);
         const post = await waitFor(() => {
-          const button = buttonNamed(dialog, /^(publicar|post)$/i);
+          let button = buttonNamed(dialog, /^(publicar|postar|post|enviar|send)\b/i);
+          if (!button) {
+            button = [...dialog.querySelectorAll("button[type='submit'], [role=button][type='submit']")].find(visible);
+          }
+          if (!button && editor) {
+            const formOrArea = editor.closest("form") || editor.parentElement;
+            if (formOrArea) {
+              button = [...formOrArea.querySelectorAll("button, [role=button]")].find(el =>
+                visible(el) && !/emoji|gif|figurinha|sticker|audio|voice/i.test(label(el)) &&
+                !el.disabled && el.getAttribute("aria-disabled") !== "true");
+            }
+          }
           return button && !button.disabled && button.getAttribute("aria-disabled") !== "true" ? button : null;
-        }, "Não foi possível localizar Publicar comentário.", 2000);
+        }, "Não foi possível localizar Publicar comentário.", 3000);
         if (!sameReel()) throw new Error("O Reel mudou. O comentário não foi enviado.");
         await click(post);
-        await waitFor(() => sameReel() && editor.isConnected && editor.value === "" &&
+        await waitFor(() => sameReel() && editor.isConnected && norm(editor.value) === "" &&
           commentRows(dialog).some(row => row.text.includes(clean(text))),
-          "O envio não foi confirmado. Confira no Instagram antes de tentar novamente.", 4000);
+          "O envio não foi confirmado. Confira no Instagram antes de tentar novamente.", 5000);
         leftoverMention = null;
         return {};
       } catch (error) {
         // Only the untouched mention is removed; anything typed stays for the person to review.
         const leftover = leftoverMention;
-        if (leftover && leftover.editor.isConnected && leftover.editor.value === leftover.prefix) {
+        const norm = s => String(s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+        if (leftover && leftover.editor.isConnected && norm(leftover.editor.value) === norm(leftover.prefix)) {
           const prototype = leftover.editor.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
           Object.getOwnPropertyDescriptor(prototype, "value").set.call(leftover.editor, "");
           leftover.editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "deleteContentBackward"}));

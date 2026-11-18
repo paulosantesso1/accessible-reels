@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextvars
-import inspect
 import queue
 import re
 import threading
@@ -119,6 +117,13 @@ class BrowserWorker(threading.Thread):
         video_controller_factory: VideoControllerFactory = TikTokVideoController,
         preferences: VolumePreferences | None = None,
     ) -> None:
+        # Salva o _context do threading.Thread (contextvars) antes de chamar
+        # super().__init__, para que a propriedade homônima do threading não
+        # conflite com o BrowserContext do Playwright.
+        # A partir do Python 3.11, threading.Thread armazena contextvars.copy_context()
+        # em self._context durante __init__; como renomeamos o atributo de
+        # Playwright para _browser_context, esse conflito já não existe e este
+        # comentário fica apenas como registro histórico.
         super().__init__(name="TikTokBrowserWorker", daemon=False)
         self._profile_dir = profile_dir
         self._callback = callback
@@ -126,7 +131,6 @@ class BrowserWorker(threading.Thread):
         self._commands: queue.Queue[BrowserCommand] = queue.Queue()
         self._playwright: Playwright | None = None
         self._browser_context: BrowserContext | None = None
-        self._thread_context = getattr(self, "_context", None)
         self._page: Page | None = None
         self._browser_visible = True
         self._last_command_sent = "nenhum"
@@ -136,21 +140,6 @@ class BrowserWorker(threading.Thread):
             profile_dir.parent / "preferences.json"
         )
         self._volume = self._preferences.load()
-
-    @property
-    def _context(self):
-        frame = inspect.currentframe()
-        back = frame.f_back if frame else None
-        if back and back.f_code.co_name in ("_bootstrap_inner", "start"):
-            return getattr(self, "_thread_context", None)
-        return self._browser_context
-
-    @_context.setter
-    def _context(self, value):
-        if isinstance(value, getattr(contextvars, "Context", ())):
-            self._thread_context = value
-        else:
-            self._browser_context = value
 
     def open_tiktok(self) -> None:
         self._enqueue("open")
@@ -416,8 +405,32 @@ class BrowserWorker(threading.Thread):
         )
 
     def _ensure_context(self) -> BrowserContext:
+        # BUG-09: Verifica se o contexto existente ainda está conectado.
+        # Se o Chromium foi fechado externamente ou sofreu crash, as chamadas
+        # subsequentes ao contexto levantam TargetClosedError. Resetamos o
+        # contexto para None para permitir a recriação limpa.
         if self._browser_context is not None:
-            return self._browser_context
+            pages = getattr(self._browser_context, "pages", None)
+            if pages is None:
+                return self._browser_context
+            try:
+                # Uma chamada leve para detectar desconexão sem executar JS.
+                _ = len(pages)
+                return self._browser_context
+            except Exception:
+                # Contexto desconectado/crashado — libera recursos e recria.
+                try:
+                    self._browser_context.close()
+                except Exception:
+                    pass
+                self._browser_context = None
+                self._page = None
+                if self._playwright is not None:
+                    try:
+                        self._playwright.stop()
+                    except Exception:
+                        pass
+                    self._playwright = None
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
         self._browser_context = self._playwright.chromium.launch_persistent_context(
@@ -432,9 +445,9 @@ class BrowserWorker(threading.Thread):
 
     def _active_page(self) -> Page:
         if (
-            self._browser_context is None
-            and self._page is not None
+            self._page is not None
             and not self._page.is_closed()
+            and (self._browser_context is None or getattr(self._browser_context, "pages", None) is None)
         ):
             return self._page
         context = self._ensure_context()
@@ -443,17 +456,17 @@ class BrowserWorker(threading.Thread):
             if self._page is not None and not self._page.is_closed():
                 return self._page
             raise VideoControlError("Não foi possível localizar a aba do TikTok.")
-        live_tiktok_pages = []
+        active_tiktok_pages = []
         for candidate in pages:
             if candidate.is_closed():
                 continue
             hostname = (urlsplit(candidate.url).hostname or "").lower()
             if hostname == "tiktok.com" or hostname.endswith(".tiktok.com"):
-                live_tiktok_pages.append(candidate)
-        if live_tiktok_pages:
+                active_tiktok_pages.append(candidate)
+        if active_tiktok_pages:
             # Pop-ups e navegações do TikTok podem criar uma nova aba. A mais
             # recente é a que deve receber os comandos, não uma referência antiga.
-            self._page = live_tiktok_pages[-1]
+            self._page = active_tiktok_pages[-1]
         elif self._page is None or self._page.is_closed():
             self._page = pages[-1] if pages else context.new_page()
         return self._page

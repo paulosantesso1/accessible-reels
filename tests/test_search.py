@@ -50,24 +50,3 @@ def test_only_canonical_tiktok_video_can_be_opened():
         validate_search_result_url("https://example.com/@ana/video/123")
 
 
-def test_search_url_with_lives():
-    assert search_url("gatos", include_lives=True) == "https://www.tiktok.com/search?q=gatos"
-    assert search_url("gatos", include_lives=False) == "https://www.tiktok.com/search/video?q=gatos"
-
-
-def test_search_results_with_live_stream():
-    results = normalize_search_results(
-        [
-            {
-                "url": "https://www.tiktok.com/@streamer/live",
-                "author": "@streamer",
-                "description": "jogando agora",
-                "is_live": True,
-            }
-        ]
-    )
-    assert len(results) == 1
-    assert results[0].is_live is True
-    assert results[0].url == "https://www.tiktok.com/@streamer/live"
-    assert results[0].label == "[AO VIVO] @streamer: jogando agora"
-

@@ -286,6 +286,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._update_checking = False
         self.auto_scroll_enabled = False
         self._restore_position = None
+        self._live_chat_open = False
         self._load_window_settings()
         self.Bind(html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._on_webview_message)
         self._registered_hotkeys = set()
@@ -317,7 +318,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         # Simplebook keeps secondary screens available without permanent tabs.
         self.activities = wx.Simplebook(self.panel, size=(350, -1))
         self.activities.SetMinSize((330, -1))
-        self.activities.SetName('Painel atual: player, comentários ou pesquisa')
+        self.activities.SetName('Painel atual: player, comentários, pesquisa ou chat da live')
         row.Add(self.activities, 0, wx.EXPAND | wx.ALL, 5)
         self.content = wx.BoxSizer(wx.VERTICAL)
         self.hint = wx.StaticText(self.panel, label='Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube. A sessão salva será reutilizada quando disponível. F2 abre as Configurações.')
@@ -331,6 +332,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self._build_video_controls()
         self._build_comments()
         self._build_search()
+        self._build_live_chat()
         self._configure_accelerators()
         self.activities.SetSelection(0)
         self.Bind(wx.EVT_HOTKEY, self._on_system_hotkey)
@@ -412,7 +414,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             ('Curtir ou descurtir', 'toggle_like'), ('Salvar ou remover dos salvos', 'toggle_favorite'),
             ('Copiar link', 'copy_link'), ('Não tenho interesse', 'not_interested'),
             ('Comentários', 'open_comments'), ('Pesquisar vídeos', 'search'),
-            ('Ativar ou desativar chat da live', 'toggle_live_chat'),
+            ('Ativar ou desativar leitura do chat da live', 'toggle_live_chat'),
+            ('Ler mensagens recentes do chat da live', 'read_live_chat'),
         ]:
             self._append_menu_item(actions, label, lambda event, a=action: self.dispatch(a), key(action))
         bar.Append(actions, '&Ações')
@@ -784,6 +787,16 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
         if message == "auto_scroll_next" and getattr(self, 'auto_scroll_enabled', False):
             self.dispatch('next_video')
+            return
+
+        if message and '"type":"live_chat"' in message.replace(' ', ''):
+            try:
+                data = json.loads(message)
+                text = data.get('text')
+                if text and getattr(self, '_live_chat_open', False):
+                    self._on_live_chat_incoming(text)
+            except Exception as error:
+                logger.warning('Erro ao processar mensagem live_chat: %s', error)
 
     def on_check_for_updates(self, event=None):
         self._check_for_updates(manual=True)
@@ -910,7 +923,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         self.activities.AddPage(page, 'Comentários')
 
     def _render_comments(self):
-        comments = self.platform_data.get(self._active_name, {}).get('comments', [])
+        data = self.platform_data.get(self._active_name, {})
+        comments = data.get('comments', [])
         selected = self._selected_comment()
         selected_id = selected.get('id') if selected else None
         self._comment_items = tuple(
@@ -927,13 +941,24 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if target and not any(item.get('id') == target['id'] and item.get('text') == target['text']
                               for item in self._comment_items):
             self._set_reply_target(None)
-        selected_index = next(
-            (index for index, item in enumerate(self._comment_items) if item.get('id') == selected_id),
-            0,
-        )
+        focus_text = data.pop('focus_comment_text', None)
+        if focus_text and self._comment_items:
+            clean_posted = focus_text.strip().lower()
+            selected_index = next(
+                (i for i, item in enumerate(self._comment_items)
+                 if clean_posted in item.get('text', '').lower()),
+                0,
+            )
+        else:
+            selected_index = next(
+                (index for index, item in enumerate(self._comment_items) if item.get('id') == selected_id),
+                0,
+            )
         if self._comment_items:
             self.comments_list.SetSelection(selected_index)
         self._show_selected_comment()
+        if focus_text and self._comment_items:
+            self.comments_list.SetFocus()
 
     def _selected_comment(self):
         index = self.comments_list.GetSelection()
@@ -1073,6 +1098,87 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         page.SetSizer(sizer)
         self.activities.AddPage(page, 'Pesquisa')
 
+    def _build_live_chat(self):
+        page = wx.Panel(self.activities)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        self.live_chat_hint = wx.StaticText(
+            page,
+            label='Chat da live em tempo real (Use as setas para rolar pelas mensagens; Esc ou Alt+Shift+T fecha o chat):'
+        )
+        self.live_chat_hint.SetName('Instruções do chat da live')
+        sizer.Add(self.live_chat_hint, 0, wx.ALL, 5)
+
+        self.live_chat_list = wx.ListBox(page, style=wx.LB_SINGLE)
+        self.live_chat_list.SetName('Mensagens do chat da live. Use as setas para rolar pelas mensagens; Esc ou Alt+Shift+T fecha o chat.')
+        self.live_chat_list.Bind(wx.EVT_LISTBOX, self._live_chat_selected)
+        self.live_chat_list.Bind(wx.EVT_KEY_DOWN, self._live_chat_key_down)
+        sizer.Add(self.live_chat_list, 1, wx.EXPAND | wx.ALL, 5)
+
+        sizer.Add(wx.StaticText(page, label='Detalhes da mensagem selecionada:'), 0, wx.LEFT | wx.TOP, 5)
+        self.live_chat_details_field = wx.TextCtrl(
+            page, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(-1, 100)
+        )
+        self.live_chat_details_field.SetName('Detalhes da mensagem selecionada no chat da live, somente leitura')
+        self.live_chat_details_field.Bind(wx.EVT_KEY_DOWN, self._live_chat_key_down)
+        sizer.Add(self.live_chat_details_field, 0, wx.EXPAND | wx.ALL, 5)
+
+        self.close_live_chat_button = wx.Button(page, label='Fechar chat da live')
+        self.close_live_chat_button.SetName('Fechar chat da live')
+        self.close_live_chat_button.Bind(wx.EVT_BUTTON, lambda e: self._close_live_chat(notify=True))
+        self.close_live_chat_button.Bind(wx.EVT_KEY_DOWN, self._live_chat_key_down)
+        sizer.Add(self.close_live_chat_button, 0, wx.ALL, 5)
+
+        page.SetSizer(sizer)
+        self.activities.AddPage(page, 'Chat da Live')
+        self._live_chat_messages = []
+
+    def _live_chat_selected(self, event=None):
+        if not hasattr(self, 'live_chat_list') or not hasattr(self, '_live_chat_messages'):
+            return
+        index = self.live_chat_list.GetSelection()
+        if 0 <= index < len(self._live_chat_messages):
+            msg = self._live_chat_messages[index]
+            total = len(self._live_chat_messages)
+            self.live_chat_details_field.ChangeValue(msg)
+            self.live_chat_details_field.SetName(f'Detalhes da mensagem {index + 1} de {total}, somente leitura')
+            focused = wx.Window.FindFocus() if wx.GetApp() else None
+            if focused != getattr(self, 'live_chat_list', None):
+                if not speak_with_accessible_output(msg, interrupt=False) and not speak_with_nvda(msg):
+                    raise_uia_notification(self.status_field, msg)
+        if event:
+            event.Skip()
+
+    def _live_chat_key_down(self, event):
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self._close_live_chat(notify=True)
+            return
+        if event.GetKeyCode() == wx.WXK_TAB and not event.ControlDown() and not event.AltDown():
+            self._keep_tab_in_app(event)
+            return
+        event.Skip()
+
+    def _open_live_chat(self):
+        if self._active_name != 'TikTok':
+            self.status('O chat ao vivo está disponível apenas em transmissões do TikTok.')
+            return
+        client = self.clients.get('TikTok')
+        if not client or not client.active:
+            self.status('Abra o TikTok antes de ler o chat.')
+            return
+        self.status('Abrindo chat da live...')
+        client.execute('toggle_live_chat', {'force_start': True}, lambda result: self._on_live_chat_toggled(result))
+
+    def _close_live_chat(self, notify=True):
+        self._live_chat_open = False
+        client = self.clients.get('TikTok')
+        if client and client.active:
+            client.execute('toggle_live_chat', {'force_stop': True}, lambda res: None)
+        if hasattr(self, 'activities') and self.activities.GetSelection() == 3:
+            self.activities.SetSelection(0)
+            self.details_field.SetFocus()
+        if notify:
+            self.status('Chat da live fechado e leitura desativada.')
+
     def _configure_accelerators(self):
         entries = []
         for action, modifiers, key in accelerator_specs(getattr(self, 'shortcuts', None)):
@@ -1149,7 +1255,21 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if self._closing_app or not self.IsIconized():
             return
         if self._restore_position is None:
-            self._restore_position = self.GetPosition()
+            pos = self.GetPosition()
+            # BUG-10: Nunca salva uma posição que já está fora da tela como
+            # ponto de restauração. Coordenadas válidas são maiores que -8192
+            # (limite conservador para multi-monitor com monitores à esquerda)
+            # e menores que 32000 (limite razoável para qualquer configuração).
+            if pos.x > -8192 and pos.y > -8192 and pos.x < 32000 and pos.y < 32000:
+                self._restore_position = pos
+            else:
+                # Posição parece inválida: usar centro do monitor principal.
+                display = wx.Display(0)
+                rect = display.GetClientArea()
+                self._restore_position = wx.Point(
+                    rect.x + rect.width // 4,
+                    rect.y + rect.height // 4,
+                )
         self.Iconize(False)
         self.SetPosition(wx.Point(-32000, -32000))
 
@@ -1236,6 +1356,9 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 self._set_search_loading(False)
                 self.home()
                 return
+            elif self.activities.GetSelection() == 3:
+                self._close_live_chat(notify=True)
+                return
             elif self.activities.GetSelection() != 0:
                 self.focus_controls()
                 return
@@ -1246,6 +1369,22 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 return
             elif self.activities.GetSelection() == 2:
                 controls = (self.query_field, self.results_list, getattr(self, 'load_more_button', None), getattr(self, 'feed_button', None))
+                controls = tuple(c for c in controls if c is not None)
+                try:
+                    index = controls.index(focused)
+                except ValueError:
+                    if controls and controls[0].IsEnabled():
+                        controls[0].SetFocus()
+                    return
+                offset = -1 if event.ShiftDown() else 1
+                for i in range(1, len(controls) + 1):
+                    next_idx = (index + offset * i) % len(controls)
+                    if controls[next_idx].IsEnabled() and controls[next_idx].IsShown():
+                        controls[next_idx].SetFocus()
+                        break
+                return
+            elif self.activities.GetSelection() == 3:
+                controls = (self.live_chat_list, self.live_chat_details_field, getattr(self, 'close_live_chat_button', None))
                 controls = tuple(c for c in controls if c is not None)
                 try:
                     index = controls.index(focused)
@@ -1281,6 +1420,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             (self.details_field,),
             (),
             (self.query_field, self.results_list, self.load_more_button, getattr(self, 'feed_button', None)),
+            (self.live_chat_list, self.live_chat_details_field, getattr(self, 'close_live_chat_button', None)),
         )[self.activities.GetSelection()]
         
         # Filtra caso a aba ainda esteja sendo montada
@@ -1355,6 +1495,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         return bool(self.platform_data.get('TikTok', {}).get('follow_verification'))
 
     def focus_controls(self, event=None):
+        if getattr(self, '_live_chat_open', False):
+            self._close_live_chat(notify=False)
         self.activities.SetSelection(0)
         super().focus_controls(event)
 
@@ -1365,6 +1507,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.network.SetStringSelection(self._active_name)
             self.status('Aguarde a conclusão da ação antes de trocar de rede.')
             return
+        # BUG-11: Desativa a rolagem automática ao trocar de rede para evitar
+        # que scripts de monitoramento continuem injetando em páginas de outra
+        # plataforma que pode ter estrutura HTML diferente ou estar em login.
+        if getattr(self, 'auto_scroll_enabled', False):
+            self.auto_scroll_enabled = False
+            self.status('Rolagem automática desativada ao trocar de rede.')
+        if getattr(self, '_live_chat_open', False):
+            self._close_live_chat(notify=False)
         self._pending_page_focus = None
         self._active_name = name
         for platform, view in self.views.items():
@@ -1404,6 +1554,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             self.views[name] = view
             self.platform_data[name] = {}
             client = WebViewClient(view, name, lambda n=name: self.loaded(n), lambda message, n=name: self._platform_error(n, message))
+            client.on_live_chat = self._on_live_chat_incoming
             if url:
                 client.target_url = url
                 client.after_load = after_load
@@ -1444,6 +1595,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if any(client.pending for client in self.clients.values()):
             self.status('Aguarde o comando anterior.')
             return
+        if getattr(self, '_live_chat_open', False):
+            self._close_live_chat(notify=False)
         self.network.SetStringSelection(name)
         if isinstance(self.platform_data, dict) and name in self.platform_data:
             self.platform_data[name]['is_list_mode'] = False
@@ -1493,6 +1646,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
         else:
+            if getattr(self, '_live_chat_open', False):
+                self._close_live_chat(notify=False)
             self.platform_data[self._active_name]['is_list_mode'] = False
             self.clients[self._active_name].set_active(True)
             self.clients[self._active_name].navigate(PLATFORM_URLS[self._active_name])
@@ -1616,11 +1771,20 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             if self._active_name != 'TikTok':
                 self.status('O chat ao vivo está disponível apenas em transmissões do TikTok.')
                 return
+            if self._live_chat_open:
+                self._close_live_chat(notify=True)
+            else:
+                self._open_live_chat()
+            return
+        if action == 'read_live_chat':
+            if self._active_name != 'TikTok':
+                self.status('O chat ao vivo está disponível apenas em transmissões do TikTok.')
+                return
             client = self.clients.get('TikTok')
             if not client or not client.active:
-                self.status('Abra o TikTok antes de alternar o chat.')
+                self.status('Abra o TikTok antes de ler o chat.')
                 return
-            client.execute('toggle_live_chat', None, lambda result: self._on_live_chat_toggled(result))
+            client.execute('read_live_chat', None, lambda result: self._on_live_chat_read(result))
             return
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
@@ -1708,12 +1872,14 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             queued = platform_state.pop('queued_navigation', None) if isinstance(platform_state, dict) else None
             if queued and name == self._active_name and self.clients.get(name) is client:
                 wx.CallAfter(self.dispatch, queued)
-            if name == self._active_name and self.IsActive() and action not in ('open_comments', 'collect_search_results', 'close_comments'):
+            if name == self._active_name and self.IsActive() and action not in ('open_comments', 'post_comment', 'collect_search_results', 'close_comments'):
                 if restore_focus and wx.Window.FindFocus() is self.current():
                     restore_focus.SetFocus()
         
 
 
+        if action == 'open_comments':
+            self.status(f'Carregando comentários no {name}...')
         page_action = 'seek' if action in SEEK_SECONDS else COMMANDS.get(action, action)
         client.execute(page_action,
                        SEEK_SECONDS.get(action, argument), completed)
@@ -1922,19 +2088,31 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         elif action == 'post_comment':
             # The text is cleared only after the network showed the comment.
             reply = isinstance(argument, dict) and bool(argument.get('replyTo'))
+            posted_text = argument.get('text') if isinstance(argument, dict) else str(argument or '')
             self.comment_entry.Clear()
             self._set_reply_target(None)
             data['comment_posted'] = 'Resposta publicada.' if reply else 'Comentário publicado.'
+            data['focus_comment_text'] = posted_text
             message = f"{data['comment_posted']} Atualizando a lista de comentários."
             wx.CallAfter(self.dispatch, 'open_comments')
         elif action == 'open_comments' and active:
             self.activities.SetSelection(1)
             self.current().SetCanFocus(False)
             message = f"{len(data.get('comments', []))} comentários carregados."
+            focus_text = data.pop('focus_comment_text', None)
             if focus_entry:
                 self.comment_entry.SetFocus()
                 message += ' Escreva o comentário e pressione Enter para publicar.'
             else:
+                if focus_text and getattr(self, '_comment_items', None):
+                    clean_posted = focus_text.strip().lower()
+                    target_idx = next(
+                        (i for i, item in enumerate(self._comment_items)
+                         if clean_posted in item.get('text', '').lower()),
+                        0,
+                    )
+                    self.comments_list.SetSelection(target_idx)
+                    self._show_selected_comment()
                 self.comments_list.SetFocus()
             posted = data.pop('comment_posted', None)
             if posted:
@@ -1994,23 +2172,103 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         success = _copy_text_to_clipboard(link)
         self.status('Link copiado.' if success else 'Não foi possível copiar o link.')
 
+    def _on_live_chat_incoming(self, text):
+        if self._closing_app or not text:
+            return
+        now = time.time()
+        last_time = getattr(self, '_last_chat_time', 0)
+        last_text = getattr(self, '_last_chat_text', '')
+        if text == last_text and (now - last_time) < 0.2:
+            return
+        self._last_chat_time = now
+        self._last_chat_text = text
+
+        messages = getattr(self, '_live_chat_messages', None)
+        chat_list = getattr(self, 'live_chat_list', None)
+        if isinstance(messages, list) and chat_list is not None:
+            try:
+                messages.append(text)
+                if len(messages) > 600:
+                    messages = messages[-500:]
+                    self._live_chat_messages = messages
+                    chat_list.Set(messages)
+                else:
+                    chat_list.Append(text)
+
+                focused = wx.Window.FindFocus() if wx.GetApp() else None
+                # Se o usuário NÃO estiver com foco na lista, atualiza seleção para a última.
+                # Se o usuário estiver na lista navegando, NUNCA mude a seleção para não travar a navegação.
+                if getattr(self, '_live_chat_open', False) and focused != chat_list:
+                    new_idx = len(messages) - 1
+                    chat_list.SetSelection(new_idx)
+                    details = getattr(self, 'live_chat_details_field', None)
+                    if details is not None:
+                        details.ChangeValue(text)
+                        details.SetName(
+                            f'Detalhes da mensagem {new_idx + 1} de {len(messages)}, somente leitura'
+                        )
+            except Exception as error:
+                logger.warning('Erro ao atualizar lista do chat da live: %s', error)
+        if not speak_with_accessible_output(text, interrupt=False) and not speak_with_nvda(text):
+            raise_uia_notification(self.status_field, text)
+
     def _on_live_chat_toggled(self, result):
         if isinstance(result, dict) and result.get('ignored'):
             self.status('Aguarde o comando anterior terminar e tente novamente.')
             return
         if not result or not result.get('ok'):
+            self._live_chat_open = False
             error = result.get('error') if isinstance(result, dict) else None
-            self.status(error or 'Não foi possível alternar o chat da live.')
+            self.status(error or 'Não foi possível alternar a leitura do chat da live.')
             return
-        if result.get('hidden'):
-            self.status('Chat ao vivo da live desativado e silenciado.')
+        if result.get('active'):
+            self._live_chat_open = True
+            messages = result.get('messages') or []
+            self._live_chat_messages = list(messages)
+            self.live_chat_list.Set(self._live_chat_messages)
+            self.activities.SetSelection(3)
+            if self._live_chat_messages:
+                last_idx = len(self._live_chat_messages) - 1
+                self.live_chat_list.SetSelection(last_idx)
+                last_msg = self._live_chat_messages[last_idx]
+                self.live_chat_details_field.ChangeValue(last_msg)
+                self.live_chat_details_field.SetName(
+                    f'Detalhes da mensagem {len(self._live_chat_messages)} de {len(self._live_chat_messages)}, somente leitura'
+                )
+            else:
+                self.live_chat_details_field.ChangeValue('Aguardando novas mensagens do chat...')
+                self.live_chat_details_field.SetName('Detalhes da mensagem selecionada no chat da live, somente leitura')
+            self.live_chat_list.SetFocus()
+            self.status('Chat da live aberto. Use as setas para rolar pelas mensagens; Esc ou Alt+Shift+T fecha o chat.')
+            if self._live_chat_messages:
+                latest = self._live_chat_messages[-1]
+                if not speak_with_accessible_output(latest) and not speak_with_nvda(latest):
+                    raise_uia_notification(self.status_field, latest)
         else:
-            self.status('Chat ao vivo da live ativado.')
+            self._close_live_chat(notify=True)
+
+    def _on_live_chat_read(self, result):
+        if isinstance(result, dict) and result.get('ignored'):
+            self.status('Aguarde o comando anterior terminar e tente novamente.')
+            return
+        if not result or not result.get('ok'):
+            error = result.get('error') if isinstance(result, dict) else None
+            self.status(error or 'Não foi possível ler as mensagens do chat da live.')
+            return
+        messages = result.get('messages') or []
+        if messages:
+            summary = ' | '.join(messages)
+            self.status(f'Chat da live ({len(messages)} mensagens): {summary}')
+        else:
+            self.status('Nenhuma mensagem encontrada no chat da live no momento.')
 
     def search(self, event=None):
         query = self.query_field.GetValue().strip()
         if not query:
             self.status('Digite o que deseja pesquisar.')
+            return
+        if len(query) > 300:
+            self.status('O termo de pesquisa é muito longo. Use até 300 caracteres.')
             return
         if not self.current():
             self.status('Use Ctrl+1 para abrir TikTok, Ctrl+2 para Instagram ou Ctrl+3 para YouTube.')
@@ -2021,9 +2279,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
             return
         self.platform_data[name].pop('opening_profile', None)
         if name == 'TikTok':
-            from video_download import load_download_settings
-            include_lives = load_download_settings().get('include_tiktok_lives', False)
-            url = search_url(query, include_lives=include_lives)
+            url = search_url(query)
         elif name == 'YouTube':
             # YouTube's Shorts search filter keeps ordinary long-form videos
             # out of the results that this player can open.
@@ -2093,6 +2349,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if self.clients[self._active_name].pending:
             self.status('Aguarde o comando anterior.')
             return
+        if getattr(self, '_live_chat_open', False):
+            self._close_live_chat(notify=False)
         name = self._active_name
         self.platform_data[name]['result_index'] = index
         self.platform_data[name]['is_list_mode'] = True
@@ -2106,6 +2364,8 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
 
     def _closing(self, event):
         self._closing_app = True
+        if getattr(self, '_live_chat_open', False):
+            self._close_live_chat(notify=False)
         for popup in tuple(self._login_windows):
             popup.Destroy()
         self._login_windows.clear()

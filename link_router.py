@@ -64,7 +64,17 @@ def build_command(template, url):
 def _executable_of(command):
     command = command.strip()
     if command.startswith('"'):
+        # Caminho entre aspas: extrai até a aspa de fechamento.
         return command[1:].split('"', 1)[0]
+    # BUG-01: Caminhos sem aspas podem conter espaços (ex: C:\Program Files\...).
+    # Usamos um padrão mais inteligente: lemos até o primeiro espaço que é
+    # seguido de um argumento típico (%-placeholder ou flag com hífen),
+    # ou até o primeiro espaço quando nenhum padrão melhor é encontrado.
+    import re as _re
+    # Captura tudo até " %" ou " -" ou " /" que indicam início de argumentos.
+    match = _re.match(r'^(.*?)\s+(?=%|--|/|$)', command)
+    if match and match.group(1):
+        return match.group(1)
     return command.split(' ', 1)[0]
 
 
