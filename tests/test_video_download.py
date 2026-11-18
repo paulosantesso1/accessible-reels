@@ -3,19 +3,27 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
 import wx
-
-import pytest
-
+
+
+import pytest
+
+
+
 from video_download import (
     VideoDownloadError, bundled_ytdlp_path, download_error, download_video, load_download_folder,
     media_url, save_download_folder, update_ytdlp,
 )
-from ui.download_controls import DownloadControlsMixin
-
-
+from ui.download_controls import DownloadControlsMixin
+
+
+
+
+
 def test_folder_persists(tmp_path):
-    folder = save_download_folder(tmp_path / 'videos', local_app_data=tmp_path)
-    assert folder.is_dir()
+    folder = save_download_folder(tmp_path / 'videos', local_app_data=tmp_path)
+
+    assert folder.is_dir()
+
     assert load_download_folder(local_app_data=tmp_path) == folder
 
 
@@ -30,73 +38,106 @@ def test_saving_folder_preserves_update_preference(tmp_path):
         'check_ytdlp_updates': False,
         'folder': str((tmp_path / 'videos').resolve()),
     }
-
-
-@pytest.mark.parametrize('url', ['blob:https://www.instagram.com/123', 'file:///video.mp4',
-                                'https://cdninstagram.com.evil.test/a.mp4', 'https://user@cdninstagram.com/a'])
-def test_invalid_direct_sources(url):
-    assert media_url(url, 'Instagram') is None
-
-
-def test_download_errors_are_readable():
-    assert '\x1b' not in download_error('\x1b[0;31mERROR:\x1b[0m failed')
-    message = download_error('\x1b[0;31mERROR:\x1b[0m Unexpected response from webpage request; yt-dlp -U')
-    assert 'Ctrl+B' in message
-    assert 'yt-dlp -U' not in message
-
-
-def test_tiktok_play_endpoint_is_media_but_feed_is_not():
-    url = 'https://www.tiktok.com/aweme/v1/play/?video_id=example'
-    assert media_url(url, 'TikTok') == url
-    assert media_url('https://www.tiktok.com/foryou', 'TikTok') is None
-    prime = 'https://v16-webapp-prime.us.tiktok.com/video/tos/useast5/example?signature=test'
-    assert media_url(prime, 'TikTok') == prime
-    assert media_url('https://v16-webapp-prime.us.tiktok.com/foryou', 'TikTok') is None
-    assert media_url('https://v16-webapp-prime.us.tiktok.com.evil.test/video/tos/example', 'TikTok') is None
-
-
-@pytest.mark.parametrize('platform', ['TikTok', 'Instagram'])
-def test_ctrl_b_resolves_fresh_feed_video(platform):
-    frame = Mock(_download_busy=False, _active_name=platform)
-    frame.activities.GetSelection.return_value = 0
-    client = Mock(pending=None)
-    frame.clients = {platform: client}
-    DownloadControlsMixin.start_video_download(frame)
-    assert client.execute.call_args.args[:2] == ('download_link', None)
-    result = {'ok': True, 'link': 'fresh-video'}
-    client.execute.call_args.args[2](result)
-    frame._download_resolved.assert_called_once_with(platform, result, False)
-
-
-def test_cancel_folder_releases_download():
-    frame = Mock(_closing_app=False, _download_folder=None, _download_busy=True)
-    frame.choose_download_file.return_value = None
-    DownloadControlsMixin._download_resolved(frame, 'Instagram', {'ok': True, 'link': 'video'})
-    assert frame._download_busy is False
-
-
-def test_no_duplicate_download():
-    frame = Mock(_download_busy=True)
-    DownloadControlsMixin.start_video_download(frame)
-    frame.current.assert_not_called()
-
-
-def test_progress_does_not_interrupt_speech():
-    frame = Mock(_closing_app=False)
-    DownloadControlsMixin._download_progress(frame, 'Baixando: 50%.')
-    frame.SetStatusText.assert_called_once_with('Baixando: 50%.')
-    frame.status.assert_not_called()
-
-
-def test_download_asks_folder_even_when_previously_saved(tmp_path):
-    frame = Mock(_closing_app=False, _download_folder=tmp_path, _download_busy=True)
-    frame.choose_download_file.return_value = None
-    DownloadControlsMixin._download_resolved(frame, 'TikTok', {'ok': True, 'link': 'video'})
-    frame.choose_download_file.assert_called_once()
-    frame._start_download_worker.assert_not_called()
-    assert frame._download_busy is False
-
-
+
+
+
+
+@pytest.mark.parametrize('url', ['blob:https://www.instagram.com/123', 'file:///video.mp4',
+
+                                'https://cdninstagram.com.evil.test/a.mp4', 'https://user@cdninstagram.com/a'])
+
+def test_invalid_direct_sources(url):
+
+    assert media_url(url, 'Instagram') is None
+
+
+
+
+
+def test_download_errors_are_readable():
+
+    assert '\x1b' not in download_error('\x1b[0;31mERROR:\x1b[0m failed')
+
+    message = download_error('\x1b[0;31mERROR:\x1b[0m Unexpected response from webpage request; yt-dlp -U')
+
+    assert 'Ctrl+B' in message
+
+    assert 'yt-dlp -U' not in message
+
+
+
+
+
+def test_tiktok_play_endpoint_is_media_but_feed_is_not():
+
+    url = 'https://www.tiktok.com/aweme/v1/play/?video_id=example'
+
+    assert media_url(url, 'TikTok') == url
+
+    assert media_url('https://www.tiktok.com/foryou', 'TikTok') is None
+
+    prime = 'https://v16-webapp-prime.us.tiktok.com/video/tos/useast5/example?signature=test'
+
+    assert media_url(prime, 'TikTok') == prime
+
+    assert media_url('https://v16-webapp-prime.us.tiktok.com/foryou', 'TikTok') is None
+
+    assert media_url('https://v16-webapp-prime.us.tiktok.com.evil.test/video/tos/example', 'TikTok') is None
+
+
+
+
+
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_ctrl_b_resolves_fresh_feed_video(platform):
+    frame = Mock(_download_busy=False, _active_name=platform)
+    frame.activities.GetSelection.return_value = 0
+    client = Mock(pending=None)
+    frame.clients = {platform: client}
+    DownloadControlsMixin.start_video_download(frame)
+    assert client.execute.call_args.args[:2] == ('download_link', None)
+    result = {'ok': True, 'link': 'fresh-video'}
+    client.execute.call_args.args[2](result)
+    frame._download_resolved.assert_called_once_with(platform, result, False)
+
+
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_cancel_folder_releases_download(platform):
+    frame = Mock(_closing_app=False, _download_folder=None, _download_busy=True)
+    frame.choose_download_file.return_value = None
+    DownloadControlsMixin._download_resolved(frame, platform, {'ok': True, 'link': 'video'})
+    assert frame._download_busy is False
+
+
+def test_no_duplicate_download():
+    frame = Mock(_download_busy=True)
+    DownloadControlsMixin.start_video_download(frame)
+    frame.current.assert_not_called()
+
+
+def test_progress_does_not_interrupt_speech():
+    frame = Mock(_closing_app=False)
+    DownloadControlsMixin._download_progress(frame, 'Baixando: 50%.')
+    frame.SetStatusText.assert_called_once_with('Baixando: 50%.')
+    frame.status.assert_not_called()
+
+
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_download_asks_folder_even_when_previously_saved(platform, tmp_path):
+    frame = Mock(_closing_app=False, _download_folder=tmp_path, _download_busy=True)
+    frame.choose_download_file.return_value = None
+    DownloadControlsMixin._download_resolved(frame, platform, {'ok': True, 'link': 'video'})
+    frame.choose_download_file.assert_called_once()
+    frame._start_download_worker.assert_not_called()
+    assert frame._download_busy is False
+
+
+
+
+
+
+
+
 from unittest.mock import patch
 
 def test_subprocess_parses_progress_and_returns_path(tmp_path):
@@ -223,7 +264,6 @@ def test_changed_extension_requires_confirmation_before_overwrite(tmp_path):
     path, error = frame._download_finished.call_args.args
     assert path is None
     assert 'preservado' in error
-from unittest.mock import patch
 
 
 def audio_process(*lines, returncode=0):
@@ -283,19 +323,25 @@ def test_audio_errors_talk_about_audio():
     assert download_error("boom").startswith("Não foi possível baixar o vídeo.")
 
 
-def test_audio_download_command_reaches_the_dialog_and_the_worker(tmp_path):
-    frame = Mock(_download_busy=False, _active_name="TikTok")
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_audio_download_command_reaches_the_dialog_and_the_worker(platform, tmp_path):
+    frame = Mock(_download_busy=False, _active_name=platform)
     frame.activities.GetSelection.return_value = 0
     client = Mock(pending=None)
-    frame.clients = {"TikTok": client}
+    frame.clients = {platform: client}
     DownloadControlsMixin.start_audio_download(frame)
     frame.start_video_download.assert_called_once_with(audio=True)
 
     frame = Mock(_closing_app=False, _download_busy=True)
+    frame.clients = {platform: Mock()}
     frame.choose_download_file.return_value = tmp_path / "escolhido.m4a"
-    DownloadControlsMixin._download_resolved(frame, "YouTube", {"ok": True, "link": "l", "media_url": "https://x"}, True)
-    frame.choose_download_file.assert_called_once_with("YouTube", {"ok": True, "link": "l", "media_url": "https://x"}, True)
-    assert frame._start_download_worker.call_args.args[-1] is True  # YouTube audio skips the page stream
+    with patch('ui.download_controls.BrowserDownload') as browser_download:
+        DownloadControlsMixin._download_resolved(frame, platform, {"ok": True, "link": "l", "media_url": "https://x"}, True)
+    frame.choose_download_file.assert_called_once_with(platform, {"ok": True, "link": "l", "media_url": "https://x"}, True)
+    if platform == "YouTube":
+        assert frame._start_download_worker.call_args.args[-1] is True  # YouTube audio skips the page stream
+    else:
+        browser_download.assert_called_once()
 
 
 def test_audio_flag_reaches_the_download_engine(tmp_path):
@@ -314,3 +360,11 @@ def test_audio_flag_reaches_the_download_engine(tmp_path):
                                                None, tmp_path, destination, True)
 
     frame._download_finished.assert_called_once_with(tmp_path / "Áudio.m4a", None)
+
+
+def test_live_stream_audio_download_is_also_blocked():
+    frame = Mock(_closing_app=False, _download_busy=True)
+    DownloadControlsMixin._download_resolved(frame, 'TikTok', {'ok': True, 'link': 'https://www.tiktok.com/@ana/live'}, audio=True)
+    assert frame._download_busy is False
+    frame.choose_download_file.assert_not_called()
+    frame.status.assert_called_once_with('Não é possível baixar uma transmissão ao vivo em andamento.')

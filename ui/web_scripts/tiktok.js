@@ -1,4 +1,4 @@
-(() => {
+  (() => {
   if (globalThis.__accessibleReelsInstalled) return;
   globalThis.__accessibleReelsInstalled = true;
 
@@ -123,9 +123,265 @@
   // Events normally catch TikTok resets in the same task. This inexpensive
   // fallback repairs silent resets that the site performs without an event.
   setInterval(() => {
-    if (preferredVolume === null) return;
-    document.querySelectorAll("video").forEach(applyAudioPreference);
+    if (preferredVolume !== null) {
+      document.querySelectorAll("video").forEach(applyAudioPreference);
+    }
+    if (isLivePage()) {
+      liveChatElements().forEach(el => {
+        if (!el.getAttribute("aria-live")) el.setAttribute("aria-live", "polite");
+      });
+    }
   }, 250);
+
+  const isLivePage = () => /^\/@[^/]+\/live\/?$/i.test(location.pathname) ||
+    location.hostname.toLowerCase() === "live.tiktok.com" ||
+    location.pathname.toLowerCase() === "/live" ||
+    location.pathname.toLowerCase().startsWith("/live/");
+
+  const LIVE_CHAT_SELECTORS = [
+    '[data-e2e="chat-room"]',
+    '[data-e2e="live-chat-room"]',
+    '[data-e2e*="chat-room"]',
+    '[data-e2e*="live-chat"]',
+    '[data-e2e*="chat-list"]',
+    '[data-e2e="chat-message-list"]',
+    '[class*="DivChatRoom"]',
+    '[class*="ChatRoom"]',
+    '[class*="chat-room"]',
+    '[class*="chatroom"]',
+    '[class*="chat_room"]',
+    '[class*="ChatContainer"]',
+    '[class*="chat-container"]',
+    '[class*="LiveChat"]',
+    '[class*="live-chat"]',
+    '[class*="ChatMessageList"]',
+    '[class*="chat-message-list"]',
+    'aside[class*="chat" i]',
+    'section[class*="chat" i]',
+    'div[role="log"]'
+  ];
+
+  const liveChatElements = () => {
+    let rooms = [...new Set(LIVE_CHAT_SELECTORS.flatMap(selector => [...document.querySelectorAll(selector)]))];
+    if (!rooms.length) {
+      const msgs = document.querySelectorAll(
+        '[data-e2e*="chat-message"], [class*="ChatMessage"], [class*="chat-message"], [class*="chat-item"], [class*="message-item"], [class*="DivChatMessageItem"]'
+      );
+      if (msgs.length) {
+        const parents = [...new Set([...msgs].map(m => m.closest('[class*="chat" i], [data-e2e*="chat" i], aside, section, div[role="log"]') || m.parentElement).filter(Boolean))];
+        if (parents.length) {
+          rooms = parents;
+        }
+      }
+    }
+    return rooms;
+  };
+
+  async function resolveLiveChatElements(timeoutMs = 4000) {
+    let rooms = liveChatElements();
+    if (rooms.length) return rooms;
+
+    const toggle = document.querySelector(
+      '[data-e2e*="chat-toggle"], [data-e2e*="chat-collapse"], [data-e2e*="chat-icon"], button[aria-label*="chat" i], [class*="ChatToggle"], [class*="chat-toggle"]'
+    );
+    if (toggle) {
+      try { toggle.click(); } catch (_) {}
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(250);
+      rooms = liveChatElements();
+      if (rooms.length) return rooms;
+    }
+    return rooms;
+  }
+
+  let liveChatReading = false;
+  let liveChatPollInterval = null;
+  let liveChatMutationObserver = null;
+  let lastKnownChatMessage = "";
+  const seenChatNodes = new WeakSet();
+  const seenChatTexts = new Set();
+
+  function postLiveChatMessage(payload) {
+    const jsonStr = typeof payload === "string" ? payload : JSON.stringify(payload);
+    let posted = false;
+    if (window.reelsHost && typeof window.reelsHost.postMessage === "function") {
+      try { window.reelsHost.postMessage(jsonStr); posted = true; } catch (_) {}
+    }
+    if (!posted && window.chrome && window.chrome.webview && typeof window.chrome.webview.postMessage === "function") {
+      try { window.chrome.webview.postMessage(jsonStr); posted = true; } catch (_) {}
+    }
+    if (!posted && window.wx && typeof window.wx.postMessage === "function") {
+      try { window.wx.postMessage(jsonStr); posted = true; } catch (_) {}
+    }
+  }
+
+  function parseChatMessageElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return null;
+    const raw = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+    if (!raw || raw.length < 2) return null;
+    if (/^adicionar coment[aá]rio|^add a comment|^live chat$|^chat da live$/i.test(raw)) return null;
+
+    const userEl = el.querySelector('[class*="User" i], [class*="nickname" i], [class*="user-name" i], [data-e2e*="user" i]');
+    const textEl = el.querySelector('[class*="Content" i], [class*="comment" i], [class*="content" i], [data-e2e*="content" i]');
+    if (userEl && textEl && userEl !== textEl) {
+      const u = userEl.innerText.trim();
+      const c = textEl.innerText.trim();
+      if (u && c) return `${u}: ${c}`.replace(/\s+/g, " ");
+    }
+    return raw;
+  }
+
+  function dispatchNewChatMessage(text) {
+    if (!text || seenChatTexts.has(text)) return;
+    seenChatTexts.add(text);
+    if (seenChatTexts.size > 250) {
+      const first = seenChatTexts.values().next().value;
+      seenChatTexts.delete(first);
+    }
+    lastKnownChatMessage = text;
+    postLiveChatMessage({
+      type: "live_chat",
+      messages: [text],
+      text: text
+    });
+  }
+
+  function handleNewChatNodes(root) {
+    if (!root || !liveChatReading) return;
+    const selector = '[data-e2e*="chat-message"], [class*="ChatMessage" i], [class*="chat-message" i], [class*="chat-item" i], [class*="message-item" i], [class*="DivChatMessage" i]';
+    const isMsg = root.matches && root.matches(selector);
+    const elements = isMsg ? [root] : (root.querySelectorAll ? [...root.querySelectorAll(selector)] : []);
+    if (!elements.length && root.children && root.children.length) {
+      for (const child of root.children) {
+        if (!seenChatNodes.has(child)) {
+          seenChatNodes.add(child);
+          const t = parseChatMessageElement(child);
+          if (t) dispatchNewChatMessage(t);
+        }
+      }
+      return;
+    }
+    for (const el of elements) {
+      if (!seenChatNodes.has(el)) {
+        seenChatNodes.add(el);
+        const t = parseChatMessageElement(el);
+        if (t) dispatchNewChatMessage(t);
+      }
+    }
+  }
+
+  function extractLiveChatMessages(limit = 10) {
+    if (!isLivePage()) {
+      return { ok: false, error: "Você não está em uma live." };
+    }
+    const rooms = liveChatElements();
+    if (!rooms.length) {
+      return { ok: false, error: "O chat da live ainda está carregando ou não está disponível." };
+    }
+
+    const messageSelectors = [
+      '[data-e2e="chat-message"]',
+      '[data-e2e*="chat-message"]',
+      '[class*="DivChatMessageItem"]',
+      '[class*="ChatMessageItem"]',
+      '[class*="ChatMessage"]',
+      '[class*="chat-message"]',
+      '[class*="chat-item"]',
+      '[class*="message-item"]',
+      'div[data-e2e*="message"]',
+      '[role="listitem"]'
+    ];
+
+    let items = [];
+    for (const room of rooms) {
+      for (const sel of messageSelectors) {
+        const found = room.querySelectorAll(sel);
+        if (found.length) {
+          items = [...found];
+          break;
+        }
+      }
+      if (items.length) break;
+    }
+
+    if (!items.length) {
+      for (const room of rooms) {
+        const children = [...room.children].filter(c => (c.innerText || "").trim().length > 0);
+        if (children.length) {
+          items = children;
+          break;
+        }
+      }
+    }
+
+    const messages = [];
+    for (const item of items) {
+      const text = parseChatMessageElement(item);
+      if (text && !messages.includes(text)) {
+        messages.push(text);
+      }
+    }
+
+    return {
+      ok: true,
+      messages: messages.slice(-limit),
+      count: messages.length
+    };
+  }
+
+  function startLiveChatObserver() {
+    liveChatReading = true;
+    const initial = extractLiveChatMessages(10);
+    if (initial.ok && initial.messages.length) {
+      for (const m of initial.messages) seenChatTexts.add(m);
+      lastKnownChatMessage = initial.messages[initial.messages.length - 1];
+    }
+    const existing = document.querySelectorAll(
+      '[data-e2e*="chat-message"], [class*="ChatMessage" i], [class*="chat-message" i], [class*="chat-item" i], [class*="message-item" i], [class*="DivChatMessage" i]'
+    );
+    for (const el of existing) seenChatNodes.add(el);
+
+    if (liveChatMutationObserver) liveChatMutationObserver.disconnect();
+    liveChatMutationObserver = new MutationObserver(mutations => {
+      if (!liveChatReading || !isLivePage()) return;
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          handleNewChatNodes(node);
+        }
+      }
+    });
+
+    const rooms = liveChatElements();
+    const targetRoom = rooms[0] || document.body;
+    try {
+      liveChatMutationObserver.observe(targetRoom, { childList: true, subtree: true });
+    } catch (_) {
+      try {
+        liveChatMutationObserver.observe(document.body, { childList: true, subtree: true });
+      } catch (_) {}
+    }
+
+    if (liveChatPollInterval) clearInterval(liveChatPollInterval);
+    liveChatPollInterval = setInterval(() => {
+      if (!liveChatReading || !isLivePage()) return;
+      handleNewChatNodes(targetRoom);
+    }, 1000);
+  }
+
+  function stopLiveChatObserver() {
+    liveChatReading = false;
+    if (liveChatPollInterval) {
+      clearInterval(liveChatPollInterval);
+      liveChatPollInterval = null;
+    }
+    if (liveChatMutationObserver) {
+      liveChatMutationObserver.disconnect();
+      liveChatMutationObserver = null;
+    }
+  }
   const visible = element => {
     if (!element) return false;
     const style = getComputedStyle(element);
@@ -571,10 +827,15 @@
   function canonicalLink(value) {
     try {
       const url = new URL(value, location.href);
-      const match = url.pathname.match(/^\/@[^/?#]+\/video\/(\d+)\/?$/);
-      if (url.protocol !== "https:" || !["www.tiktok.com", "tiktok.com"].includes(url.hostname) ||
-          url.username || url.password || url.port || !match) return "";
-      return `https://www.tiktok.com${url.pathname}`;
+      const videoMatch = url.pathname.match(/^\/@[^/?#]+\/video\/(\d+)\/?$/);
+      const liveMatch = url.pathname.match(/^\/(@[^/?#]+)\/live\/?$/);
+      const directLive = url.hostname === "live.tiktok.com" ? url.pathname.match(/^\/(@[^/?#]+)(\/live)?\/?$/) : null;
+      const trustedHost = ["www.tiktok.com", "tiktok.com", "live.tiktok.com"].includes(url.hostname);
+      if (url.protocol !== "https:" || !trustedHost || url.username || url.password || url.port) return "";
+      if (directLive) return `https://www.tiktok.com/${directLive[1]}/live`;
+      if (liveMatch) return `https://www.tiktok.com/${liveMatch[1]}/live`;
+      if (videoMatch) return `https://www.tiktok.com${url.pathname.replace(/\/$/, "")}`;
+      return "";
     } catch (_error) { return ""; }
   }
 
@@ -847,9 +1108,11 @@
     for (const anchor of document.querySelectorAll("a[href*='/video/']")) {
       let url;
       try { url = new URL(anchor.href, location.href); } catch (_error) { continue; }
-      const match = url.pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
-      if (!match || seen.has(match[0])) continue;
-      seen.add(match[0]);
+      const videoMatch = url.pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
+      if (!videoMatch) continue;
+      const key = videoMatch[0];
+      if (seen.has(key)) continue;
+      seen.add(key);
       const container = anchor.closest(
         "[data-e2e=search-card-video-container], [data-e2e=user-post-item], li"
       ) || anchor.parentElement;
@@ -859,9 +1122,10 @@
         anchor.getAttribute("aria-label") || anchor.title ||
         (container && container.innerText) || ""
       );
+      const author = videoMatch[1];
       results.push({
-        url: `https://www.tiktok.com/${match[1]}/video/${match[2]}`,
-        author: decodeURIComponent(match[1]),
+        url: `https://www.tiktok.com/${author}/video/${videoMatch[2]}`,
+        author: decodeURIComponent(author),
         description
       });
       if (results.length >= 50) break;
@@ -1047,18 +1311,202 @@
     "[data-e2e=comment-icon]", "[role=button][aria-label*='coment' i]",
     "[role=button][aria-label*='comment' i]"
   ];
+  // On TikTok comment-level-1 marks the paragraph with a comment's text, inside the item
+  // that also holds its author and its Responder control. Each comment is listed once,
+  // through that item, so a reply always starts from the element that has Responder.
+  const COMMENT_TEXT = "[data-e2e=comment-level-1], [data-e2e=comment-level-2], [data-e2e=comment-text]";
+  const COMMENT_ITEM = "[data-e2e=comment-item], [data-e2e=comment-reply-item], [class*='CommentItemContainer'], [class*='CommentItem']";
+  const REPLY_CONTROL = "[data-e2e*='comment-reply' i], [data-e2e*='reply' i], button, [role=button]";
+  let nextCommentId = 0;
+  function isCommentActionOrInput(element) {
+    if (!element) return false;
+    if (element.closest("[data-e2e*='comment-input'], [class*='CommentInput'], [class*='BottomArea'], [contenteditable='true'], form")) {
+      return true;
+    }
+    const text = normalizedText(element.innerText || element.getAttribute("aria-label") || "").toLowerCase();
+    if (/^(adicionar coment[aá]rio|add a? comment|publicar|postar)\b/i.test(text)) {
+      return true;
+    }
+    return false;
+  }
+  function replyControlIn(item) {
+    const controls = [...item.querySelectorAll(REPLY_CONTROL)].filter(visible);
+    const byE2e = controls.find(control => /comment-reply/i.test(control.getAttribute("data-e2e") || ""));
+    if (byE2e) return byE2e;
+    const byText = controls.find(control =>
+      /^(responder|reply)\b/i.test(normalizedText(control.innerText || control.getAttribute("aria-label") || control.getAttribute("title") || "")));
+    if (byText) return byText;
+    const byPartial = controls.find(control =>
+      /\b(responder|reply)\b/i.test(normalizedText(control.getAttribute("aria-label") || control.innerText || "")));
+    if (byPartial) return byPartial;
+    const sub = item.querySelector("[class*='SubContent'], [class*='PCommentSub'], [class*='Action']");
+    if (sub) {
+      const candidates = [...sub.querySelectorAll("button, [role=button], span[role=button]")].filter(el =>
+        visible(el) && !/like|curtir|heart|menu|more|options/i.test(`${el.getAttribute("data-e2e") || ""} ${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`));
+      if (candidates.length > 0) return candidates[0];
+    }
+    return null;
+  }
+  function commentItemOf(element) {
+    if (!element.matches(COMMENT_TEXT)) return element;
+    const item = element.parentElement?.closest(COMMENT_ITEM);
+    if (item) return item;
+    // Without a known item class, the item is the nearest ancestor holding Responder.
+    for (let node = element, level = 0; node && level < 6; node = node.parentElement, level++) {
+      if (node !== element && node.querySelectorAll(COMMENT_TEXT).length > 1) break;
+      if (replyControlIn(node)) return node;
+    }
+    return element;
+  }
+  function commentElements() {
+    const items = [];
+    for (const element of document.querySelectorAll(`${COMMENT_ITEM}, ${COMMENT_TEXT}`)) {
+      if (!visible(element)) continue;
+      if (isCommentActionOrInput(element)) continue;
+      const item = commentItemOf(element);
+      if (!item || isCommentActionOrInput(item)) continue;
+      if (!items.includes(item)) items.push(item);
+    }
+    // An item inside another one is part of that comment (its reply thread), unless marked as reply item.
+    return items.filter(item => item.matches?.("[data-e2e*='reply-item']") || !items.some(other => other !== item && other.contains(item)));
+  }
+  function commentText(item) {
+    if (isCommentActionOrInput(item)) return "";
+    const author = normalizedText(item.querySelector("[data-e2e^='comment-username']")?.innerText);
+    const body = normalizedText(item.querySelector(COMMENT_TEXT)?.innerText);
+    const raw = normalizedText(item.innerText);
+    if (/^(adicionar coment[aá]rio|add a? comment)\b/i.test(raw)) return "";
+    return author && body ? `${author}: ${body}` : (body || author || raw);
+  }
   function commentRows() {
-    const seen = new Set();
-    return [...document.querySelectorAll(
-      "[data-e2e=comment-item], [data-e2e=comment-level-1], [class*='CommentItem']"
-    )].filter(visible).map(item => {
-      const text = normalizedText(item.innerText);
-      if (!text || seen.has(text)) return null;
-      seen.add(text);
-      const id = item.getAttribute("data-accessible-reels-comment-id") || `accessible-reels-comment-${seen.size}`;
-      item.setAttribute("data-accessible-reels-comment-id", id);
+    const all = commentElements();
+    return all.map(item => {
+      let text = commentText(item);
+      if (!text || /^(adicionar coment[aá]rio|add a? comment)\b/i.test(text.trim())) return null;
+      const isReply = all.some(other => other !== item && other.contains(item));
+      if (isReply && !text.startsWith('↳') && !text.startsWith('[Resposta]')) {
+        text = "[Resposta] " + text;
+      }
+      // Ids never repeat, so a list built earlier can not point at another comment.
+      let id = item.getAttribute("data-accessible-reels-comment-id");
+      if (!id) {
+        id = `accessible-reels-comment-${++nextCommentId}`;
+        item.setAttribute("data-accessible-reels-comment-id", id);
+      }
       return {id, text};
-    }).filter(Boolean).slice(0, 200);
+    }).filter(Boolean);
+  }
+  function commentScrollContainer() {
+    const list = document.querySelector("[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']");
+    if (list && list.scrollHeight > list.clientHeight + 20) return list;
+    const first = document.querySelector(COMMENT_ITEM) || document.querySelector(COMMENT_TEXT);
+    for (let p = first?.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (p.scrollHeight > p.clientHeight + 20) {
+        const style = getComputedStyle(p);
+        if (/(auto|scroll)/.test(style.overflowY) || p.scrollHeight > p.clientHeight + 100) {
+          return p;
+        }
+      }
+    }
+    return list || null;
+  }
+  // Logged when Responder is not found: the shape of the comment, never its text or author.
+  function describeCommentItem(item) {
+    const shape = [];
+    const walk = (node, depth) => {
+      if (shape.length >= 60 || depth > 8) return;
+      const names = String(node.className?.baseVal ?? node.className ?? "").split(/\s+/)
+        .map(name => name.split("-").pop()).filter(name => /^[A-Z]/.test(name)).join(".");
+      const label = node.getAttribute("aria-label") || "";
+      const control = node.matches("button, [role=button]") ? normalizedText(node.innerText).slice(0, 15) : "";
+      shape.push([depth, node.tagName.toLowerCase(), node.getAttribute("data-e2e") || "", node.getAttribute("role") || "",
+        names, label.length <= 25 ? label : "", control, visible(node) ? "visible" : "hidden"].join("|"));
+      for (const child of node.children) walk(child, depth + 1);
+    };
+    walk(item, 0);
+    return {comment_item: shape};
+  }
+  // The send control of a comment field is found from the field outwards. It may be a
+  // text button, an icon named by aria-label/data-e2e, or an icon that only turns
+  // TikTok's red once the field has text; emoji and mention buttons are never it.
+  const TIKTOK_ACTIVE_RED = "rgb(254, 44, 85)";
+  const POST_CANDIDATES = "[data-e2e*='comment-post' i], [data-e2e*='post' i], button, [role=button], input[type='submit']";
+  const POST_NAME = /^(publicar|postar|post|enviar|send)\b/i;
+  const NOT_POST = /emoji|mention|comment-at|gif|image|imagem|cancel|fechar|close|responder|reply|curtir|like|heart/i;
+  function controlName(element) {
+    return normalizedText(element.getAttribute("aria-label") || element.getAttribute("title") ||
+      element.querySelector("svg title")?.textContent || element.textContent || "");
+  }
+  function enabledControl(element) {
+    return visible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true";
+  }
+  function isRedOrBrandTone(colorStr) {
+    if (!colorStr) return false;
+    if (colorStr.includes(TIKTOK_ACTIVE_RED)) return true;
+    const match = colorStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+      const [r, g, b] = [Number(match[1]), Number(match[2]), Number(match[3])];
+      return r >= 170 && r > g * 1.3 && r > b * 1.3;
+    }
+    if (/^#(fe2c55|ff0050|e6204c|de1b45)/i.test(colorStr)) return true;
+    return false;
+  }
+  function paintedRed(element) {
+    return [element, ...element.querySelectorAll("svg, path")].some(node => {
+      const style = getComputedStyle(node);
+      return isRedOrBrandTone(style.color) || isRedOrBrandTone(style.fill) || isRedOrBrandTone(style.backgroundColor);
+    });
+  }
+  function postButtonFor(editor) {
+    for (let area = editor.parentElement; area && area !== document.documentElement; area = area.parentElement) {
+      const candidates = [...area.querySelectorAll(POST_CANDIDATES)]
+        .filter(element => !element.contains(editor) && enabledControl(element));
+      const named = candidates.find(element => POST_NAME.test(controlName(element)) ||
+        /comment-post/i.test(element.getAttribute("data-e2e") || "") ||
+        element.getAttribute("type") === "submit");
+      if (named) return named;
+      const red = candidates.find(element => paintedRed(element) &&
+        !NOT_POST.test(`${element.getAttribute("data-e2e") || ""} ${controlName(element)}`));
+      if (red) return red;
+      // Fallback estrutural: se o botão mudou de cor ou formato de texto, seleciona controle de envio habilitado
+      const structural = candidates.filter(element =>
+        !NOT_POST.test(`${element.getAttribute("data-e2e") || ""} ${controlName(element)}`));
+      if (structural.length === 1) return structural[0];
+      if (structural.length > 1) {
+        const after = structural.find(element =>
+          Boolean(element.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_PRECEDING));
+        if (after) return after;
+        return structural[structural.length - 1];
+      }
+      // Past this point the area also holds another field, whose button is not this one's.
+      if ([...area.querySelectorAll("[contenteditable=true]")].some(other => other !== editor && visible(other))) return null;
+    }
+    return null;
+  }
+  // Logged when no send control is found: the controls around the field, never comment text.
+  function describePostArea(editor) {
+    const controls = [];
+    let area = editor.parentElement;
+    for (let level = 0; area && level < 10 && controls.length < 25; level++, area = area.parentElement) {
+      for (const element of area.querySelectorAll("button, [role=button], [data-e2e], svg")) {
+        if (controls.length >= 25 || element.contains(editor) || element.dataset.accessibleReelsSeen) continue;
+        element.dataset.accessibleReelsSeen = "1";
+        const style = getComputedStyle(element);
+        controls.push([level, element.tagName.toLowerCase(), element.getAttribute("data-e2e") || "",
+          element.getAttribute("role") || "", element.getAttribute("aria-label") || "",
+          normalizedText(element.textContent).slice(0, 20), element.disabled || element.getAttribute("aria-disabled") || "",
+          style.color, style.fill, style.backgroundColor, visible(element) ? "visible" : "hidden"].join("|"));
+      }
+    }
+    document.querySelectorAll("[data-accessible-reels-seen]").forEach(element => delete element.dataset.accessibleReelsSeen);
+    return {post_area: controls};
+  }
+  function cleanCommentText(value) {
+    return normalizedText(value)
+      .replace(/^\[resposta\]\s*/i, "")
+      .replace(/^↳\s*/, "")
+      .replace(/^\d+\s+de\s+\d+:\s*/i, "")
+      .trim();
   }
   async function openComments(video) {
     const button = findNearVideo(COMMENT_SELECTORS);
@@ -1070,23 +1518,52 @@
   }
   async function closeComments() {
     const close = [...document.querySelectorAll(
-      "button[aria-label='exit' i], button[data-e2e*='comment-close' i], " +
-      "button[aria-label*='fechar' i], button[aria-label*='close' i]"
+      "button[aria-label='exit' i], [role=button][aria-label='exit' i], " +
+      "button[data-e2e*='comment-close' i], [role=button][data-e2e*='comment-close' i], " +
+      "[data-e2e*='close-icon' i], button[aria-label*='fechar' i], [role=button][aria-label*='fechar' i], " +
+      "button[aria-label*='close' i], [role=button][aria-label*='close' i]"
     )].find(visible);
     if (close) await trustedClick(close);
     commentsVideo = null;
   }
   async function replyToComment(identifier, text) {
-    const rows = commentRows();
-    const target = rows.find(item => item.id === String(identifier || "")) ||
-      rows.find(item => item.text === normalizedText(text));
+    let rows = commentRows();
+    const searchId = String(identifier || "").trim();
+    const cleanSearchText = cleanCommentText(text);
+    let target = (searchId && rows.find(item => item.id === searchId)) ||
+      (cleanSearchText && rows.find(item => cleanCommentText(item.text) === cleanSearchText)) ||
+      (cleanSearchText && rows.find(item => {
+        const itemClean = cleanCommentText(item.text);
+        return itemClean.includes(cleanSearchText) || cleanSearchText.includes(itemClean);
+      }));
+    if (!target) {
+      const expandButtons = [...document.querySelectorAll(
+        "[data-e2e*='view-more' i], [data-e2e*='reply-list' i], [class*='ReplyContainer'] button, button[aria-label*='resposta' i], button[aria-label*='reply' i]"
+      )].filter(visible);
+      if (expandButtons.length > 0) {
+        for (const btn of expandButtons.slice(0, 5)) {
+          await trustedClick(btn, false);
+        }
+        await sleep(300);
+        rows = commentRows();
+        target = (searchId && rows.find(item => item.id === searchId)) ||
+          (cleanSearchText && rows.find(item => cleanCommentText(item.text) === cleanSearchText)) ||
+          (cleanSearchText && rows.find(item => {
+            const itemClean = cleanCommentText(item.text);
+            return itemClean.includes(cleanSearchText) || cleanSearchText.includes(itemClean);
+          }));
+      }
+    }
     if (!target) throw new Error("O comentário selecionado não está mais disponível.");
     const element = document.querySelector(`[data-accessible-reels-comment-id="${CSS.escape(target.id)}"]`);
-    const reply = element && [...element.querySelectorAll("button, [role=button], [data-e2e*='reply' i]")]
-      .find(button => visible(button) && /^(responder|reply)$/i.test(normalizedText(button.innerText || button.getAttribute("aria-label"))));
-    if (!reply) throw new Error("Não foi possível localizar Responder neste comentário.");
+    const reply = element && replyControlIn(element);
+    if (!reply || !visible(reply)) {
+      const error = new Error("Não foi possível localizar Responder neste comentário.");
+      if (element) error.details = describeCommentItem(element);
+      throw error;
+    }
     await trustedClick(reply);
-    return normalizedText(element.innerText);
+    return element;
   }
 
   // The logged-in account's own profile link is in the side navigation.
@@ -1194,7 +1671,7 @@
       return profileFollowAction(Boolean(argument?.toggle), argument?.profile_url || "");
     }
     const video = activeVideo();
-    if (!["diagnostics", "collect_search_results", "close_comments"].includes(action) && !video) {
+    if (!["diagnostics", "collect_search_results", "close_comments", "toggle_live_chat", "read_live_chat"].includes(action) && !video) {
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") {
@@ -1466,7 +1943,49 @@
     }
     if (action === "comments") {
       try {
-        return {comments: await openComments(video)};
+        await openComments(video);
+        const container = commentScrollContainer();
+        const accumulated = new Map();
+        for (const item of commentRows()) {
+          accumulated.set(item.id, item);
+        }
+        let lastCount = accumulated.size;
+        let staleCount = 0;
+        const deadline = Date.now() + 18000;
+        while (Date.now() < deadline && staleCount < 6) {
+          if (container && container.scrollHeight > container.clientHeight) {
+            container.scrollTop = container.scrollHeight;
+            container.dispatchEvent(new Event('scroll', {bubbles: true}));
+          }
+          const candidates = document.querySelectorAll("[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']");
+          for (const el of candidates) {
+            if (el.scrollHeight > el.clientHeight + 20) {
+              el.scrollTop = el.scrollHeight;
+              el.dispatchEvent(new Event('scroll', {bubbles: true}));
+            }
+          }
+          const items = commentElements();
+          if (items.length) {
+            try { items[items.length - 1].scrollIntoView({block: "end", behavior: "instant"}); } catch (_) {}
+          }
+          const moreBtns = [...document.querySelectorAll(
+            "button[data-e2e*='view-more' i], [data-e2e*='comment-more' i], button[aria-label*='mais' i], [class*='DivMoreButton']"
+          )].filter(visible);
+          for (const btn of moreBtns.slice(0, 3)) {
+            try { await trustedClick(btn, false); } catch (_) {}
+          }
+          await sleep(500);
+          for (const item of commentRows()) {
+            accumulated.set(item.id, item);
+          }
+          if (accumulated.size > lastCount) {
+            lastCount = accumulated.size;
+            staleCount = 0;
+          } else {
+            staleCount++;
+          }
+        }
+        return {comments: Array.from(accumulated.values())};
       } finally {
         await closeComments();
       }
@@ -1475,7 +1994,7 @@
       await openComments(video);
       const identifier = typeof argument === "object" ? argument.replyTo || argument.id : argument;
       const text = typeof argument === "object" ? argument.replyText || argument.text : "";
-      return {replyTo: await replyToComment(identifier, text)};
+      return {replyTo: normalizedText((await replyToComment(identifier, text)).innerText)};
     }
     if (action === "post_comment") {
       const text = normalizedText(typeof argument === "object" ? argument.text : String(argument || ""));
@@ -1483,30 +2002,78 @@
       try {
         await openComments(video);
         const replyTo = typeof argument === "object" ? argument.replyTo : "";
-        if (replyTo) await replyToComment(replyTo, argument.replyText);
+        const editors = () => [...document.querySelectorAll(
+          "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
+        )].filter(visible);
+        const inComment = element => element.closest(
+          "[data-e2e=comment-level-1], [data-e2e=comment-item], [class*='CommentItem'], [class*='ReplyContainer']");
+        let editor = null;
+        if (replyTo) {
+          const before = new Set(editors());
+          const comment = await replyToComment(replyTo, argument.replyText);
+          const follows = element => comment.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING;
+          // The reply box is inside the replied comment, or a reply field after it, or a field
+          // Responder just opened. The main field is never used: the reply would become a comment.
+          const replyBox = () => {
+            const boxes = editors().filter(element => comment.contains(element) || !before.has(element) ||
+              (inComment(element) && follows(element)));
+            return boxes.find(element => comment.contains(element)) || boxes.find(follows) || boxes[0] || null;
+          };
+          for (const limit = Date.now() + 2000; Date.now() < limit && !editor; await sleep(100)) editor = replyBox();
+          if (!editor) throw new Error("A caixa de resposta do TikTok não abriu. Nada foi enviado.");
+        } else {
+          // A new comment never goes into a reply box left open inside a comment.
+          editor = editors().find(element => !inComment(element)) || editors()[0];
+        }
         const sameVideo = () => commentsVideo && commentsVideo.video === activeVideo() &&
           commentsVideo.source === video.currentSrc && commentsVideo.link === snapshot().link;
         if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
-        const editor = [...document.querySelectorAll(
-          "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"
-        )].find(visible);
         if (!editor) throw new Error("Não foi possível localizar o campo de comentário.");
-        if (normalizedText(editor.textContent)) throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
-        editor.focus();
-        editor.textContent = text;
-        editor.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: text}));
-        await sleep(150);
-        const post = [...document.querySelectorAll(
-          "button[data-e2e=comment-post], [data-e2e=comment-post], button"
-        )].find(element => visible(element) && /publicar|post/i.test(normalizedText(element.textContent)));
-        if (!post) throw new Error("Não foi possível localizar Publicar comentário.");
+        // A reply may start with the mention TikTok fills in; anything else is the person's draft.
+        const prefix = normalizedText(editor.textContent);
+        if (prefix && !(replyTo && /^@\S+$/.test(prefix))) {
+          throw new Error("Há um rascunho na página. Revise-o antes de publicar.");
+        }
+        const expected = normalizedText(`${prefix} ${text}`);
+        // TikTok's editor ignores text set from script, so the application types it
+        // as trusted keyboard input after a real click places the caret in the field.
+        await trustedClick(editor);
+        // The click may land inside a mention; type after everything already in the field.
+        const caret = document.createRange();
+        caret.selectNodeContents(editor);
+        caret.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(caret);
+        const typed = await transport.runtime.sendMessage({type: "accessible-reels-trusted-text", text});
+        if (!typed?.ok) throw new Error(typed?.error || "Não foi possível digitar o comentário.");
+        // The button of the editor in use, so a reply is not sent by the main field's button.
+        // A new comment keeps the page-wide search by name as a last resort.
+        const findPost = () => postButtonFor(editor) || (replyTo ? null :
+          [...document.querySelectorAll(POST_CANDIDATES)].find(element =>
+            enabledControl(element) && POST_NAME.test(controlName(element))) || null);
+        let post = null;
+        for (const limit = Date.now() + 2000; Date.now() < limit && !post; await sleep(100)) {
+          if (normalizedText(editor.textContent) === expected) post = findPost();
+        }
+        if (normalizedText(editor.textContent) !== expected) {
+          throw new Error("O TikTok não aceitou o texto digitado. Nada foi enviado.");
+        }
+        if (!post) {
+          const error = new Error("Não foi possível localizar Publicar comentário. O texto ficou no campo do TikTok; " +
+            "confira pela página (F6) antes de tentar de novo.");
+          error.details = describePostArea(editor);
+          throw error;
+        }
         if (!sameVideo()) throw new Error("O vídeo mudou. O comentário não foi enviado.");
         await trustedClick(post);
+        const shown = () => commentRows().map(row => normalizedText(row.text)).concat(
+          [...document.querySelectorAll("[data-e2e=comment-level-2], [data-e2e=comment-reply-item]")]
+            .filter(visible).map(element => normalizedText(element.innerText)));
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           await sleep(200);
-          if (sameVideo() && editor.isConnected && !normalizedText(editor.textContent) &&
-              commentRows().some(row => normalizedText(row.text).includes(text))) return {};
+          if (sameVideo() && !(editor.isConnected && normalizedText(editor.textContent)) &&
+              shown().some(row => row.includes(text))) return {};
         }
         throw new Error("O envio não foi confirmado. Confira os comentários antes de tentar novamente.");
       } finally {
@@ -1516,6 +2083,38 @@
     if (action === "close_comments") {
       await closeComments();
       return {};
+    }
+    if (action === "toggle_live_chat") {
+      if (!isLivePage()) throw new Error("Você não está em uma live.");
+      if (argument?.force_stop || (liveChatReading && !argument?.force_start)) {
+        stopLiveChatObserver();
+        return { ok: true, active: false };
+      }
+      const elements = await resolveLiveChatElements(4000);
+      if (!elements.length) {
+        throw new Error("O chat da live ainda está carregando ou não está disponível.");
+      }
+      startLiveChatObserver();
+      const recent = extractLiveChatMessages(15);
+      return {
+        ok: true,
+        active: true,
+        messages: recent.ok ? recent.messages : [],
+        count: recent.ok ? recent.count : 0
+      };
+    }
+    if (action === "read_live_chat") {
+      if (!isLivePage()) throw new Error("Você não está em uma live.");
+      const elements = await resolveLiveChatElements(3000);
+      if (!elements.length) {
+        throw new Error("O chat da live ainda está carregando ou não está disponível.");
+      }
+      const recent = extractLiveChatMessages(5);
+      return {
+        ok: true,
+        messages: recent.ok ? recent.messages : [],
+        count: recent.ok ? recent.count : 0
+      };
     }
     if (action === "diagnostics") {
       const active = activeVideo();

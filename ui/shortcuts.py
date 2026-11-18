@@ -33,7 +33,7 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("download_list", "Baixar todos os vídeos da lista", "Ctrl+Shift+L"),
     ShortcutDefinition("open_liked", "Abrir meus vídeos curtidos (TikTok)", "Alt+Shift+L"),
     ShortcutDefinition("open_favorites", "Abrir meus vídeos favoritos (TikTok)", "Alt+Shift+F"),
-    ShortcutDefinition("return_results", "Voltar aos resultados", "Ctrl+R"),
+    ShortcutDefinition("return_results", "Voltar aos resultados (na lista de comentários: responder ao comentário selecionado)", "Ctrl+R"),
     ShortcutDefinition("home", "Ir para o início", "Ctrl+Home"),
     ShortcutDefinition("next_video", "Próximo vídeo", "Alt+Down"),
     ShortcutDefinition("previous_video", "Vídeo anterior", "Alt+Up"),
@@ -55,12 +55,15 @@ SHORTCUT_DEFINITIONS = (
     ShortcutDefinition("read_follow_status", "Ler estado de seguindo", "Alt+G"),
     ShortcutDefinition("copy_link", "Copiar link", "Alt+C"),
     ShortcutDefinition("open_comments", "Abrir comentários", "Alt+Shift+C"),
+    ShortcutDefinition("write_comment", "Escrever comentário no vídeo atual", "Alt+V"),
     ShortcutDefinition("toggle_like", "Curtir ou descurtir", "Alt+L"),
     ShortcutDefinition("toggle_favorite", "Favoritar ou desfavoritar", "Alt+F"),
     ShortcutDefinition("not_interested", "Marcar como não tenho interesse", "Alt+Shift+N"),
     ShortcutDefinition("open_profile", "Abrir perfil", "Alt+Shift+P"),
     ShortcutDefinition("search", "Pesquisar", "Alt+E"),
     ShortcutDefinition("toggle_auto_scroll", "Ativar ou desativar rolagem automática (válido em todas as redes)", "Alt+R"),
+    ShortcutDefinition("toggle_live_chat", "Ativar ou desativar leitura do chat da live", "Alt+Shift+T"),
+    ShortcutDefinition("read_live_chat", "Ler mensagens recentes do chat da live", "Alt+Shift+U"),
     ShortcutDefinition("exit", "Sair", "Alt+S"),
 )
 
@@ -167,6 +170,10 @@ def shortcut_from_event(event) -> str | None:
         key = f"F{code - wx.WXK_F1 + 1}"
     elif ord("A") <= code <= ord("Z") or ord("0") <= code <= ord("9"):
         key = chr(code)
+    elif ord("a") <= code <= ord("z"):
+        # BUG-15: wxWidgets pode enviar código em minúsculo em alguns eventos
+        # EVT_KEY_DOWN com Caps Lock desligado. Normaliza para maiúsculo.
+        key = chr(code).upper()
     else:
         return None
     parts = []

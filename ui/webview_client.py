@@ -18,7 +18,10 @@ PLATFORM_URLS = {'TikTok': 'https://www.tiktok.com/', 'Instagram': 'https://www.
 ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description', 'copy_link',
            'refresh_info', 'volume_up', 'volume_down', 'speed_up', 'speed_down', 'toggle_mute', 'comments',
            'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow', 'not_interested',
-           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step'}
+           'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step',
+           'post_comment', 'toggle_live_chat', 'read_live_chat'}
+# Longest comment any supported network accepts; anything longer is refused before typing.
+MAX_COMMENT_LENGTH = 10000
 logger = get_logger()
 # Commands the app starts by itself right after a page loads. If the platform
 # immediately re-navigates to the same page, they are simply run again on the
@@ -35,11 +38,14 @@ def belongs_to_platform(url, platform):
         parsed = urlsplit(url)
         if platform == 'TikTok':
             domain = 'tiktok.com'
+            allowed_hosts = [domain, 'www.' + domain, 'm.' + domain, 'live.' + domain]
         elif platform == 'YouTube':
             domain = 'youtube.com'
+            allowed_hosts = [domain, 'www.' + domain, 'm.' + domain]
         else:
             domain = 'instagram.com'
-        return (parsed.scheme == 'https' and parsed.hostname in (domain, 'www.' + domain, 'm.' + domain)
+            allowed_hosts = [domain, 'www.' + domain, 'm.' + domain]
+        return (parsed.scheme == 'https' and parsed.hostname in allowed_hosts
                 and not parsed.username and not parsed.password and parsed.port in (None, 443))
     except ValueError:
         return False
@@ -123,6 +129,17 @@ class WebViewClient:
         if not event.IsTargetMainFrame():
             event.Skip()
             return
+        url = event.GetURL() if hasattr(event, 'GetURL') else ''
+        if self.ready and url and url != 'about:blank':
+            from link_router import open_in_default_browser
+            auth_hosts = {'accounts.google.com', 'appleid.apple.com', 'facebook.com', 'www.facebook.com'}
+            parsed_host = urlsplit(url).hostname or ''
+            if not belongs_to_platform(url, self.platform) and parsed_host not in auth_hosts:
+                logger.info('External link intercepted in webview: platform=%s url=%s', self.platform, url)
+                if hasattr(event, 'Veto'):
+                    event.Veto()
+                open_in_default_browser(url)
+                return
         if (self.after_load and self._after_load_expected_url
                 and not same_page_target(event.GetURL(), self._after_load_expected_url)):
             unexpected = self._after_load_unexpected
@@ -334,7 +351,10 @@ class WebViewClient:
         token = uuid.uuid4().hex
         generation = self.generation
         self.pending = {'token':token, 'callback':callback, 'clicks':set(), 'action':action}
-        self.pending['timer'] = wx.CallLater(20000, self._timeout, token)
+        if action == 'post_comment' and isinstance(argument, dict) and isinstance(argument.get('text'), str):
+            self.pending['approved_text'] = argument['text']
+        timeout_ms = 40000 if action == 'comments' else 20000
+        self.pending['timer'] = wx.CallLater(timeout_ms, self._timeout, token)
         arguments = json.dumps([action, argument, token, self.platform.lower()], ensure_ascii=True)
         def completed(value, error):
             if not self.alive or generation != self.generation or not self.pending or self.pending['token'] != token:
@@ -365,12 +385,25 @@ class WebViewClient:
 
     def _message(self, event):
         event.Skip()
-        if not self.alive or not self.active or not self.pending or not belongs_to_platform(event.GetURL(), self.platform):
+        url = event.GetURL() or (self.view.GetCurrentURL() if hasattr(self.view, 'GetCurrentURL') else '')
+        if not self.alive or not self.active or not belongs_to_platform(url, self.platform):
             return
         try:
             value = json.loads(event.GetString())
             message_type = value.get('type')
-            if message_type not in ('click', 'key') or value.get('token') != self.pending['token']:
+            if message_type == 'live_chat':
+                text = value.get('text')
+                handler = getattr(self, 'on_live_chat', None)
+                if text and handler:
+                    handler(text)
+                return
+            if not self.pending:
+                return
+            if message_type not in ('click', 'key', 'text') or value.get('token') != self.pending['token']:
+                return
+
+            if message_type == 'text':
+                self._type_text(value)
                 return
             identifier = value.get('id')
             if type(identifier) is not int or identifier in self.pending['clicks']:
@@ -410,6 +443,35 @@ class WebViewClient:
             webview_native.click(self.view, value.get('x'), value.get('y'), done, valid)
         else:
             webview_native.key_press(self.view, value.get('key'), done, valid)
+
+    def _type_text(self, value):
+        """Type the approved comment text, at most once per command."""
+        identifier, text = value.get('id'), value.get('text')
+        if type(identifier) is not int:
+            return
+
+        token, generation = self.pending['token'], self.generation
+        def valid():
+            return (self.alive and self.active and generation == self.generation and
+                    self.pending is not None and self.pending['token'] == token)
+        def typed(ok, error):
+            if valid():
+                response = json.dumps({'ok':ok, 'error':error}, ensure_ascii=True)
+                self.view.RunScriptAsync(f'window.__accessibleClickDone?.({identifier}, {response});')
+        approved = self.pending.get('approved_text')
+        if self.pending.get('typed'):
+            logger.warning('Refused repeated page text input: platform=%s', self.platform)
+            typed(False, 'O comentário já foi digitado uma vez. Nada mais foi digitado.')
+            return
+
+        if (approved is None or not isinstance(text, str) or text != approved or not text
+                or len(text) > MAX_COMMENT_LENGTH):
+            logger.warning('Refused page text input: platform=%s action=%s', self.platform, self.pending['action'])
+            typed(False, 'A página pediu para digitar um texto diferente do confirmado. Nada foi digitado.')
+            return
+
+        self.pending['typed'] = True
+        webview_native.insert_text(self.view, text, typed, valid)
 
     def close(self):
         self.alive = False

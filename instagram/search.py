@@ -11,7 +11,7 @@ from tiktok.video_controls import VideoControlError
 def validate_reel_url(value: Any) -> str:
     try:
         url = urlsplit(str(value or ""))
-        match = re.fullmatch(r"/(reel|reels|p)/([A-Za-z0-9_-]+)/?", url.path)
+        match = re.fullmatch(r"/(reel|reels)/([A-Za-z0-9_-]+)/?", url.path)
         if (
             url.scheme != "https"
             or url.hostname not in {"instagram.com", "www.instagram.com"}
@@ -21,9 +21,8 @@ def validate_reel_url(value: Any) -> str:
         ):
             raise ValueError
     except ValueError as exc:
-        raise VideoControlError("O link não é um Reel ou post válido do Instagram.") from exc
-    kind = "p" if match[1] == "p" else "reel"
-    return f"https://www.instagram.com/{kind}/{match[2]}/"
+        raise VideoControlError("O link não é um Reel válido do Instagram.") from exc
+    return f"https://www.instagram.com/reel/{match[2]}/"
 
 
 def normalize_reel_results(values: Any) -> tuple[SearchResult, ...]:

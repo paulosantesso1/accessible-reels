@@ -45,7 +45,7 @@ def test_non_https_popup_is_not_opened():
     frame.status.assert_called_once()
 
 
-@pytest.mark.parametrize('platform', ['TikTok', 'Instagram'])
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
 def test_search_collection_is_not_dropped_by_automatic_refresh(platform):
     frame = mock_frame()
     frame._active_name = platform
@@ -70,12 +70,17 @@ def test_search_collection_is_not_dropped_by_automatic_refresh(platform):
     frame._result.assert_called_once_with(platform, 'collect_search_results', None, {'ok': True, 'results': []})
 
 
-@pytest.mark.parametrize('platform', ['TikTok', 'Instagram'])
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
 def test_result_player_list_and_feed_round_trip(platform):
-    results = (SearchResult('https://www.tiktok.com/@a/video/1', '@a', 'First'),
-               SearchResult('https://www.tiktok.com/@b/video/2', '@b', 'Second')) if platform == 'TikTok' else (
-               SearchResult('https://www.instagram.com/reel/A/', 'A', 'First'),
-               SearchResult('https://www.instagram.com/reel/B/', 'B', 'Second'))
+    if platform == 'TikTok':
+        results = (SearchResult('https://www.tiktok.com/@a/video/1', '@a', 'First'),
+                   SearchResult('https://www.tiktok.com/@b/video/2', '@b', 'Second'))
+    elif platform == 'Instagram':
+        results = (SearchResult('https://www.instagram.com/reel/A/', 'A', 'First'),
+                   SearchResult('https://www.instagram.com/reel/B/', 'B', 'Second'))
+    else:
+        results = (SearchResult('https://www.youtube.com/shorts/AbCdEfGhI_1', 'YouTube', 'First'),
+                   SearchResult('https://www.youtube.com/shorts/AbCdEfGhI_2', 'YouTube', 'Second'))
     frame = mock_frame()
     frame._active_name = platform
     frame._results = results
@@ -101,23 +106,25 @@ def test_result_player_list_and_feed_round_trip(platform):
     assert frame.platform_data[platform]['result_index'] == 1
 
 
-def test_list_video_refreshes_its_own_details_after_playback_starts():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_list_video_refreshes_its_own_details_after_playback_starts(platform):
     frame = Mock()
-    frame._active_name = 'TikTok'
-    frame.platform_data = {'TikTok': {'refresh_after_play': True}}
+    frame._active_name = platform
+    frame.platform_data = {platform: {'refresh_after_play': True}}
 
-    MainFrame._result(frame, 'TikTok', 'play', None, {'ok': True, 'paused': False})
+    MainFrame._result(frame, platform, 'play', None, {'ok': True, 'paused': False})
 
-    assert 'refresh_after_play' not in frame.platform_data['TikTok']
+    assert 'refresh_after_play' not in frame.platform_data[platform]
     frame.dispatch.assert_called_once_with('refresh_info')
 
 
-def test_player_updates_do_not_reset_selected_search_result():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_player_updates_do_not_reset_selected_search_result(platform):
     results = (SearchResult('a', 'a', 'a'), SearchResult('b', 'b', 'b'))
     frame = Mock()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     frame._results = results
-    frame.platform_data = {'TikTok': {'results': results, 'result_index': 1}}
+    frame.platform_data = {platform: {'results': results, 'result_index': 1}}
     MainFrame._restore_fields(frame)
     frame.results_list.Set.assert_not_called()
     frame.results_list.SetSelection.assert_called_once_with(1)
@@ -131,51 +138,58 @@ def test_more_search_results_are_appended_without_reordering_existing_items():
     assert merge_search_results((first, second), (second, third)) == (first, second, third)
 
 
-def test_load_more_returns_to_saved_query_and_collects_an_additional_batch():
-    first = SearchResult('https://www.tiktok.com/@a/video/1', '@a', 'Primeiro')
+@pytest.mark.parametrize(('platform', 'search_url'), [
+    ('TikTok', 'https://www.tiktok.com/search/video?q=gatos'),
+    ('Instagram', 'https://www.instagram.com/explore/search/keyword/?q=gatos'),
+    ('YouTube', 'https://www.youtube.com/results?search_query=gatos&sp=EgIYAQ%253D%253D'),
+])
+def test_load_more_returns_to_saved_query_and_collects_an_additional_batch(platform, search_url):
+    first = SearchResult('https://example.com/1', 'creator', 'Primeiro')
     frame = mock_frame()
-    frame._active_name = 'TikTok'
-    frame.platform_data = {'TikTok': {
+    frame._active_name = platform
+    frame.platform_data = {platform: {
         'results': (first,), 'is_list_mode': True,
-        'search_url': 'https://www.tiktok.com/search/video?q=gatos',
+        'search_url': search_url,
     }}
     client = Mock(pending=None)
-    frame.clients = {'TikTok': client}
+    frame.clients = {platform: client}
 
     MainFrame.load_more_results(frame)
 
-    assert frame.platform_data['TikTok']['results'] == (first,)
-    assert frame.platform_data['TikTok']['is_list_mode'] is False
-    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/search/video?q=gatos'
+    assert frame.platform_data[platform]['results'] == (first,)
+    assert frame.platform_data[platform]['is_list_mode'] is False
+    assert client.navigate.call_args.args[0] == search_url
     client.navigate.call_args.args[1]()
     frame.dispatch.assert_called_once_with('collect_search_results', {'mode': 'more'})
     frame._set_search_loading.assert_called_once_with(True)
 
 
-def test_return_to_feed_invalidates_a_pending_command_and_late_response():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_return_to_feed_invalidates_a_pending_command_and_late_response(platform):
     view = Mock()
-    view.GetCurrentURL.return_value = PLATFORM_URLS['TikTok']
-    client = WebViewClient(view, 'TikTok', Mock(), Mock())
+    view.GetCurrentURL.return_value = PLATFORM_URLS[platform]
+    client = WebViewClient(view, platform, Mock(), Mock())
     callback = Mock()
     with patch('ui.webview_client.wx.CallLater'), patch('ui.webview_client.webview_native.evaluate') as evaluate:
         client.execute('collect_search_results', None, callback)
         complete = evaluate.call_args.args[2]
-        client.navigate(PLATFORM_URLS['TikTok'])
+        client.navigate(PLATFORM_URLS[platform])
         assert client.pending is None
         assert not client.ready
         complete({'ok': True, 'results': [{'url': 'stale'}]}, None)
     callback.assert_called_once()
     assert callback.call_args.args[0]['ok'] is False
-    view.LoadURL.assert_called_once_with(PLATFORM_URLS['TikTok'])
+    view.LoadURL.assert_called_once_with(PLATFORM_URLS[platform])
 
 
-def test_list_mode_navigation_intercepts_next_and_previous_video():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_list_mode_navigation_intercepts_next_and_previous_video(platform):
     frame = mock_frame()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     frame._results = ['first', 'second', 'third']
-    frame.platform_data = {'TikTok': {'is_list_mode': True, 'result_index': 1}}
+    frame.platform_data = {platform: {'is_list_mode': True, 'result_index': 1}}
     client = Mock(pending=False)
-    frame.clients = {'TikTok': client}
+    frame.clients = {platform: client}
     frame.results_list.GetSelection.return_value = 1
     
     # Test next_video
@@ -196,21 +210,22 @@ def test_list_mode_navigation_intercepts_next_and_previous_video():
     client.execute.assert_not_called()
 
 
-def test_pending_command_queues_play_pause_instead_of_dropping_it():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_pending_command_queues_play_pause_instead_of_dropping_it(platform):
     # next/previous already got queued to run once the pending command
     # settles. toggle_playback/play (what the media-key play/pause hotkey
     # dispatches) did not, and was silently dropped instead -- easy to miss
     # while away from the screen, since next/previous can take several
     # seconds to settle (or time out) while the window is backgrounded.
     frame = mock_frame()
-    frame._active_name = 'TikTok'
-    frame.platform_data = {'TikTok': {}}
+    frame._active_name = platform
+    frame.platform_data = {platform: {}}
     client = Mock(pending=True)
-    frame.clients = {'TikTok': client}
+    frame.clients = {platform: client}
 
     MainFrame.dispatch(frame, 'toggle_playback')
 
-    assert frame.platform_data['TikTok']['queued_navigation'] == 'toggle_playback'
+    assert frame.platform_data[platform]['queued_navigation'] == 'toggle_playback'
     client.execute.assert_not_called()
 
 
@@ -225,21 +240,26 @@ def test_escape_returns_to_feed_from_search_tab():
     frame.home.assert_called_once()
 
 
-def test_open_profile_navigates_and_triggers_collection():
+@pytest.mark.parametrize(('platform', 'profile_url'), [
+    ('TikTok', 'https://www.tiktok.com/@user'),
+    ('Instagram', 'https://www.instagram.com/user/reels/'),
+    ('YouTube', 'https://www.youtube.com/@user/shorts'),
+])
+def test_open_profile_navigates_and_triggers_collection(platform, profile_url):
     frame = mock_frame()
-    frame._active_name = 'TikTok'
-    frame.platform_data = {'TikTok': {'profile_url': 'https://www.tiktok.com/@user'}}
+    frame._active_name = platform
+    frame.platform_data = {platform: {'profile_url': profile_url}}
     client = Mock(pending=False)
-    frame.clients = {'TikTok': client}
+    frame.clients = {platform: client}
     frame.current.return_value = True
     
     MainFrame.dispatch(frame, 'open_profile')
     client.navigate.assert_called_once()
-    assert client.navigate.call_args.args[0] == 'https://www.tiktok.com/@user'
+    assert client.navigate.call_args.args[0] == profile_url
     client.navigate.call_args.args[1]()
     frame.dispatch.assert_called_once_with('collect_search_results', 'profile')
     frame._set_search_loading.assert_called_once_with(True)
-    assert frame.platform_data['TikTok']['opening_profile'] is True
+    assert frame.platform_data[platform]['opening_profile'] is True
 
 
 def test_follow_verification_uses_auxiliary_page_without_touching_player():
@@ -418,16 +438,22 @@ def test_visible_follow_click_is_not_success_when_profile_disagrees():
     frame.status.assert_called_once_with('O TikTok não confirmou a alteração de seguimento de @ana.')
 
 
-def test_profile_collection_opens_pinned_or_newest_video_as_the_first_list_item():
-    first = SearchResult('https://www.tiktok.com/@user/video/1', '@user', 'Fixado')
-    second = SearchResult('https://www.tiktok.com/@user/video/2', '@user', 'Mais novo depois do fixado')
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_profile_collection_opens_pinned_or_newest_video_as_the_first_list_item(platform):
+    url_map = {
+        'TikTok': ('https://www.tiktok.com/@user/video/1', 'https://www.tiktok.com/@user/video/2'),
+        'Instagram': ('https://www.instagram.com/reel/1/', 'https://www.instagram.com/reel/2/'),
+        'YouTube': ('https://www.youtube.com/shorts/11111111111', 'https://www.youtube.com/shorts/22222222222'),
+    }
+    first = SearchResult(url_map[platform][0], '@user', 'Fixado')
+    second = SearchResult(url_map[platform][1], '@user', 'Mais novo depois do fixado')
     frame = Mock()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     frame._results = (first, second)
-    frame.platform_data = {'TikTok': {'opening_profile': True, 'results': ()}}
-    frame.clients = {'TikTok': Mock()}
+    frame.platform_data = {platform: {'opening_profile': True, 'results': ()}}
+    frame.clients = {platform: Mock()}
 
-    MainFrame._result(frame, 'TikTok', 'collect_search_results', None, {
+    MainFrame._result(frame, platform, 'collect_search_results', None, {
         'ok': True,
         'results': [
             {'url': first.url, 'author': first.author, 'description': first.description},
@@ -435,10 +461,10 @@ def test_profile_collection_opens_pinned_or_newest_video_as_the_first_list_item(
         ],
     })
 
-    assert frame.platform_data['TikTok']['results'] == (first, second)
-    assert frame.platform_data['TikTok']['result_index'] == 0
-    assert frame.platform_data['TikTok']['is_list_mode'] is True
-    assert 'opening_profile' not in frame.platform_data['TikTok']
+    assert frame.platform_data[platform]['results'] == (first, second)
+    assert frame.platform_data[platform]['result_index'] == 0
+    assert frame.platform_data[platform]['is_list_mode'] is True
+    assert 'opening_profile' not in frame.platform_data[platform]
     frame.results_list.SetSelection.assert_called_once_with(0)
     frame.open_result.assert_called_once()
 
@@ -476,24 +502,26 @@ def test_youtube_search_uses_the_shorts_only_filter():
     assert url == 'https://www.youtube.com/results?search_query=curiosidade+hist%C3%B3rica&sp=EgIYAQ%253D%253D'
 
 
-def test_new_search_clears_a_stale_profile_opening_state():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_new_search_clears_a_stale_profile_opening_state(platform):
     frame = mock_frame()
-    frame._active_name = 'TikTok'
+    frame._active_name = platform
     frame.query_field.GetValue.return_value = 'gatos'
     frame.current.return_value = True
-    frame.clients = {'TikTok': Mock(pending=None)}
-    frame.platform_data = {'TikTok': {'opening_profile': True}}
+    frame.clients = {platform: Mock(pending=None)}
+    frame.platform_data = {platform: {'opening_profile': True}}
 
     MainFrame.search(frame)
 
-    assert 'opening_profile' not in frame.platform_data['TikTok']
+    assert 'opening_profile' not in frame.platform_data[platform]
 
 
-def test_platform_error_clears_profile_opening_state():
-    frame = Mock(_active_name='TikTok')
-    frame.platform_data = {'TikTok': {'opening_profile': True}}
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_platform_error_clears_profile_opening_state(platform):
+    frame = Mock(_active_name=platform)
+    frame.platform_data = {platform: {'opening_profile': True}}
 
-    MainFrame._platform_error(frame, 'TikTok', 'falhou')
+    MainFrame._platform_error(frame, platform, 'falhou')
 
-    assert 'opening_profile' not in frame.platform_data['TikTok']
+    assert 'opening_profile' not in frame.platform_data[platform]
 

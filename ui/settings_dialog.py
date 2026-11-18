@@ -5,11 +5,13 @@ from pathlib import Path
 
 import wx
 
-from video_download import (bundled_ytdlp_path, load_download_settings,
-                            save_download_settings, settings_path, update_ytdlp)
+from video_download import (bundled_ytdlp_path, load_download_settings, save_download_settings, settings_path, update_ytdlp)
+from link_router import get_preferred_browser, registered_browsers, set_preferred_browser
 from .shortcuts import (DEFAULT_GLOBAL_ACTIONS, DEFAULT_SHORTCUTS, SHORTCUT_DEFINITIONS, can_be_global,
                         display_shortcut, load_shortcut_settings,
                         save_shortcut_settings, shortcut_from_event)
+
+AUTOMATIC_BROWSER = "Navegador padrão do Windows (automático)"
 
 
 class ShortcutCaptureDialog(wx.Dialog):
@@ -61,6 +63,12 @@ class SettingsDialog(wx.Dialog):
             self.avoid_real_minimize = value.get("avoid_real_minimize", True)
         except Exception:
             pass
+        try:
+            self.available_browsers = registered_browsers()
+            self.preferred_browser = get_preferred_browser()
+        except Exception:
+            self.available_browsers = {}
+            self.preferred_browser = None
 
     def _build_ui(self):
         root = wx.Panel(self)
@@ -84,10 +92,21 @@ class SettingsDialog(wx.Dialog):
         box.Add(wx.StaticText(panel, label="Pasta de download dos vídeos:"), 0, wx.ALL, 5)
         row = wx.BoxSizer(wx.HORIZONTAL)
         self.folder_text = wx.TextCtrl(panel, value=str(self.current_folder), style=wx.TE_READONLY)
+        self.folder_text.SetName("Pasta de download dos vídeos")
         browse = wx.Button(panel, label="&Alterar pasta de downloads...")
         browse.Bind(wx.EVT_BUTTON, self.on_browse)
         row.Add(self.folder_text, 1, wx.RIGHT, 5); row.Add(browse)
         box.Add(row, 0, wx.EXPAND | wx.ALL, 5)
+        if getattr(self, "available_browsers", None):
+            box.Add(wx.StaticText(panel, label="&Navegador para outros links (músicas, páginas web):"), 0, wx.ALL, 5)
+            browser_names = list(self.available_browsers.keys())
+            self.browser_choice = wx.Choice(panel, choices=[AUTOMATIC_BROWSER] + browser_names)
+            self.browser_choice.SetName("Navegador para outros links (músicas, páginas web)")
+            if self.preferred_browser in browser_names:
+                self.browser_choice.SetStringSelection(self.preferred_browser)
+            else:
+                self.browser_choice.SetSelection(0)
+            box.Add(self.browser_choice, 0, wx.EXPAND | wx.ALL, 5)
         self.cb_auto_update = wx.CheckBox(panel, label="Verificar a&tualizações do motor de download automaticamente ao abrir")
         self.cb_auto_update.SetValue(self.check_ytdlp)
         box.Add(self.cb_auto_update, 0, wx.ALL, 5)
@@ -186,6 +205,18 @@ class SettingsDialog(wx.Dialog):
             self._refresh_shortcut_list(index)
 
     def on_restore_all(self, event):
+        # BUG-14: Pede confirmação antes de apagar todos os atalhos customizados.
+        # Para usuários cegos, atalhos memorizados são críticos; esta ação é
+        # irreversível se o diálogo de configurações for salvo na sequência.
+        result = wx.MessageBox(
+            "Tem certeza que deseja restaurar todos os atalhos para o padrão de fábrica?\n"
+            "Seus atalhos personalizados serão perdidos.",
+            "Restaurar todos os atalhos",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
         self.shortcuts = dict(DEFAULT_SHORTCUTS)
         self.global_shortcuts = set(DEFAULT_GLOBAL_ACTIONS)
         self._refresh_shortcut_list(0)
@@ -209,7 +240,18 @@ class SettingsDialog(wx.Dialog):
             return
         progress = wx.ProgressDialog("Atualizando motor", "Buscando atualizações...", parent=self, style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE)
         progress.Pulse()
+        # BUG-13: Pulsa o diálogo de progresso periodicamente via Timer para
+        # que o Windows não marque a janela como "Não respondendo" quando a
+        # checagem do yt-dlp demora mais que alguns segundos.
+        pulse_timer = wx.Timer(self)
+        def _on_pulse(e):
+            if progress and not progress.WasCancelled():
+                progress.Pulse()
+        self.Bind(wx.EVT_TIMER, _on_pulse, pulse_timer)
+        pulse_timer.Start(300)
         def finish(message, error=False):
+            pulse_timer.Stop()
+            self.Unbind(wx.EVT_TIMER, handler=_on_pulse, source=pulse_timer)
             progress.Destroy()
             wx.MessageBox(message, "Erro" if error else "Atualização concluída", wx.OK | (wx.ICON_ERROR if error else wx.ICON_INFORMATION), self)
         def worker():
@@ -229,8 +271,14 @@ class SettingsDialog(wx.Dialog):
         try:
             if self.shortcuts != self._initial_shortcuts or checked != self._initial_global_shortcuts:
                 save_shortcut_settings(self.shortcuts, checked)
-            save_download_settings({"folder": str(self.current_folder), "check_ytdlp_updates": self.cb_auto_update.GetValue(),
-                                    "avoid_real_minimize": self.cb_avoid_minimize.GetValue()}, path=self.settings_file)
+            save_download_settings({
+                "folder": str(self.current_folder),
+                "check_ytdlp_updates": self.cb_auto_update.GetValue(),
+                "avoid_real_minimize": self.cb_avoid_minimize.GetValue() if hasattr(self, "cb_avoid_minimize") else True
+            }, path=self.settings_file)
+            if hasattr(self, "browser_choice"):
+                index = self.browser_choice.GetSelection()
+                set_preferred_browser(self.browser_choice.GetString(index) if index > 0 else None)
         except Exception as exc:
             wx.MessageBox(f"Não foi possível salvar as configurações: {exc}", "Erro", wx.OK | wx.ICON_ERROR, self)
             return

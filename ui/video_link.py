@@ -23,10 +23,14 @@ def parse_video_link(value):
             if re.fullmatch(r'/t/[A-Za-z0-9_-]+/?', url.path):
                 return 'TikTok', f'https://www.tiktok.com{url.path}'
             return 'TikTok', validate_search_result_url(value)
+        if url.hostname == 'live.tiktok.com':
+            direct_live = re.match(r'^/(@[\w.-]+)(?:/live)?/?$', url.path)
+            if direct_live:
+                return 'TikTok', f'https://www.tiktok.com/{direct_live.group(1)}/live'
         if url.hostname in ('vm.tiktok.com', 'vt.tiktok.com') and re.fullmatch(
                 r'/[A-Za-z0-9_-]+/?', url.path):
             return 'TikTok', f'https://{url.hostname}{url.path}'
-        if url.hostname in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'):
+        if url.hostname in ('youtube.com', 'www.youtube.com', 'm.youtube.com'):
             from youtube.search import validate_youtube_url
             return 'YouTube', validate_youtube_url(value)
     except (ValueError, VideoControlError):

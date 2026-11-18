@@ -48,3 +48,5 @@ def test_only_canonical_tiktok_video_can_be_opened():
     )
     with pytest.raises(VideoControlError):
         validate_search_result_url("https://example.com/@ana/video/123")
+
+

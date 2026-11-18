@@ -56,14 +56,21 @@ def page(browser, request):
           onMessage: {addListener: handler => window.igListener = handler},
           sendMessage: async message => {
             if (message.type === 'accessible-reels-trusted-click') {
-              const target = document.elementFromPoint(message.x, message.y).closest('button,[role=button]');
+              const hit = document.elementFromPoint(message.x, message.y);
+              const target = hit.closest('button,[role=button]') || hit;
               window.igClicks.push(target.id || target.textContent);
+              target.focus();
               target.click();
             }
             if (message.type === 'accessible-reels-trusted-key') {
               window.dispatchedKeys.push(message.key);
               document.dispatchEvent(new KeyboardEvent('keydown', {key: message.key, bubbles: true, cancelable: true}));
               document.dispatchEvent(new KeyboardEvent('keyup', {key: message.key, bubbles: true, cancelable: true}));
+            }
+            if (message.type === 'accessible-reels-trusted-text') {
+              // Same effect as the application's Input.insertText: typing into the focused field.
+              window.igTyped = (window.igTyped || []).concat(message.text);
+              document.execCommand('insertText', false, message.text);
             }
             return {ok:true};
           }
@@ -371,6 +378,27 @@ def test_instagram_comments_and_explicit_post(page):
     assert not page.locator('[role="dialog"]').is_visible()
 
 
+def test_instagram_comment_is_typed_by_the_application_and_confirmed(page):
+    result = command(page, "post_comment", {"text": "Comentário novo"})
+    assert result == {"ok": True}
+    assert page.evaluate("window.igTyped") == ["Comentário novo"]
+    assert "Publicar" in page.evaluate("window.igClicks")
+    assert "Comentário novo" in page.locator('[role="dialog"]').inner_text()
+    assert not page.locator('[role="dialog"]').is_visible()
+
+
+def test_instagram_comment_is_not_published_when_the_field_rejects_the_text(page):
+    page.evaluate('''() => {
+      const send = window.__accessibleTransport.runtime.sendMessage;
+      window.__accessibleTransport.runtime.sendMessage = async message =>
+        message.type === 'accessible-reels-trusted-text' ? {ok: true} : send(message);
+    }''')
+    result = command(page, "post_comment", {"text": "Comentário novo"})
+    assert result["ok"] is False
+    assert "não aceitou o texto" in result["error"]
+    assert "Publicar" not in page.evaluate("window.igClicks")
+
+
 def test_instagram_does_not_overwrite_unsent_comment(page):
     command(page, "comments")
     page.evaluate("document.querySelector('input').value = 'Rascunho do usuário'")
@@ -509,3 +537,61 @@ def test_instagram_not_interested_hides_an_ad_with_its_own_menu(page):
                                         ["hide", "Ocultar anúncio"], ["report", "Denunciar anúncio"]])
     assert command(page, "not_interested") == {"ok": True, "ad": True, "advance": True}
     assert page.evaluate("window.pressed") == "hide"
+
+
+def add_instagram_reply_button(page, comment_id, mention="@ana "):
+    page.evaluate('''([id, mention]) => {
+      const row = document.querySelector(`[data-accessible-reels-comment-id="${id}"]`);
+      const reply = document.createElement("button");
+      reply.id = "reply";
+      reply.textContent = "Responder";
+      // Instagram fills the field with the author's mention a moment after the click.
+      reply.onclick = () => setTimeout(() => { document.querySelector("input").value = mention; }, 200);
+      row.append(reply);
+    }''', [comment_id, mention])
+
+
+def test_instagram_reply_types_after_the_mention_and_is_confirmed(page):
+    target = command(page, "comments")["comments"][0]
+    add_instagram_reply_button(page, target["id"])
+    result = command(page, "post_comment", {"text": "Concordo", "replyTo": target["id"], "replyText": target["text"]})
+    assert result == {"ok": True}
+    assert page.evaluate("window.igTyped") == ["Concordo"]
+    clicks = page.evaluate("window.igClicks")
+    assert clicks.index("reply") < clicks.index("Publicar")
+    assert "@ana Concordo" in page.locator('[role="dialog"]').inner_text()
+
+
+def test_instagram_reply_keeps_a_draft_that_is_not_a_mention(page):
+    target = command(page, "comments")["comments"][0]
+    add_instagram_reply_button(page, target["id"], mention="Meu rascunho")
+    result = command(page, "post_comment", {"text": "Concordo", "replyTo": target["id"], "replyText": target["text"]})
+    assert result["ok"] is False
+    assert "não enviado" in result["error"]
+    assert page.evaluate("window.igTyped") is None
+    assert page.evaluate("document.querySelector('input').value") == "Meu rascunho"
+
+
+def test_instagram_reply_reports_a_comment_that_disappeared(page):
+    result = command(page, "post_comment", {"text": "Concordo", "replyTo": "sumiu", "replyText": "zé: apagado"})
+    assert result["ok"] is False
+    assert "não está mais disponível" in result["error"]
+    assert page.evaluate("window.igTyped") is None
+
+
+def test_instagram_failed_reply_removes_only_the_mention_so_the_next_comment_works(page):
+    target = command(page, "comments")["comments"][0]
+    add_instagram_reply_button(page, target["id"])
+    page.evaluate('''() => {
+      const send = window.__accessibleTransport.runtime.sendMessage;
+      window.__accessibleTransport.runtime.sendMessage = async message =>
+        message.type === 'accessible-reels-trusted-text'
+          ? {ok: false, error: 'A página pediu para digitar um texto diferente do confirmado. Nada foi digitado.'}
+          : send(message);
+      window.restoreSend = () => { window.__accessibleTransport.runtime.sendMessage = send; };
+    }''')
+    result = command(page, "post_comment", {"text": "Concordo", "replyTo": target["id"], "replyText": target["text"]})
+    assert result["ok"] is False
+    assert page.evaluate("document.querySelector('input').value") == ""
+    page.evaluate("window.restoreSend()")
+    assert command(page, "post_comment", {"text": "Comentário normal"}) == {"ok": True}

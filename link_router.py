@@ -64,13 +64,34 @@ def build_command(template, url):
 def _executable_of(command):
     command = command.strip()
     if command.startswith('"'):
+        # Caminho entre aspas: extrai até a aspa de fechamento.
         return command[1:].split('"', 1)[0]
+    # BUG-01: Caminhos sem aspas podem conter espaços (ex: C:\Program Files\...).
+    # Usamos um padrão mais inteligente: lemos até o primeiro espaço que é
+    # seguido de um argumento típico (%-placeholder ou flag com hífen),
+    # ou até o primeiro espaço quando nenhum padrão melhor é encontrado.
+    import re as _re
+    # Captura tudo até " %" ou " -" ou " /" que indicam início de argumentos.
+    match = _re.match(r'^(.*?)\s+(?=%|--|/|$)', command)
+    if match and match.group(1):
+        return match.group(1)
     return command.split(' ', 1)[0]
 
 
 def _is_own_command(command):
     own = os.path.normcase(os.path.abspath(sys.executable))
     return os.path.normcase(os.path.abspath(_executable_of(command))) == own
+
+
+def _is_forbidden_browser(command):
+    if not command or not command.strip():
+        return True
+    if _is_own_command(command) or APP_NAME in command:
+        return True
+    exe = _executable_of(command)
+    if os.path.basename(exe).casefold() == 'iexplore.exe':
+        return True
+    return False
 
 
 def _registry_value(root, path, name=''):
@@ -94,19 +115,7 @@ def _progid_command(progid):
 
 
 def _registered_browser_commands():
-    import winreg
-    commands = []
-    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        try:
-            with winreg.OpenKey(root, _BROWSERS_KEY) as key:
-                names = [winreg.EnumKey(key, index) for index in range(winreg.QueryInfoKey(key)[0])]
-        except OSError:
-            continue
-        for name in names:
-            command = _registry_value(root, rf'{_BROWSERS_KEY}\{name}\shell\open\command')
-            if command:
-                commands.append(command)
-    return commands
+    return list(registered_browsers().values())
 
 
 def state_path():
@@ -114,13 +123,63 @@ def state_path():
     return root / APP_NAME / 'default_browser.json'
 
 
-def remembered_progid():
+def load_browser_settings():
     try:
         data = json.loads(state_path().read_text(encoding='utf-8'))
-        value = data.get('progid') if isinstance(data, dict) else None
-        return value if isinstance(value, str) and value else None
+        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
-        return None
+        return {}
+
+
+def save_browser_settings(values):
+    try:
+        path = state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current = load_browser_settings()
+        current.update(values)
+        path.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding='utf-8')
+    except OSError:
+        logger.exception('Could not save browser settings')
+
+
+def registered_browsers():
+    """Return a mapping of friendly browser names to launch commands."""
+    import winreg
+    browsers = {}
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, _BROWSERS_KEY) as key:
+                count = winreg.QueryInfoKey(key)[0]
+                names = [winreg.EnumKey(key, index) for index in range(count)]
+        except OSError:
+            continue
+        for name in names:
+            # Windows 11 only redirects Internet Explorer to Edge, so it is no real choice.
+            if name.casefold() == 'iexplore.exe':
+                continue
+            command = _registry_value(root, rf'{_BROWSERS_KEY}\{name}\shell\open\command')
+            if not command or _is_own_command(command) or APP_NAME in command:
+                continue
+            display = _registry_value(root, rf'{_BROWSERS_KEY}\{name}') or name
+            if display not in browsers:
+                browsers[display] = command
+    return browsers
+
+
+def get_preferred_browser():
+    """The browser the user picked, or None to follow Windows' default."""
+    value = load_browser_settings().get('preferred_browser')
+    return value if isinstance(value, str) and value else None
+
+
+def set_preferred_browser(name):
+    """Store the chosen browser; None goes back to Windows' default."""
+    save_browser_settings({'preferred_browser': name or None})
+
+
+def remembered_progid():
+    value = load_browser_settings().get('progid')
+    return value if isinstance(value, str) and value else None
 
 
 def remember_default_browser():
@@ -128,30 +187,48 @@ def remember_default_browser():
     progid = current_default_progid()
     if not progid or progid.casefold() == PROG_ID.casefold() or progid == remembered_progid():
         return
-    try:
-        path = state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({'progid': progid}), encoding='utf-8')
-    except OSError:
-        logger.exception('Could not remember the default browser')
+    save_browser_settings({'progid': progid})
 
 
 def _browser_commands():
-    """Commands of candidate browsers: the current or previous default first."""
+    """Commands of candidate browsers: preferred first, then current/remembered, then registered."""
     seen = set()
+
+    def add(cmd):
+        if not cmd or _is_forbidden_browser(cmd):
+            return False
+        try:
+            exe = os.path.normcase(os.path.abspath(_executable_of(cmd)))
+        except Exception:
+            exe = cmd.strip().casefold()
+        if exe in seen:
+            return False
+        seen.add(exe)
+        return True
+
+    preferred = get_preferred_browser()
+    if preferred:
+        for name, cmd in registered_browsers().items():
+            if name.casefold() == preferred.casefold():
+                if add(cmd):
+                    yield cmd
+                break
+
     for progid in (current_default_progid(), remembered_progid()):
-        if progid and progid.casefold() != PROG_ID.casefold() and progid not in seen:
-            seen.add(progid)
+        if progid and progid.casefold() != PROG_ID.casefold():
             command = _progid_command(progid)
-            if command:
+            if add(command):
                 yield command
-    yield from _registered_browser_commands()
+
+    for command in _registered_browser_commands():
+        if add(command):
+            yield command
 
 
 def open_in_default_browser(url):
     """Open the URL in the user's real browser. Returns whether one accepted it."""
     for template in _browser_commands():
-        if _is_own_command(template):
+        if _is_forbidden_browser(template):
             continue
         try:
             subprocess.Popen(build_command(template, url), close_fds=True, creationflags=_DETACHED)

@@ -11,10 +11,14 @@ from ui.webview_client import WebViewClient
 
 @pytest.mark.parametrize('value, platform, url', [
     (' https://www.tiktok.com/@ana/video/123?share=1 ', 'TikTok', 'https://www.tiktok.com/@ana/video/123'),
+    ('https://www.tiktok.com/@ana/live', 'TikTok', 'https://www.tiktok.com/@ana/live'),
+    ('https://live.tiktok.com/@ana', 'TikTok', 'https://www.tiktok.com/@ana/live'),
+    ('https://live.tiktok.com/@ana/live', 'TikTok', 'https://www.tiktok.com/@ana/live'),
     ('instagram.com/reels/ABC_123/?igsh=x', 'Instagram', 'https://www.instagram.com/reel/ABC_123/'),
     ('https://vm.tiktok.com/ABC123/', 'TikTok', 'https://vm.tiktok.com/ABC123/'),
     ('https://vt.tiktok.com/ABC123/?x=1', 'TikTok', 'https://vt.tiktok.com/ABC123/'),
     ('https://www.tiktok.com/t/ABC123/', 'TikTok', 'https://www.tiktok.com/t/ABC123/'),
+    ('https://www.youtube.com/shorts/AbCdEfGhI_j', 'YouTube', 'https://www.youtube.com/shorts/AbCdEfGhI_j'),
 ])
 def test_recognizes_video_links(value, platform, url):
     assert parse_video_link(value) == (platform, url)
@@ -23,7 +27,11 @@ def test_recognizes_video_links(value, platform, url):
 @pytest.mark.parametrize('value', ['', 'javascript:alert(1)', 'https://example.com/reel/ABC/',
     'https://instagram.com.evil.test/reel/ABC/', 'https://user@instagram.com/reel/ABC/',
     'https://instagram.com:444/reel/ABC/', 'https://instagram.com/ana/',
-    'https://vm.tiktok.com/', 'https://instagram.com\\@evil.test/reel/ABC/'])
+    'https://instagram.com/p/ABC_123/', 'https://www.instagram.com/p/ABC_123/?igsh=x',
+    'https://vm.tiktok.com/', 'https://instagram.com\\@evil.test/reel/ABC/',
+    'https://www.youtube.com/watch?v=AbCdEfGhI_j', 'https://youtu.be/AbCdEfGhI_j',
+    'https://music.youtube.com/watch?v=AbCdEfGhI_j',
+    'https://www.tiktok.com/@ana/livestream', 'https://www.tiktok.com/@ana/live/extra'])
 def test_rejects_invalid_links(value):
     with pytest.raises(VideoControlError):
         parse_video_link(value)
@@ -71,29 +79,32 @@ def test_delayed_play_is_skipped_after_switching_network():
     frame.dispatch.assert_not_called()
 
 
-def test_first_loaded_video_refreshes_its_details_automatically():
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_first_loaded_video_refreshes_its_details_automatically(platform):
     current = Mock()
-    frame = SimpleNamespace(_active_name='TikTok', _closing_app=False,
-                            clients={'TikTok': Mock(after_load=None)},
+    frame = SimpleNamespace(_active_name=platform, _closing_app=False,
+                            clients={platform: Mock(after_load=None)},
                             _pending_page_focus=None, current=Mock(return_value=current),
                             status=Mock(), dispatch=Mock())
-    MainFrame.loaded(frame, 'TikTok')
+    MainFrame.loaded(frame, platform)
     frame.dispatch.assert_called_once_with('refresh_info')
     assert 'carregado' in frame.status.call_args.args[0]
 
 
-def test_automatic_detail_refresh_does_not_announce_author_or_description():
-    frame = SimpleNamespace(platform_data={'TikTok': {}}, _active_name='TikTok',
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
+def test_automatic_detail_refresh_does_not_announce_author_or_description(platform):
+    frame = SimpleNamespace(platform_data={platform: {}}, _active_name=platform,
                             comment_input=Mock(), _restore_fields=Mock(), status=Mock())
-    MainFrame._result(frame, 'TikTok', 'refresh_info', None,
+    MainFrame._result(frame, platform, 'refresh_info', None,
                       {'ok': True, 'author': '@ana', 'description': 'Descrição automática.'})
     frame.status.assert_not_called()
 
 
+@pytest.mark.parametrize('platform', ['TikTok', 'Instagram', 'YouTube'])
 @pytest.mark.parametrize('action', ['next_video', 'previous_video'])
-def test_video_navigation_does_not_announce_automatic_details(action):
-    frame = SimpleNamespace(platform_data={'TikTok': {}}, _active_name='TikTok',
+def test_video_navigation_does_not_announce_automatic_details(platform, action):
+    frame = SimpleNamespace(platform_data={platform: {}}, _active_name=platform,
                             comment_input=Mock(), _restore_fields=Mock(), status=Mock())
-    MainFrame._result(frame, 'TikTok', action, None,
+    MainFrame._result(frame, platform, action, None,
                       {'ok': True, 'author': '@ana', 'description': 'Descrição automática.'})
     frame.status.assert_not_called()

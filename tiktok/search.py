@@ -11,12 +11,16 @@ SEARCH_RESULTS_SCRIPT = r"""() => {
     const clean = value => (value || '').replace(/\s+/g, ' ').trim();
     const results = [];
     const seen = new Set();
-    for (const anchor of document.querySelectorAll('a[href*="/video/"]')) {
+    const videoAnchors = [...document.querySelectorAll('a[href*="/video/"]')];
+    for (const anchor of videoAnchors) {
         let url;
         try { url = new URL(anchor.href, location.href).href; } catch (_error) { continue; }
-        const match = new URL(url).pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
-        if (!match || seen.has(match[0])) continue;
-        seen.add(match[0]);
+        const pathname = new URL(url).pathname;
+        const videoMatch = pathname.match(/\/(\@[^/?#]+)\/video\/(\d+)/);
+        if (!videoMatch) continue;
+        const key = videoMatch[0];
+        if (seen.has(key)) continue;
+        seen.add(key);
         const container = anchor.closest(
             '[data-e2e="search-card-video-container"], [data-e2e="user-post-item"], li'
         ) || anchor.parentElement;
@@ -28,7 +32,7 @@ SEARCH_RESULTS_SCRIPT = r"""() => {
         );
         results.push({
             url,
-            author: decodeURIComponent(match[1]),
+            author: decodeURIComponent(videoMatch[1]),
             description
         });
         if (results.length >= 50) break;
@@ -53,9 +57,14 @@ def search_url(query: str) -> str:
     normalized = " ".join(str(query or "").split())
     if not normalized:
         raise VideoControlError("Digite algo para pesquisar.")
+    if len(normalized) > 300:
+        raise VideoControlError("O termo de pesquisa é muito longo. Use até 300 caracteres.")
     return f"https://www.tiktok.com/search/video?q={quote_plus(normalized)}"
 
 
+# Limite maximo de resultados na biblioteca pessoal (curtidos/favoritos).
+# Importada por ui/app_frame.py e tests/test_library.py; os scripts web
+# (tiktok.js, youtube.js) declaram sua propria copia local independente.
 LIBRARY_LIMIT = 500
 
 

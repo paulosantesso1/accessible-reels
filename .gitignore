@@ -20,6 +20,7 @@ dist/
 .env
 download-settings.json
 *.tmp
+simulator/
 
 # Protect against a virtual environment accidentally created in the project root.
 Lib/

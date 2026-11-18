@@ -544,3 +544,20 @@ def test_unexpected_navigation_verification_failure_is_also_silent():
 def test_missing_active_video_fails_safely():
     with pytest.raises(VideoControlError, match="localizar o vídeo"):
         TikTokVideoController(FakePage(None)).get_info()
+
+
+def test_live_url_is_canonical_and_tracking_is_removed():
+    assert select_current_url(
+        "/@autor/live?utm_source=x&lang=pt#share",
+        "https://www.tiktok.com/",
+    ) == "https://www.tiktok.com/@autor/live"
+    assert select_current_url(
+        "https://live.tiktok.com/@autor?share=1",
+        "https://live.tiktok.com/",
+    ) == "https://www.tiktok.com/@autor/live"
+
+
+@pytest.mark.parametrize("path", ["/@autor/livestream", "/@autor/live/extra"])
+def test_paths_that_only_start_with_live_are_rejected(path):
+    with pytest.raises(VideoControlError):
+        select_current_url(path, "https://www.tiktok.com/")

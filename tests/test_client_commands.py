@@ -135,7 +135,7 @@ def make_worker(events: list[WorkerEvent], preferences=None) -> BrowserWorker:
         preferences=preferences or MemoryPreferences(),
     )
     worker._page = FakePage()
-    worker._context = worker._page.context
+    worker._browser_context = worker._page.context
     return worker
 
 
@@ -216,7 +216,7 @@ def test_video_command_activates_persistent_tiktok_page_first():
     assert worker._page.brought_to_front == 1
 
 
-def test_worker_prefers_most_recent_live_tiktok_tab():
+def test_worker_prefers_most_recent_active_tiktok_tab():
     context = FakeContext()
     older = FakePage()
     newer = FakePage()
@@ -229,7 +229,7 @@ def test_worker_prefers_most_recent_live_tiktok_tab():
         FakeVideoController,
         preferences=MemoryPreferences(),
     )
-    worker._context = context
+    worker._browser_context = context
     worker._page = older
     assert worker._active_page() is newer
 
@@ -339,7 +339,7 @@ def test_queued_command_is_processed_by_worker_thread_and_returns_callback():
         preferences=MemoryPreferences(),
     )
     worker._page = FakePage()
-    worker._context = worker._page.context
+    worker._browser_context = worker._page.context
     worker.start()
     worker.toggle_playback()
     assert received.wait(timeout=2)
@@ -425,5 +425,5 @@ def test_persistent_chromium_is_started_headed_with_autoplay_enabled():
     assert playwright.chromium.kwargs["args"] == [
         "--autoplay-policy=no-user-gesture-required"
     ]
-    assert "__tiktokAccessibleVolumeState" in worker._context.init_scripts[0]
-    assert "(0.5);" in worker._context.init_scripts[0]
+    assert "__tiktokAccessibleVolumeState" in worker._browser_context.init_scripts[0]
+    assert "(0.5);" in worker._browser_context.init_scripts[0]

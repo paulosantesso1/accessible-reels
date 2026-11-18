@@ -13,6 +13,36 @@ from ui.webview_native import evaluate
 from video_download import media_url
 from app_logging import get_logger
 
+# Assinaturas de container de vídeo conhecidas.
+# O browser_download atua como contingência e pode receber WebM (YouTube),
+# MP4 com ftyp, ou MP4 onde moov precede ftyp (Instagram/TikTok).
+_MP4_FTYP = b'ftyp'                   # bytes 4-8 de MP4 padrão
+_WEBM_EBML = b'\x1a\x45\xdf\xa3'     # início de WebM/MKV (EBML)
+_MP4_MOOV  = b'moov'                  # MP4 sem ftyp inicial
+_RIFF      = b'RIFF'                  # AVI legacy
+
+
+def _detect_media_signature(path: Path) -> str | None:
+    """Retorna a extensão recomendada para o arquivo ou None se não reconhecido."""
+    try:
+        with path.open('rb') as f:
+            header = f.read(16)
+        # WebM/MKV: começa com sequência EBML
+        if header[:4] == _WEBM_EBML:
+            return '.webm'
+        # MP4 padrão: bytes 4-8 == 'ftyp'
+        if len(header) >= 8 and header[4:8] == _MP4_FTYP:
+            return '.mp4'
+        # MP4 sem ftyp: bytes 4-8 == 'moov' (moov-first layout)
+        if len(header) >= 8 and header[4:8] == _MP4_MOOV:
+            return '.mp4'
+        # AVI
+        if header[:4] == _RIFF:
+            return '.avi'
+    except OSError:
+        pass
+    return None
+
 
 class BrowserDownload:
     def __init__(self, client, url, folder, progress, complete, *, destination=None):
@@ -89,14 +119,30 @@ class BrowserDownload:
             if not isinstance(value, dict):
                 raise ValueError()
             if value.get('done'):
-                if not self.size or (self.total and self.total != self.size):
-                    raise ValueError()
+                # BUG-07: Aceita o arquivo quando o servidor não enviou
+                # Content-Length (self.total == 0 = tamanho desconhecido).
+                # Só rejeita se Content-Length foi fornecido E o tamanho
+                # baixado diferir em mais de 1 KB (tolerância para compressão).
+                size_ok = (
+                    not self.size == 0  # arquivo vazio é sempre inválido
+                    and (
+                        self.total == 0  # tamanho desconhecido: confiar no ReadableStream
+                        or abs(self.total - self.size) <= 1024
+                    )
+                )
+                if not size_ok:
+                    raise ValueError('Tamanho do arquivo inconsistente.')
                 self.file.close()
                 self.file = None
-                with self.partial.open('rb') as stream:
-                    if stream.read(12)[4:8] != b'ftyp':
-                        raise ValueError()
-                target = self.destination or self.folder / (self.partial.stem + '.mp4')
+                # BUG-06: Detectar formato real em vez de exigir apenas ftyp.
+                ext = _detect_media_signature(self.partial)
+                if ext is None:
+                    raise ValueError('Assinatura de container de mídia não reconhecida.')
+                # Usa extensão detectada; fallback para .mp4 se destination já definido.
+                if self.destination is not None:
+                    target = self.destination
+                else:
+                    target = self.folder / (self.partial.stem + ext)
                 self.partial.replace(target)
                 self.partial = None
                 self.finish(target, None)

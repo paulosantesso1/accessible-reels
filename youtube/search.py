@@ -18,29 +18,20 @@ def validate_youtube_url(value: Any) -> str:
         # Validações básicas de segurança e protocolo
         if (
             url.scheme != "https"
-            or url.hostname not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+            or url.hostname not in {"youtube.com", "www.youtube.com", "m.youtube.com"}
             or url.username is not None or url.password is not None
             or url.port not in {None, 443}
         ):
             raise ValueError
         
-        if url.hostname == "youtu.be":
-            video_id = url.path.strip("/")
-        else:
-            # O link PRECISA ser obrigatoriamente um "Short" ou "watch" com v=...
-            if url.path.startswith("/shorts/"):
-                parts = url.path.strip("/").split("/")
-                if len(parts) < 2:
-                    raise ValueError
-                video_id = parts[1]
-            elif url.path == "/watch":
-                from urllib.parse import parse_qs
-                qs = parse_qs(url.query)
-                if "v" not in qs or not qs["v"]:
-                    raise ValueError
-                video_id = qs["v"][0]
-            else:
-                raise ValueError
+        # O link PRECISA ser obrigatoriamente um Short (/shorts/<video_id>)
+        if not url.path.startswith("/shorts/"):
+            raise ValueError
+
+        parts = url.path.strip("/").split("/")
+        if len(parts) < 2:
+            raise ValueError
+        video_id = parts[1]
             
         # O ID de vídeo do YouTube/Short possui exatamente 11 caracteres
         if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):

@@ -22,7 +22,7 @@ def _accessible_output_nvda() -> object | None:
         return None
 
 
-def speak_with_accessible_output(message: str) -> bool:
+def speak_with_accessible_output(message: str, interrupt: bool = True) -> bool:
     """Fala pelo NVDA via accessible-output2 quando ele estiver respondendo."""
     output = _accessible_output_nvda()
     if output is None:
@@ -30,7 +30,7 @@ def speak_with_accessible_output(message: str) -> bool:
     try:
         if not output.is_active():
             return False
-        output.speak(str(message), interrupt=True)
+        output.speak(str(message), interrupt=interrupt)
         return True
     except Exception:
         return False
@@ -49,6 +49,11 @@ def _controller() -> object | None:
         Path(__file__).resolve().parents[1] / dll_name,
         Path(sys.executable).resolve().parent / dll_name,
     ]
+    try:
+        import accessible_output2
+        candidates.append(Path(accessible_output2.__file__).resolve().parent / "lib" / dll_name)
+    except Exception:
+        pass
     for variable in ("ProgramFiles(x86)", "ProgramFiles"):
         base = os.environ.get(variable)
         if base:

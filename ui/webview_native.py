@@ -104,6 +104,15 @@ def evaluate(view, expression, callback):
     }, complete)
 
 
+def insert_text(view, text, callback, still_valid=lambda: True):
+    """Type into the focused field as trusted keyboard input, which React editors accept."""
+    if not still_valid():
+        wx.CallAfter(callback, False, 'A página mudou durante o comando.')
+        return
+    call_devtools(view, 'Input.insertText', {'text': text},
+                  lambda _payload, error: callback(not error, error))
+
+
 def click(view, x, y, callback, still_valid=lambda: True):
     """Wait for mouse-down completion before mouse-up; never move the OS cursor."""
     parameters = {'x': x, 'y': y, 'button': 'left', 'clickCount': 1}

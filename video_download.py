@@ -276,6 +276,21 @@ def download_video(url, platform, folder, progress=lambda message: None, *, dire
                 raise VideoDownloadError(download_error(error, audio)) from error
             progress('Tentando outra forma de baixar o vídeo...')
 
+
+def _version_tuple(version_str: str) -> tuple[int, ...]:
+    """Converte string de versão (com ou sem prefixo 'v') em tupla de inteiros para
+    comparação correta. Exemplo: 'v2024.11.04' e '2024.11.04' → (2024, 11, 4).
+    Partes não numéricas são tratadas como 0."""
+    cleaned = version_str.lstrip('vV')
+    parts = []
+    for part in cleaned.split('.'):
+        try:
+            parts.append(int(part))
+        except (ValueError, AttributeError):
+            parts.append(0)
+    return tuple(parts)
+
+
 def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):
     import threading
     import wx
@@ -320,7 +335,7 @@ def check_for_ytdlp_updates(parent_window=None, *, local_app_data=None):
         except Exception:
             return
             
-        if not remote_version or remote_version <= local_version:
+        if not remote_version or _version_tuple(remote_version) <= _version_tuple(local_version):
             return
             
         # 3. Perguntar e atualizar

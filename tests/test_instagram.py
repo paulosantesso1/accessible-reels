@@ -18,6 +18,7 @@ def test_reel_link_is_canonical_and_removes_tracking(url):
     "javascript:alert(1)", "http://instagram.com/reel/123/",
     "https://instagram.com/reels/", "https://instagram.com/reels/audio/123/",
     "https://instagram.com:8000/reel/123/", "https://a:b@instagram.com/reel/123/",
+    "https://instagram.com/p/123/", "https://www.instagram.com/p/AbC_123-/",
 ])
 def test_reel_links_reject_other_destinations(url):
     with pytest.raises(VideoControlError):
@@ -30,9 +31,10 @@ def test_search_results_filter_invalid_and_duplicate_urls():
         {"url": "https://instagram.com/reel/abc/?x=1"},
         {"url": "https://www.tiktok.com/@ana/video/123"},
         {"url": "https://instagram.com/p/xyz/", "description": "  um  post "},
+        {"url": "https://instagram.com/reel/def/", "description": "  outro  reel "},
     ])
     assert len(results) == 2
     assert results[0].author == "@ana"
-    assert results[1].description == "um post"
+    assert results[1].description == "outro reel"
 
 

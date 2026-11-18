@@ -276,12 +276,17 @@ def test_background_library_reports_page_errors():
     assert 'Curtidos' in worker.on_error.call_args.args[1]
 
 
-def test_already_downloaded_matches_the_video_id_in_the_file_name(tmp_path):
-    (tmp_path / 'TikTok - titulo [7693578549004881170].mp4').write_bytes(b'x')
-    (tmp_path / 'notas [7693578549004881171].txt').write_bytes(b'x')
-    assert already_downloaded(tmp_path, 'https://www.tiktok.com/@a/video/7693578549004881170')
-    assert not already_downloaded(tmp_path, 'https://www.tiktok.com/@a/video/7693578549004881171')
-    assert not already_downloaded(tmp_path / 'missing', 'https://www.tiktok.com/@a/video/1')
+@pytest.mark.parametrize(('platform', 'filename', 'url', 'different_url'), [
+    ('TikTok', 'TikTok - titulo [7693578549004881170].mp4', 'https://www.tiktok.com/@a/video/7693578549004881170', 'https://www.tiktok.com/@a/video/7693578549004881171'),
+    ('Instagram', 'Instagram - titulo [ABC_123].mp4', 'https://www.instagram.com/reel/ABC_123/', 'https://www.instagram.com/reel/XYZ_999/'),
+    ('YouTube', 'YouTube - titulo [AbCdEfGhI_j].mp4', 'https://www.youtube.com/shorts/AbCdEfGhI_j', 'https://www.youtube.com/shorts/ZZZzzzzzzzz'),
+])
+def test_already_downloaded_matches_the_video_id_in_the_file_name(platform, filename, url, different_url, tmp_path):
+    (tmp_path / filename).write_bytes(b'x')
+    (tmp_path / 'notas [outro].txt').write_bytes(b'x')
+    assert already_downloaded(tmp_path, url)
+    assert not already_downloaded(tmp_path, different_url)
+    assert not already_downloaded(tmp_path / 'missing', url)
 
 
 class BatchHarness(DownloadControlsMixin):
