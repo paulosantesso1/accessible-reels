@@ -1402,6 +1402,20 @@
     }
     return list || null;
   }
+  // Controls that load more replies, only inside the comments. The options menu
+  // of a comment or video is also named "Mais", so a generic name is not enough.
+  function replyExpanders() {
+    const areas = [...document.querySelectorAll(
+      "[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']"
+    ), ...commentElements()];
+    const controls = new Set(areas.flatMap(area => [...area.querySelectorAll(
+      "[data-e2e*='view-more' i], [class*='DivMoreButton'], button, [role=button]"
+    )]));
+    return [...controls].filter(control => visible(control) && (
+      control.matches("[data-e2e*='view-more' i], [class*='DivMoreButton']") ||
+      /^(ver|view|mostrar|show|carregar|load)\b.*(mais|more|respost|repl)/i.test(controlName(control))
+    ));
+  }
   // Logged when Responder is not found: the shape of the comment, never its text or author.
   function describeCommentItem(item) {
     const shape = [];
@@ -1943,6 +1957,10 @@
         }
         let lastCount = accumulated.size;
         let staleCount = 0;
+        // The application accepts four clicks per command and one each is
+        // needed to open and close the panel; a fifth would only time out.
+        let expansionsLeft = 2;
+        const expanded = new WeakSet();
         const deadline = Date.now() + 18000;
         while (Date.now() < deadline && staleCount < 6) {
           if (container && container.scrollHeight > container.clientHeight) {
@@ -1960,11 +1978,11 @@
           if (items.length) {
             try { items[items.length - 1].scrollIntoView({block: "end", behavior: "instant"}); } catch (_) {}
           }
-          const moreBtns = [...document.querySelectorAll(
-            "button[data-e2e*='view-more' i], [data-e2e*='comment-more' i], button[aria-label*='mais' i], [class*='DivMoreButton']"
-          )].filter(visible);
-          for (const btn of moreBtns.slice(0, 3)) {
-            try { await trustedClick(btn, false); } catch (_) {}
+          const expanders = expansionsLeft > 0 ? replyExpanders() : [];
+          for (const button of expanders.filter(item => !expanded.has(item)).slice(0, expansionsLeft)) {
+            expanded.add(button);
+            expansionsLeft -= 1;
+            try { await trustedClick(button); } catch (_) {}
           }
           await sleep(500);
           for (const item of commentRows()) {

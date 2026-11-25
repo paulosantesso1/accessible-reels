@@ -1591,6 +1591,44 @@ def test_tiktok_reply_reports_the_shape_of_a_comment_without_responder(page):
     assert page.evaluate('window.typed') == []
 
 
+def test_tiktok_comments_only_expand_replies_and_stay_within_the_click_limit(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    page.evaluate('''() => {
+      window.pressed = [];
+      const add = (parent, name, text, aria) => {
+        const button = document.createElement('button');
+        if (aria) button.setAttribute('aria-label', aria);
+        button.textContent = text;
+        button.onclick = () => window.pressed.push(name);
+        parent.append(button);
+      };
+      // Unrelated controls of the page, and the options menu of each comment.
+      add(document.body, 'sidebar', 'Ver mais', 'Ver mais');
+      add(document.querySelector('article'), 'video options', '...', 'Mais opções');
+      for (const item of document.querySelectorAll('#comments > div')) {
+        add(item, 'comment options', '...', 'Mais opções');
+        add(item, 'replies', 'Ver mais 3 respostas');
+      }
+      const send = window.__accessibleTransport.runtime.sendMessage;
+      window.clicks = 0;
+      // The application accepts at most four clicks per command.
+      window.__accessibleTransport.runtime.sendMessage = message => {
+        if (message.type === 'accessible-reels-trusted-click' && ++window.clicks > 4) {
+          return new Promise(resolve => setTimeout(() => resolve({ok: false}), 5000));
+        }
+        return send(message);
+      };
+    }''')
+    started = time.monotonic()
+    result = page.evaluate("command('comments')")
+    assert time.monotonic() - started < 10
+    assert len(result['comments']) == 2
+    assert page.evaluate('window.pressed') == ['replies', 'replies']
+    assert page.evaluate('window.clicks') <= 4
+    assert not page.locator('#panel').is_visible()
+
+
 def test_tiktok_comment_ids_never_repeat_after_the_list_is_rebuilt(page):
     page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
     install_embedded_tiktok(page)
