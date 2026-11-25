@@ -1681,6 +1681,37 @@ def test_tiktok_reply_uses_the_responder_of_the_chosen_comment(page, index, auth
     assert page.evaluate('window.sentTo') == [author]
 
 
+def test_tiktok_reply_finds_a_comment_inside_a_collapsed_thread(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("""html => {
+      window.pressed = [];
+      const add = (parent, name, text, aria, onclick) => {
+        const button = document.createElement('button');
+        if (aria) button.setAttribute('aria-label', aria);
+        button.textContent = text;
+        button.onclick = () => { window.pressed.push(name); onclick?.(); };
+        parent.append(button);
+      };
+      // A control of the page that only mentions replies is not part of the comments.
+      add(document.body, 'unrelated', 'x', 'Ver reply no perfil');
+      add(document.querySelector('#comments > div'), 'expand', 'Ver mais 2 respostas', '', () =>
+        document.querySelector('#comments').insertAdjacentHTML('beforeend', html));
+      const send = window.__accessibleTransport.runtime.sendMessage;
+      window.clicks = 0;
+      // The application accepts at most seven clicks in this command.
+      window.__accessibleTransport.runtime.sendMessage = message =>
+        message.type === 'accessible-reels-trusted-click' && ++window.clicks > 7
+          ? Promise.resolve({ok: false, error: 'limite'}) : send(message);
+    }""", tiktok_comment_item('zoe', 'Escondido'))
+    result = page.evaluate("command('post_comment', {text: 'Concordo', replyTo: 'sumiu', replyText: 'zoe: Escondido'})")
+    assert result['ok'] is True, result
+    assert page.evaluate('window.sentTo') == ['zoe']
+    assert page.evaluate('window.pressed') == ['expand']
+    assert page.evaluate('window.clicks') <= 7
+
+
 def test_tiktok_reply_reports_the_shape_of_a_comment_without_responder(page):
     page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
     install_embedded_tiktok(page)

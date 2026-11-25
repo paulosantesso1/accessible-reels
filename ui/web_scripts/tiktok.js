@@ -389,6 +389,13 @@
     return style.display !== "none" && style.visibility !== "hidden" &&
       Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
   };
+  // Visible and not covered by anything at the point a click would land.
+  const onScreen = element => {
+    if (!visible(element)) return false;
+    const rect = element.getBoundingClientRect();
+    const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return Boolean(target && element.contains(target));
+  };
 
   function followState(element) {
     if (!element) return null;
@@ -602,13 +609,7 @@
   async function skipPhotoPosts(direction, deadline) {
     let post;
     while ((post = photoPost()) && Date.now() < deadline) {
-      let top = null;
-      for (let steady = 0; steady < 2 && photoPost() === post && Date.now() < deadline;) {
-        const current = Math.round(post.getBoundingClientRect().top);
-        steady = current === top ? steady + 1 : 0;
-        top = current;
-        await sleep(100);
-      }
+      await waitUntilSettled(Math.min(deadline, Date.now() + 1500), photoPost);
       if (photoPost() !== post) continue;
       scrollFeed(post, direction);
       const until = Math.min(deadline, Date.now() + 2500);
@@ -662,19 +663,19 @@
     lastActiveSource = selected?.currentSrc || "";
     return lastActiveVideo;
   }
-  // Resolves once the same video has kept its source and position for three
-  // consecutive samples, that is, the feed finished scrolling onto it.
-  async function waitUntilSettled(deadline) {
+  // Resolves once the same video (or other element) has kept its source and
+  // position for three consecutive samples: the feed finished scrolling onto it.
+  async function waitUntilSettled(deadline, current = activeVideo) {
     let previous = null;
     let steady = 0;
     while (Date.now() < deadline) {
-      const video = activeVideo();
-      const state = video && {
-        video,
-        top: Math.round(video.getBoundingClientRect().top),
-        source: video.currentSrc || video.getAttribute("src")
+      const element = current();
+      const state = element && {
+        element,
+        top: Math.round(element.getBoundingClientRect().top),
+        source: element.currentSrc || element.getAttribute("src")
       };
-      const same = state && previous && state.video === previous.video &&
+      const same = state && previous && state.element === previous.element &&
         state.top === previous.top && state.source === previous.source;
       steady = same ? steady + 1 : 0;
       previous = state;
@@ -1367,6 +1368,7 @@
   // through that item, so a reply always starts from the element that has Responder.
   const COMMENT_TEXT = "[data-e2e=comment-level-1], [data-e2e=comment-level-2], [data-e2e=comment-text]";
   const COMMENT_ITEM = "[data-e2e=comment-item], [data-e2e=comment-reply-item], [class*='CommentItemContainer'], [class*='CommentItem']";
+  const COMMENT_LIST = "[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']";
   const REPLY_CONTROL = "[data-e2e*='comment-reply' i], [data-e2e*='reply' i], button, [role=button]";
   let nextCommentId = 0;
   function isCommentActionOrInput(element) {
@@ -1448,7 +1450,7 @@
     }).filter(Boolean);
   }
   function commentScrollContainer() {
-    const list = document.querySelector("[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']");
+    const list = document.querySelector(COMMENT_LIST);
     if (list && list.scrollHeight > list.clientHeight + 20) return list;
     const first = document.querySelector(COMMENT_ITEM) || document.querySelector(COMMENT_TEXT);
     for (let p = first?.parentElement; p && p !== document.body; p = p.parentElement) {
@@ -1461,12 +1463,13 @@
     }
     return list || null;
   }
+  // The application limits the clicks of each command (MAX_CLICKS there), and
+  // the panel must still be opened and closed; a click over it would time out.
+  const MAX_EXPANSIONS = 2;
   // Controls that load more replies, only inside the comments. The options menu
   // of a comment or video is also named "Mais", so a generic name is not enough.
   function replyExpanders() {
-    const areas = [...document.querySelectorAll(
-      "[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']"
-    ), ...commentElements()];
+    const areas = [...document.querySelectorAll(COMMENT_LIST), ...commentElements()];
     const controls = new Set(areas.flatMap(area => [...area.querySelectorAll(
       "[data-e2e*='view-more' i], [class*='DivMoreButton'], button, [role=button]"
     )]));
@@ -1597,9 +1600,7 @@
     // A click on a covered button would land on the dialog, for example on one of its login options.
     button.scrollIntoView({block: "center", inline: "center"});
     await sleep(80);
-    const rect = button.getBoundingClientRect();
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    let dialog = hit && !button.contains(hit) && !hit.contains(button) ? blockingDialog() : null;
+    let dialog = onScreen(button) ? null : blockingDialog();
     if (dialog) throw blockingDialogError(dialog);
     await trustedClick(button);
     await sleep(1200);
@@ -1629,13 +1630,9 @@
         return itemClean.includes(cleanSearchText) || cleanSearchText.includes(itemClean);
       }));
     if (!target) {
-      const expandButtons = [...document.querySelectorAll(
-        "[data-e2e*='view-more' i], [data-e2e*='reply-list' i], [class*='ReplyContainer'] button, button[aria-label*='resposta' i], button[aria-label*='reply' i]"
-      )].filter(visible);
+      const expandButtons = replyExpanders().slice(0, MAX_EXPANSIONS);
       if (expandButtons.length > 0) {
-        for (const btn of expandButtons.slice(0, 5)) {
-          await trustedClick(btn, false);
-        }
+        for (const btn of expandButtons) await trustedClick(btn);
         await sleep(300);
         rows = commentRows();
         target = (searchId && rows.find(item => item.id === searchId)) ||
@@ -1858,13 +1855,6 @@
       // O TikTok mantém controles de vários itens no DOM. Escolher o primeiro
       // botão visível globalmente pode acionar o item errado (e fazer “anterior”
       // parecer outro “próximo”). Primeiro restringimos ao vídeo ativo.
-      const onScreen = element => {
-        if (!visible(element)) return false;
-        const rect = element.getBoundingClientRect();
-        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-        const target = document.elementFromPoint(x, y);
-        return target && element.contains(target);
-      };
       const triggerNavClick = async () => {
         const nearby = findNearVideo(selectors);
         const button = (onScreen(nearby) && nearby) ||
@@ -2053,9 +2043,7 @@
         }
         let lastCount = accumulated.size;
         let staleCount = 0;
-        // The application accepts four clicks per command and one each is
-        // needed to open and close the panel; a fifth would only time out.
-        let expansionsLeft = 2;
+        let expansionsLeft = MAX_EXPANSIONS;
         const expanded = new WeakSet();
         const deadline = Date.now() + 18000;
         while (Date.now() < deadline && staleCount < 6) {
@@ -2063,7 +2051,7 @@
             container.scrollTop = container.scrollHeight;
             container.dispatchEvent(new Event('scroll', {bubbles: true}));
           }
-          const candidates = document.querySelectorAll("[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']");
+          const candidates = document.querySelectorAll(COMMENT_LIST);
           for (const el of candidates) {
             if (el.scrollHeight > el.clientHeight + 20) {
               el.scrollTop = el.scrollHeight;
