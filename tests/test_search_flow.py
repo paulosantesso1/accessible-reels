@@ -23,15 +23,19 @@ def mock_frame():
     return frame
 
 
-def test_social_login_popup_is_opened_separately_from_the_platform_page():
+def test_social_login_popup_keeps_its_link_to_the_platform_page():
     frame = mock_frame()
     event = Mock()
     event.GetURL.return_value = 'https://accounts.google.com/o/oauth2/auth'
 
     MainFrame.new_window(frame, event)
-
-    frame._open_login_window.assert_called_once_with(event.GetURL())
+    # Skipping lets the WebView create the window, with window.opener.
+    event.Skip.assert_called_once()
+    frame._open_login_window.assert_not_called()
     event.GetEventObject().LoadURL.assert_not_called()
+
+    MainFrame.new_window_features(frame, event)
+    frame._open_login_window.assert_called_once_with(event.GetTargetWindowFeatures().GetChildWebView())
 
 
 def test_non_https_popup_is_not_opened():
@@ -41,6 +45,7 @@ def test_non_https_popup_is_not_opened():
 
     MainFrame.new_window(frame, event)
 
+    event.Skip.assert_not_called()
     frame._open_login_window.assert_not_called()
     frame.status.assert_called_once()
 

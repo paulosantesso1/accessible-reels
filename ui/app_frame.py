@@ -201,6 +201,12 @@ def comment_details_text(index, count, text):
     return f'Comentário {index} de {count}\n\n{str(text or "").strip() or "Sem texto disponível."}'
 
 
+# wxPython exposes these event types without their binders.
+EVT_WEBVIEW_NEWWINDOW_FEATURES = wx.PyEventBinder(html2.wxEVT_WEBVIEW_NEWWINDOW_FEATURES, 1)
+EVT_WEBVIEW_WINDOW_CLOSE_REQUESTED = wx.PyEventBinder(html2.wxEVT_WEBVIEW_WINDOW_CLOSE_REQUESTED, 1)
+# How long a login window that came back to the platform may take to hand the
+# result to the page and close itself.
+LOGIN_RETURN_GRACE_MS = 4000
 # Longest comment each network's web page accepts.
 COMMENT_LIMITS = {'TikTok': 150, 'Instagram': 2200, 'YouTube': 10000}
 REPLY_LABEL = 'Responder ao comentário selecionado'
@@ -1560,6 +1566,7 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 client.after_load = after_load
             self.clients[name] = client
             view.Bind(html2.EVT_WEBVIEW_NEWWINDOW, self.new_window)
+            view.Bind(EVT_WEBVIEW_NEWWINDOW_FEATURES, self.new_window_features)
             view.Bind(html2.EVT_WEBVIEW_LOADED, self._page_document_loaded)
             if not view.Create(self.panel):
                 logger.error('WebView2 Create failed: platform=%s', name)
@@ -1688,13 +1695,21 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
         if urlsplit(url).scheme != 'https':
             self.status('Esse link exige um aplicativo externo e não foi aberto.')
             return
-        self._open_login_window(url)
+        # Let the WebView create the window: new_window_features receives it.
+        event.Skip()
 
-    def _open_login_window(self, url):
-        """Open an OAuth popup without replacing the platform page that requested it."""
+    def new_window_features(self, event):
+        features = event.GetTargetWindowFeatures()
+        self._open_login_window(features.GetChildWebView() if features else None)
+
+    def _open_login_window(self, view):
+        """Open an OAuth popup without replacing the platform page that requested it.
+
+        The view comes from the page's own window.open: it keeps window.opener,
+        which Google and others need to hand the login back to the platform.
+        """
         platform = self._active_name
         popup = wx.Frame(self, title='Entrar na conta', size=(520, 760))
-        view = html2.WebView.New(backend=html2.WebViewBackendEdge)
         if view is None or not view.Create(popup):
             popup.Destroy()
             self.status('Não foi possível abrir a janela de login.')
@@ -1710,23 +1725,42 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                 loaded_event.Skip()
                 return
             if belongs_to_platform(view.GetCurrentURL(), platform):
-                state['finished'] = True
-                main_view = self.views.get(platform)
-                if main_view:
-                    main_view.Reload()
-                self.status('Login concluído na página. Atualizando a plataforma...')
-                wx.CallAfter(popup.Close)
+                # The page may still be handing the login to its opener, so
+                # closing at once could lose it.
+                wx.CallLater(LOGIN_RETURN_GRACE_MS, finish_if_still_open)
             loaded_event.Skip()
 
+        def finish_if_still_open():
+            if (state['finished'] or self._closing_app or popup not in self._login_windows
+                    or not belongs_to_platform(view.GetCurrentURL(), platform)):
+                return
+            state['finished'] = True
+            main_view = self.views.get(platform)
+            if main_view:
+                main_view.Reload()
+            self.status('Login concluído na página. Atualizando a plataforma...')
+            popup.Close()
+
+        def close_requested(close_event):
+            # The provider closes its window once the platform got the result.
+            if state['finished'] or self._closing_app:
+                return
+            state['finished'] = True
+            self.status('A janela de login foi encerrada. Aguarde a página atualizar ou use F6 para conferir.')
+            wx.CallAfter(lambda: popup.Close() if popup in self._login_windows else None)
+
         def closed(close_event):
+            state['finished'] = True
             self._login_windows.discard(popup)
             close_event.Skip()
 
         view.Bind(html2.EVT_WEBVIEW_NEWWINDOW, self.new_window)
+        view.Bind(EVT_WEBVIEW_NEWWINDOW_FEATURES, self.new_window_features)
         view.Bind(html2.EVT_WEBVIEW_LOADED, returned_to_platform)
+        view.Bind(EVT_WEBVIEW_WINDOW_CLOSE_REQUESTED, close_requested)
         popup.Bind(wx.EVT_CLOSE, closed)
         popup.Show()
-        view.LoadURL(url)
+        wx.CallAfter(lambda: view.SetFocus() if popup in self._login_windows else None)
 
     def dispatch(self, action, argument=None):
         if action == 'toggle_auto_scroll':
