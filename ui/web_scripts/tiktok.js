@@ -389,6 +389,13 @@
     return style.display !== "none" && style.visibility !== "hidden" &&
       Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
   };
+  // Visible and not covered by anything at the point a click would land.
+  const onScreen = element => {
+    if (!visible(element)) return false;
+    const rect = element.getBoundingClientRect();
+    const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return Boolean(target && element.contains(target));
+  };
 
   function followState(element) {
     if (!element) return null;
@@ -572,7 +579,60 @@
     } catch (_) {}
   }
 
+  // The item of the feed at the center of the screen, even under a dialog.
+  function feedItem() {
+    const x = innerWidth / 2, y = innerHeight / 2;
+    return [...document.querySelectorAll("[data-e2e='recommend-list-item-container'], article")].find(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.left <= x && rect.right > x && rect.top <= y && rect.bottom > y;
+    }) || null;
+  }
+  // The For You feed mixes photo posts with videos. A photo post has no video
+  // element, while the next video is often already mounted just below it.
+  function photoPost() {
+    const item = feedItem();
+    return item && !item.querySelector("video") && item.querySelector(
+      "[class*='DivPhotoPlayerContainer'], [class*='DivPhotoVideoContainer'], [class*='ImgPhotoSlide']"
+    ) ? item : null;
+  }
+  function scrollFeed(element, direction) {
+    let scroller = element.parentElement;
+    while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
+        /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+      scroller = scroller.parentElement;
+    }
+    scroller = scroller || document.scrollingElement;
+    if (scroller) scroller.scrollBy({top: direction * scroller.clientHeight, behavior: "smooth"});
+  }
+  // Scrolls past every photo post in the given direction. Scrolling, unlike the
+  // key and the buttons, also works while a TikTok dialog covers the feed.
+  async function skipPhotoPosts(direction, deadline) {
+    let post;
+    while ((post = photoPost()) && Date.now() < deadline) {
+      await waitUntilSettled(Math.min(deadline, Date.now() + 1500), photoPost);
+      if (photoPost() !== post) continue;
+      scrollFeed(post, direction);
+      const until = Math.min(deadline, Date.now() + 2500);
+      while (photoPost() === post && Date.now() < until) await sleep(100);
+      if (photoPost() === post) return false;
+    }
+    // TikTok mounts the video shortly after its item reaches the screen.
+    while (!activeVideo() && !photoPost() && Date.now() < deadline) await sleep(150);
+    await waitUntilSettled(Math.min(deadline, Date.now() + 1500));
+    return !photoPost() && Boolean(activeVideo());
+  }
   function activeVideo() {
+    if (photoPost()) return null;
+    // In the For You feed the current video can be transparent (painted on a
+    // canvas) while the next one already peeks into the screen, so being on the
+    // centered item decides, not being visible.
+    const item = feedItem();
+    if (item?.matches("[data-e2e='recommend-list-item-container']")) {
+      const own = [...item.querySelectorAll("video")];
+      lastActiveVideo = own.find(video => !video.paused && !video.ended) || own[0] || null;
+      lastActiveSource = lastActiveVideo?.currentSrc || "";
+      return lastActiveVideo;
+    }
     const width = Math.max(document.documentElement.clientWidth, innerWidth || 0);
     const height = Math.max(document.documentElement.clientHeight, innerHeight || 0);
     const videos = [...document.querySelectorAll("video")];
@@ -603,19 +663,19 @@
     lastActiveSource = selected?.currentSrc || "";
     return lastActiveVideo;
   }
-  // Resolves once the same video has kept its source and position for three
-  // consecutive samples, that is, the feed finished scrolling onto it.
-  async function waitUntilSettled(deadline) {
+  // Resolves once the same video (or other element) has kept its source and
+  // position for three consecutive samples: the feed finished scrolling onto it.
+  async function waitUntilSettled(deadline, current = activeVideo) {
     let previous = null;
     let steady = 0;
     while (Date.now() < deadline) {
-      const video = activeVideo();
-      const state = video && {
-        video,
-        top: Math.round(video.getBoundingClientRect().top),
-        source: video.currentSrc || video.getAttribute("src")
+      const element = current();
+      const state = element && {
+        element,
+        top: Math.round(element.getBoundingClientRect().top),
+        source: element.currentSrc || element.getAttribute("src")
       };
-      const same = state && previous && state.video === previous.video &&
+      const same = state && previous && state.element === previous.element &&
         state.top === previous.top && state.source === previous.source;
       steady = same ? steady + 1 : 0;
       previous = state;
@@ -1066,16 +1126,8 @@
       link = anchor ? canonicalLink(anchor.href) : "";
       if (link) break;
     }
-    if (!link) {
-      // Same caveat as the profile fallback above: exclude navigation/sidebar
-      // chrome, which can otherwise link to an unrelated suggested video.
-      const anchor = [...document.querySelectorAll("a[href*='/video/']")].find(element =>
-        visible(element) && !element.closest(
-          "nav, header, [role=navigation], [data-e2e*='nav' i], [data-e2e*='sidebar' i], " +
-          "[data-e2e*='sidenav' i], [data-e2e*='top-bar' i]"
-        ));
-      link = anchor ? canonicalLink(anchor.href) : "";
-    }
+    // Never search the whole document for a video link: pages list other videos
+    // too, and a wrong link is worse than none (copying then uses Share).
     link ||= canonicalLink(location.href);
     if (!link) {
       let handle = profile?.handle || "";
@@ -1316,6 +1368,7 @@
   // through that item, so a reply always starts from the element that has Responder.
   const COMMENT_TEXT = "[data-e2e=comment-level-1], [data-e2e=comment-level-2], [data-e2e=comment-text]";
   const COMMENT_ITEM = "[data-e2e=comment-item], [data-e2e=comment-reply-item], [class*='CommentItemContainer'], [class*='CommentItem']";
+  const COMMENT_LIST = "[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']";
   const REPLY_CONTROL = "[data-e2e*='comment-reply' i], [data-e2e*='reply' i], button, [role=button]";
   let nextCommentId = 0;
   function isCommentActionOrInput(element) {
@@ -1397,7 +1450,7 @@
     }).filter(Boolean);
   }
   function commentScrollContainer() {
-    const list = document.querySelector("[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']");
+    const list = document.querySelector(COMMENT_LIST);
     if (list && list.scrollHeight > list.clientHeight + 20) return list;
     const first = document.querySelector(COMMENT_ITEM) || document.querySelector(COMMENT_TEXT);
     for (let p = first?.parentElement; p && p !== document.body; p = p.parentElement) {
@@ -1409,6 +1462,21 @@
       }
     }
     return list || null;
+  }
+  // The application limits the clicks of each command (MAX_CLICKS there), and
+  // the panel must still be opened and closed; a click over it would time out.
+  const MAX_EXPANSIONS = 2;
+  // Controls that load more replies, only inside the comments. The options menu
+  // of a comment or video is also named "Mais", so a generic name is not enough.
+  function replyExpanders() {
+    const areas = [...document.querySelectorAll(COMMENT_LIST), ...commentElements()];
+    const controls = new Set(areas.flatMap(area => [...area.querySelectorAll(
+      "[data-e2e*='view-more' i], [class*='DivMoreButton'], button, [role=button]"
+    )]));
+    return [...controls].filter(control => visible(control) && (
+      control.matches("[data-e2e*='view-more' i], [class*='DivMoreButton']") ||
+      /^(ver|view|mostrar|show|carregar|load)\b.*(mais|more|respost|repl)/i.test(controlName(control))
+    ));
   }
   // Logged when Responder is not found: the shape of the comment, never its text or author.
   function describeCommentItem(item) {
@@ -1508,11 +1576,36 @@
       .replace(/^\d+\s+de\s+\d+:\s*/i, "")
       .trim();
   }
+  // A TikTok dialog (login, interests) on screen, other than the comments themselves.
+  function blockingDialog() {
+    return [...document.querySelectorAll("[role=dialog], [aria-modal=true], [data-e2e=login-modal]")].find(element => {
+      const rect = element.getBoundingClientRect();
+      return visible(element) && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth &&
+        !element.querySelector(`${COMMENT_ITEM}, ${COMMENT_TEXT}`);
+    }) || null;
+  }
+  function blockingDialogError(dialog) {
+    if (dialog.matches("[data-e2e=login-modal], #loginModalContentContainer") ||
+        dialog.querySelector("[data-e2e=login-modal], #loginModalContentContainer") ||
+        /(entrar no|criar conta no|log in to|sign up for) tiktok/i.test(dialog.innerText)) {
+      return new Error("O TikTok pediu login para mostrar os comentários. Use F6 para entrar na sua conta.");
+    }
+    const title = normalizedText(String(dialog.innerText || "").trim().split("\n")[0]).slice(0, 60);
+    return new Error("Uma janela do TikTok está cobrindo a página" + (title ? `: “${title}”` : "") +
+      ". Use F6 para fechá-la na página e tente de novo.");
+  }
   async function openComments(video) {
     const button = findNearVideo(COMMENT_SELECTORS);
     if (!button) throw new Error("Não foi possível localizar o botão de comentários.");
+    // A click on a covered button would land on the dialog, for example on one of its login options.
+    button.scrollIntoView({block: "center", inline: "center"});
+    await sleep(80);
+    let dialog = onScreen(button) ? null : blockingDialog();
+    if (dialog) throw blockingDialogError(dialog);
     await trustedClick(button);
     await sleep(1200);
+    dialog = commentRows().length ? null : blockingDialog();
+    if (dialog) throw blockingDialogError(dialog);
     commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
     return commentRows();
   }
@@ -1537,13 +1630,9 @@
         return itemClean.includes(cleanSearchText) || cleanSearchText.includes(itemClean);
       }));
     if (!target) {
-      const expandButtons = [...document.querySelectorAll(
-        "[data-e2e*='view-more' i], [data-e2e*='reply-list' i], [class*='ReplyContainer'] button, button[aria-label*='resposta' i], button[aria-label*='reply' i]"
-      )].filter(visible);
+      const expandButtons = replyExpanders().slice(0, MAX_EXPANSIONS);
       if (expandButtons.length > 0) {
-        for (const btn of expandButtons.slice(0, 5)) {
-          await trustedClick(btn, false);
-        }
+        for (const btn of expandButtons) await trustedClick(btn);
         await sleep(300);
         rows = commentRows();
         target = (searchId && rows.find(item => item.id === searchId)) ||
@@ -1656,6 +1745,13 @@
     return {results: [...state.items.values()].slice(0, LIBRARY_LIMIT), library: kind, done};
   }
 
+  async function leavePhotoPosts(action) {
+    const found = await skipPhotoPosts(action === "next" ? 1 : -1, Date.now() + 10000);
+    stabilizeAudio();
+    if (!found) throw new Error("Só há publicações de fotos nessa direção. Tente novamente ou use o outro sentido.");
+    return snapshot();
+  }
+
   async function execute(action, argument) {
     if (action === "own_profile") return ownProfile();
     if (action === "library_step") return libraryStep(argument);
@@ -1665,13 +1761,17 @@
     // false failure while TikTok starts it in the background.
     if (["play", "refresh_info"].includes(action)) {
       const deadline = Date.now() + 8000;
-      while (!activeVideo() && Date.now() < deadline) await sleep(150);
+      while (!activeVideo() && !photoPost() && Date.now() < deadline) await sleep(150);
     }
     if (action === "profile_follow") {
       return profileFollowAction(Boolean(argument?.toggle), argument?.profile_url || "");
     }
     const video = activeVideo();
     if (!["diagnostics", "collect_search_results", "close_comments", "toggle_live_chat", "read_live_chat"].includes(action) && !video) {
+      if (photoPost()) {
+        if (action === "next" || action === "previous") return leavePhotoPosts(action);
+        throw new Error("Esta é uma publicação de fotos. Use próximo ou anterior para ir a um vídeo.");
+      }
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") {
@@ -1755,13 +1855,6 @@
       // O TikTok mantém controles de vários itens no DOM. Escolher o primeiro
       // botão visível globalmente pode acionar o item errado (e fazer “anterior”
       // parecer outro “próximo”). Primeiro restringimos ao vídeo ativo.
-      const onScreen = element => {
-        if (!visible(element)) return false;
-        const rect = element.getBoundingClientRect();
-        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-        const target = document.elementFromPoint(x, y);
-        return target && element.contains(target);
-      };
       const triggerNavClick = async () => {
         const nearby = findNearVideo(selectors);
         const button = (onScreen(nearby) && nearby) ||
@@ -1769,18 +1862,7 @@
         // Scrolling a navigation button into the center can move a scroll-snap
         // feed back onto the current item before the click even reaches TikTok.
         if (button) await trustedClick(button, false);
-        else {
-          let scroller = video.parentElement;
-          while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
-              /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
-            scroller = scroller.parentElement;
-          }
-          scroller = scroller || document.scrollingElement;
-          if (scroller) scroller.scrollBy({
-            top: (action === "next" ? 1 : -1) * scroller.clientHeight,
-            behavior: "smooth"
-          });
-        }
+        else scrollFeed(video, action === "next" ? 1 : -1);
       };
       const moved = current => current && (current !== video ||
         (current.currentSrc || current.getAttribute("src")) !== source ||
@@ -1789,14 +1871,21 @@
       // that break the selectors/scroll fallback above. Give it a short
       // window before falling back, so a working key press isn't slowed
       // down by also clicking (which could then double-advance).
+      const startItem = feedItem();
       await trustedKeyPress(action === "next" ? "ArrowDown" : "ArrowUp");
       let triedClick = false;
       const deadline = Date.now() + 4500;
       while (Date.now() < deadline) {
         await sleep(150);
         stabilizeAudio();
+        if (photoPost()) {
+          const info = await leavePhotoPosts(action);
+          if (moved(activeVideo())) return info;
+          break;
+        }
         if (!moved(activeVideo())) {
-          if (!triedClick && Date.now() >= deadline - 3000) {
+          // Once on another item, its video is only still loading.
+          if (!triedClick && Date.now() >= deadline - 3000 && feedItem() === startItem) {
             triedClick = true;
             await triggerNavClick();
           }
@@ -1807,6 +1896,7 @@
         // detalhes depois que o feed para de se mexer.
         await waitUntilSettled(deadline + 1500);
         stabilizeAudio();
+        if (photoPost()) continue;
         if (moved(activeVideo())) return snapshot();
       }
       throw new Error("O TikTok não mudou de vídeo. Tente novamente ou use F6 para acessar a página.");
@@ -1942,8 +2032,10 @@
         "Não foi possível localizar o botão Favoritar.")};
     }
     if (action === "comments") {
+      // Outside the try: when the panel did not open there is nothing to close,
+      // and closing would press the close button of some other dialog.
+      await openComments(video);
       try {
-        await openComments(video);
         const container = commentScrollContainer();
         const accumulated = new Map();
         for (const item of commentRows()) {
@@ -1951,13 +2043,15 @@
         }
         let lastCount = accumulated.size;
         let staleCount = 0;
+        let expansionsLeft = MAX_EXPANSIONS;
+        const expanded = new WeakSet();
         const deadline = Date.now() + 18000;
         while (Date.now() < deadline && staleCount < 6) {
           if (container && container.scrollHeight > container.clientHeight) {
             container.scrollTop = container.scrollHeight;
             container.dispatchEvent(new Event('scroll', {bubbles: true}));
           }
-          const candidates = document.querySelectorAll("[data-e2e='comment-list'], [class*='CommentListContainer'], [class*='CommentList']");
+          const candidates = document.querySelectorAll(COMMENT_LIST);
           for (const el of candidates) {
             if (el.scrollHeight > el.clientHeight + 20) {
               el.scrollTop = el.scrollHeight;
@@ -1968,11 +2062,11 @@
           if (items.length) {
             try { items[items.length - 1].scrollIntoView({block: "end", behavior: "instant"}); } catch (_) {}
           }
-          const moreBtns = [...document.querySelectorAll(
-            "button[data-e2e*='view-more' i], [data-e2e*='comment-more' i], button[aria-label*='mais' i], [class*='DivMoreButton']"
-          )].filter(visible);
-          for (const btn of moreBtns.slice(0, 3)) {
-            try { await trustedClick(btn, false); } catch (_) {}
+          const expanders = expansionsLeft > 0 ? replyExpanders() : [];
+          for (const button of expanders.filter(item => !expanded.has(item)).slice(0, expansionsLeft)) {
+            expanded.add(button);
+            expansionsLeft -= 1;
+            try { await trustedClick(button); } catch (_) {}
           }
           await sleep(500);
           for (const item of commentRows()) {
@@ -2001,8 +2095,8 @@
     if (action === "post_comment") {
       const text = normalizedText(typeof argument === "object" ? argument.text : String(argument || ""));
       if (!text) throw new Error("Digite um comentário antes de publicar.");
+      await openComments(video);
       try {
-        await openComments(video);
         const replyTo = typeof argument === "object" ? argument.replyTo : "";
         const editors = () => [...document.querySelectorAll(
           "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"

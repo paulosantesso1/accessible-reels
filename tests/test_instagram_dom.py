@@ -378,6 +378,30 @@ def test_instagram_comments_and_explicit_post(page):
     assert not page.locator('[role="dialog"]').is_visible()
 
 
+INSTAGRAM_LOGIN_PROMPT = '''
+  Fazer um comentário<br>Compartilhe sua opinião sobre o post.<br>
+  Ao continuar, você concorda com os Termos de Uso.
+  <button onclick="this.parentElement.style.display='none'">Fechar</button>
+  <button>Cadastre-se</button><button>Entrar</button>'''
+
+
+def test_instagram_login_prompt_is_not_read_as_an_empty_comment_list(page):
+    page.evaluate("html => { document.querySelector('[role=dialog]').innerHTML = html; }", INSTAGRAM_LOGIN_PROMPT)
+    result = command(page, "comments")
+    assert result["ok"] is False
+    assert "login" in result["error"]
+    # The prompt is dismissed so it does not cover the Reel.
+    assert not page.locator('[role="dialog"]').is_visible()
+    assert page.evaluate("window.igClicks").count("Entrar") == 0
+
+
+def test_instagram_comments_panel_with_a_login_button_is_still_read(page):
+    page.evaluate("document.querySelector('[role=dialog]').insertAdjacentHTML('beforeend', '<button>Entrar</button>')")
+    result = command(page, "comments")
+    assert result["ok"] is True
+    assert len(result["comments"]) == 2
+
+
 def test_instagram_comment_is_typed_by_the_application_and_confirmed(page):
     result = command(page, "post_comment", {"text": "Comentário novo"})
     assert result == {"ok": True}

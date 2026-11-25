@@ -124,6 +124,24 @@ def test_key_message_is_ignored_outside_navigation_commands(action):
     key_press.assert_not_called()
 
 
+@pytest.mark.parametrize('action, limit', [('comments', 4), ('toggle_like', 4), ('post_comment', 7)])
+def test_clicks_of_one_command_are_limited(action, limit):
+    client = make_client()
+    client.view.GetClientSize.return_value = (800, 600)
+    client.pending = {'token': 'token', 'clicks': set(), 'action': action}
+
+    with patch('ui.webview_client.webview_native.click') as click:
+        for identifier in range(1, 12):
+            event = Mock()
+            event.GetURL.return_value = 'https://www.tiktok.com/'
+            event.GetString.return_value = json.dumps({
+                'type': 'click', 'token': 'token', 'id': identifier, 'x': 10, 'y': 10,
+            })
+            client._message(event)
+
+    assert click.call_count == limit
+
+
 def test_key_message_rejects_keys_outside_the_arrow_allowlist():
     client = make_client()
     client.pending = {'token': 'token', 'clicks': set(), 'action': 'next'}

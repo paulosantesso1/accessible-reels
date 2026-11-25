@@ -197,13 +197,19 @@ def test_replace_minimize_with_offscreen_moves_window_and_remembers_position(fra
 
     with patch.object(frame, 'IsIconized', return_value=True), \
          patch.object(frame, 'GetPosition', return_value=wx.Point(50, 60)), \
-         patch.object(frame, 'Iconize') as iconize, \
+         patch('ui.app_frame.ctypes.windll.user32.ShowWindow',
+               side_effect=lambda *_: frame._restore_offscreen_position()) as show, \
          patch.object(frame, 'SetPosition') as set_position:
         frame._replace_minimize_with_offscreen()
 
-    iconize.assert_called_once_with(False)
-    set_position.assert_called_once_with(wx.Point(-32000, -32000))
+    # Even if Windows activates the window meanwhile, the position is kept.
+    show.assert_called_once()
+    assert set_position.call_args.args == (wx.Point(-32000, -32000),)
     assert frame._restore_position == wx.Point(50, 60)
+    with patch.object(frame, 'SetPosition') as set_position:
+        frame._restore_offscreen_position()
+    set_position.assert_called_once_with(wx.Point(50, 60))
+    assert frame._restore_position is None
 
 def test_replace_minimize_with_offscreen_is_noop_once_restored(frame):
     with patch.object(frame, 'IsIconized', return_value=False), \

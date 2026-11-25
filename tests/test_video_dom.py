@@ -1,18 +1,17 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import sync_playwright
 
 from tiktok.video_controls import TikTokVideoController, VideoControlError
-from tiktok.window_controller import playwright_driver_pid
 
 
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as playwright:
-        assert playwright_driver_pid(playwright) is not None
         browser = playwright.chromium.launch(headless=True)
         yield browser
         browser.close()
@@ -521,6 +520,25 @@ def test_embedded_copy_link_uses_active_author_and_video_id_without_anchors(page
     assert result['link'] == 'https://www.tiktok.com/@correto/video/222'
 
 
+def test_embedded_link_is_never_taken_from_another_video_on_the_page(page):
+    # A direct video page lists other videos outside the active one's own card.
+    load_tiktok_page(page, '/@ana/video/222', '''
+      <article><span data-e2e="browse-username">ana</span>
+        <video id="active" style="width:300px;height:200px"></video></article>
+      <section><a href="/@outra/video/111">Outro vídeo</a></section>''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('refresh_info')")['link'] == 'https://www.tiktok.com/@ana/video/222'
+    assert page.evaluate("command('copy_link')")['link'] == 'https://www.tiktok.com/@ana/video/222'
+
+
+def test_embedded_link_stays_empty_instead_of_naming_another_video(page):
+    load_tiktok_page(page, '/foryou', '''
+      <article><video id="active" style="width:300px;height:200px"></video></article>
+      <section><a href="/@outra/video/111">Outro vídeo</a></section>''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('refresh_info')")['link'] == ''
+
+
 def test_embedded_copy_link_uses_current_tiktok_feed_wrapper_id(page):
     page.set_content('''
       <article>
@@ -632,6 +650,115 @@ def test_embedded_navigation_scrolls_feed_container(page, action, start, end):
     assert page.evaluate("action => command(action)", action)['ok'] is True
     page.wait_for_function("top => Math.abs(document.querySelector('#feed').scrollTop - top) < 2", arg=end)
     assert page.evaluate("window.scrollY") == 0
+
+
+def load_photo_feed(page, kinds, start):
+    """A For You feed mixing videos and photo posts (which have no video element)."""
+    items = ''.join(
+        f'''<article data-e2e="recommend-list-item-container" id="item{index}">
+          <a href="https://www.tiktok.com/@autor{index}/video/{100 + index}" data-e2e="video-author-uniqueid">autor{index}</a>
+          <video id="{'active' if index == start else f'v{index}'}"></video></article>''' if kind == 'video' else
+        f'''<article data-e2e="recommend-list-item-container" id="item{index}">
+          <div class="css-1-7937d88b--DivPhotoPlayerContainer"><img class="css-2--ImgPhotoSlide" alt=""></div></article>'''
+        for index, kind in enumerate(kinds))
+    page.set_content('''<style>body {margin:0}
+      #feed {height:600px;overflow-y:scroll;scroll-snap-type:y mandatory}
+      article {height:590px;scroll-snap-align:start} video {width:300px;height:500px}
+      </style><div id="feed">''' + items + '</div>')
+    install_embedded_tiktok(page)
+    page.eval_on_selector('#feed', '(feed, index) => { feed.scrollTop = index * 590; }', start)
+
+
+def centered_item(page):
+    return page.evaluate("""() => [...document.querySelectorAll('article')].find(item => {
+      const rect = item.getBoundingClientRect();
+      return rect.top <= 300 && rect.bottom > 300;
+    }).id""")
+
+
+@pytest.mark.parametrize('kinds, start, action, end', [
+    (['video', 'photo', 'video'], 0, 'next', 2),
+    (['video', 'photo', 'photo', 'video'], 0, 'next', 3),
+    (['video', 'photo', 'video'], 2, 'previous', 0),
+])
+def test_tiktok_navigation_skips_photo_posts(page, kinds, start, action, end):
+    load_photo_feed(page, kinds, start)
+    result = page.evaluate('action => command(action)', action)
+    assert result['ok'] is True, result
+    assert result['author'] == f'@autor{end}'
+    assert result['link'].endswith(f'/@autor{end}/video/{100 + end}')
+    assert centered_item(page) == f'item{end}'
+
+
+@pytest.mark.parametrize('action, end', [('next', 2), ('previous', 0)])
+def test_tiktok_navigation_leaves_a_photo_post_already_on_screen(page, action, end):
+    load_photo_feed(page, ['video', 'photo', 'video'], 1)
+    result = page.evaluate('action => command(action)', action)
+    assert result['ok'] is True, result
+    assert result['author'] == f'@autor{end}'
+    assert centered_item(page) == f'item{end}'
+
+
+def test_tiktok_photo_post_is_not_described_as_the_next_video(page):
+    # The next video already peeks into the screen below the photo post.
+    load_photo_feed(page, ['video', 'photo', 'video'], 1)
+    for action in ('refresh_info', 'copy_link', 'toggle'):
+        result = page.evaluate('action => command(action)', action)
+        assert result['ok'] is False
+        assert 'publicação de fotos' in result['error']
+
+
+def test_tiktok_navigation_explains_when_only_photo_posts_are_left(page):
+    load_photo_feed(page, ['video', 'photo', 'photo'], 0)
+    started = time.monotonic()
+    result = page.evaluate("command('next')")
+    assert result['ok'] is False
+    assert 'publicações de fotos' in result['error']
+    # The application gives up on a command after 20 seconds.
+    assert time.monotonic() - started < 18
+
+
+def test_tiktok_transparent_current_video_is_not_replaced_by_the_next_one(page):
+    # TikTok may paint the current video on a canvas and make its element
+    # transparent, while the preloaded next video already peeks into the screen.
+    load_photo_feed(page, ['video', 'video'], 0)
+    page.evaluate("document.querySelector('#active').style.opacity = '0'")
+    info = page.evaluate("command('refresh_info')")
+    assert info['link'].endswith('/@autor0/video/100')
+    assert page.evaluate("command('toggle')") == {'ok': True, 'paused': True}
+    assert page.evaluate("document.querySelector('#active').testPaused") is True
+    assert page.evaluate("document.querySelector('#v1').testPaused") is True
+
+
+def test_tiktok_next_is_not_confirmed_while_the_feed_stays_on_the_same_item(page):
+    load_photo_feed(page, ['video', 'video'], 0)
+    page.evaluate("""() => {
+      // The current video turns transparent, but the feed never moves.
+      document.querySelector('#feed').scrollBy = () => {};
+      document.addEventListener('keydown', () => {
+        document.querySelector('#active').style.opacity = '0';
+      });
+    }""")
+    result = page.evaluate("command('next')")
+    assert result['ok'] is False
+    assert centered_item(page) == 'item0'
+
+
+def test_tiktok_next_waits_for_a_late_video_instead_of_advancing_twice(page):
+    load_photo_feed(page, ['video', 'video', 'video'], 0)
+    page.evaluate("""() => {
+      const late = document.querySelector('#v1');
+      const item = document.querySelector('#item1');
+      late.remove();
+      document.addEventListener('keydown', () => {
+        document.querySelector('#feed').scrollTop = 590;
+        setTimeout(() => item.append(late), 2200);
+      }, {once: true});
+    }""")
+    result = page.evaluate("command('next')")
+    assert result['ok'] is True, result
+    assert result['link'].endswith('/@autor1/video/101')
+    assert centered_item(page) == 'item1'
 
 
 @pytest.mark.parametrize("action, key", [("next", "ArrowDown"), ("previous", "ArrowUp")])
@@ -1554,6 +1681,37 @@ def test_tiktok_reply_uses_the_responder_of_the_chosen_comment(page, index, auth
     assert page.evaluate('window.sentTo') == [author]
 
 
+def test_tiktok_reply_finds_a_comment_inside_a_collapsed_thread(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    install_trusted_typing(page)
+    page.evaluate("""html => {
+      window.pressed = [];
+      const add = (parent, name, text, aria, onclick) => {
+        const button = document.createElement('button');
+        if (aria) button.setAttribute('aria-label', aria);
+        button.textContent = text;
+        button.onclick = () => { window.pressed.push(name); onclick?.(); };
+        parent.append(button);
+      };
+      // A control of the page that only mentions replies is not part of the comments.
+      add(document.body, 'unrelated', 'x', 'Ver reply no perfil');
+      add(document.querySelector('#comments > div'), 'expand', 'Ver mais 2 respostas', '', () =>
+        document.querySelector('#comments').insertAdjacentHTML('beforeend', html));
+      const send = window.__accessibleTransport.runtime.sendMessage;
+      window.clicks = 0;
+      // The application accepts at most seven clicks in this command.
+      window.__accessibleTransport.runtime.sendMessage = message =>
+        message.type === 'accessible-reels-trusted-click' && ++window.clicks > 7
+          ? Promise.resolve({ok: false, error: 'limite'}) : send(message);
+    }""", tiktok_comment_item('zoe', 'Escondido'))
+    result = page.evaluate("command('post_comment', {text: 'Concordo', replyTo: 'sumiu', replyText: 'zoe: Escondido'})")
+    assert result['ok'] is True, result
+    assert page.evaluate('window.sentTo') == ['zoe']
+    assert page.evaluate('window.pressed') == ['expand']
+    assert page.evaluate('window.clicks') <= 7
+
+
 def test_tiktok_reply_reports_the_shape_of_a_comment_without_responder(page):
     page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
     install_embedded_tiktok(page)
@@ -1569,6 +1727,99 @@ def test_tiktok_reply_reports_the_shape_of_a_comment_without_responder(page):
     # Neither the comment's text nor its author goes to the log.
     assert not any('Primeiro' in line or 'ana' in line.split('|') for line in shape)
     assert page.evaluate('window.typed') == []
+
+
+def cover_tiktok_page(page, attributes, text):
+    """A TikTok dialog over the whole page, as the login and the interests ones."""
+    page.evaluate("""([attributes, text]) => {
+      const cover = document.createElement('div');
+      cover.id = 'cover';
+      cover.style.cssText = 'position:fixed;inset:0;background:white;z-index:99';
+      cover.innerHTML = `<div role="dialog" ${attributes} style="width:400px;height:300px">
+        <h2>${text}</h2><button aria-label="Fechar">X</button></div>`;
+      cover.onclick = () => { window.coverClicks = (window.coverClicks || 0) + 1; };
+      document.body.append(cover);
+    }""", [attributes, text])
+
+
+@pytest.mark.parametrize('attributes, text, expected', [
+    ('data-e2e="login-modal" id="loginModalContentContainer"', 'Entrar no TikTok', 'pediu login'),
+    ('', 'O que você gostaria de assistir no TikTok?', 'O que você gostaria de assistir no TikTok?'),
+])
+def test_tiktok_comments_report_a_dialog_covering_the_page(page, attributes, text, expected):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    cover_tiktok_page(page, attributes, text)
+    for action, argument in (('comments', None), ('post_comment', {'text': 'Não enviar'})):
+        result = page.evaluate("([action, argument]) => command(action, argument)", [action, argument])
+        assert result['ok'] is False
+        assert expected in result['error'] and 'F6' in result['error']
+    # Nothing in the dialog was pressed by mistake, not even its close button.
+    assert page.evaluate('window.coverClicks || 0') == 0
+
+
+def test_tiktok_comments_report_a_login_dialog_opened_by_the_click(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    page.evaluate("""() => {
+      document.querySelector('[data-e2e=comment-icon]').onclick = () => {
+        const dialog = document.createElement('div');
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('data-e2e', 'login-modal');
+        dialog.style.cssText = 'position:fixed;inset:0;background:white';
+        dialog.textContent = 'Entrar no TikTok';
+        document.body.append(dialog);
+      };
+    }""")
+    result = page.evaluate("command('comments')")
+    assert result['ok'] is False
+    assert 'pediu login' in result['error']
+
+
+def test_tiktok_dialog_outside_the_screen_does_not_hide_the_comments(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+      '<div role="dialog" data-e2e="login-modal" style="position:fixed;top:2000px;width:300px;height:60px">Entrar no TikTok</div>')""")
+    assert len(page.evaluate("command('comments')")['comments']) == 2
+
+
+def test_tiktok_comments_only_expand_replies_and_stay_within_the_click_limit(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    page.evaluate('''() => {
+      window.pressed = [];
+      const add = (parent, name, text, aria) => {
+        const button = document.createElement('button');
+        if (aria) button.setAttribute('aria-label', aria);
+        button.textContent = text;
+        button.onclick = () => window.pressed.push(name);
+        parent.append(button);
+      };
+      // Unrelated controls of the page, and the options menu of each comment.
+      add(document.body, 'sidebar', 'Ver mais', 'Ver mais');
+      add(document.querySelector('article'), 'video options', '...', 'Mais opções');
+      for (const item of document.querySelectorAll('#comments > div')) {
+        add(item, 'comment options', '...', 'Mais opções');
+        add(item, 'replies', 'Ver mais 3 respostas');
+      }
+      const send = window.__accessibleTransport.runtime.sendMessage;
+      window.clicks = 0;
+      // The application accepts at most four clicks per command.
+      window.__accessibleTransport.runtime.sendMessage = message => {
+        if (message.type === 'accessible-reels-trusted-click' && ++window.clicks > 4) {
+          return new Promise(resolve => setTimeout(() => resolve({ok: false}), 5000));
+        }
+        return send(message);
+      };
+    }''')
+    started = time.monotonic()
+    result = page.evaluate("command('comments')")
+    assert time.monotonic() - started < 10
+    assert len(result['comments']) == 2
+    assert page.evaluate('window.pressed') == ['replies', 'replies']
+    assert page.evaluate('window.clicks') <= 4
+    assert not page.locator('#panel').is_visible()
 
 
 def test_tiktok_comment_ids_never_repeat_after_the_list_is_rebuilt(page):

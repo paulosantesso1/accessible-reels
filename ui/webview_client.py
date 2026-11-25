@@ -20,6 +20,11 @@ ACTIONS = {'next', 'previous', 'toggle', 'play', 'seek', 'author', 'description'
            'close_comments', 'toggle_like', 'toggle_favorite', 'toggle_follow', 'not_interested',
            'profile_follow', 'collect_search_results', 'download_link', 'diagnostics', 'own_profile', 'library_step',
            'post_comment', 'toggle_live_chat', 'read_live_chat'}
+# Clicks and key presses a page may ask for in one command. Replying opens the
+# comments, may expand two threads, then presses Responder, the field, Publicar
+# and the close button.
+MAX_CLICKS = 4
+MAX_CLICKS_BY_ACTION = {'post_comment': 7}
 # Longest comment any supported network accepts; anything longer is refused before typing.
 MAX_COMMENT_LENGTH = 10000
 logger = get_logger()
@@ -419,7 +424,7 @@ class WebViewClient:
                 key = value.get('key')
                 if key not in ('ArrowDown', 'ArrowUp') or self.pending['action'] not in ('next', 'previous'):
                     return
-            if len(self.pending['clicks']) >= 4:
+            if len(self.pending['clicks']) >= MAX_CLICKS_BY_ACTION.get(self.pending['action'], MAX_CLICKS):
                 return
         except (TypeError, ValueError, AttributeError):
             return
