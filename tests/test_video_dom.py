@@ -720,6 +720,49 @@ def test_tiktok_navigation_explains_when_only_photo_posts_are_left(page):
     assert time.monotonic() - started < 18
 
 
+def test_tiktok_transparent_current_video_is_not_replaced_by_the_next_one(page):
+    # TikTok may paint the current video on a canvas and make its element
+    # transparent, while the preloaded next video already peeks into the screen.
+    load_photo_feed(page, ['video', 'video'], 0)
+    page.evaluate("document.querySelector('#active').style.opacity = '0'")
+    info = page.evaluate("command('refresh_info')")
+    assert info['link'].endswith('/@autor0/video/100')
+    assert page.evaluate("command('toggle')") == {'ok': True, 'paused': True}
+    assert page.evaluate("document.querySelector('#active').testPaused") is True
+    assert page.evaluate("document.querySelector('#v1').testPaused") is True
+
+
+def test_tiktok_next_is_not_confirmed_while_the_feed_stays_on_the_same_item(page):
+    load_photo_feed(page, ['video', 'video'], 0)
+    page.evaluate("""() => {
+      // The current video turns transparent, but the feed never moves.
+      document.querySelector('#feed').scrollBy = () => {};
+      document.addEventListener('keydown', () => {
+        document.querySelector('#active').style.opacity = '0';
+      });
+    }""")
+    result = page.evaluate("command('next')")
+    assert result['ok'] is False
+    assert centered_item(page) == 'item0'
+
+
+def test_tiktok_next_waits_for_a_late_video_instead_of_advancing_twice(page):
+    load_photo_feed(page, ['video', 'video', 'video'], 0)
+    page.evaluate("""() => {
+      const late = document.querySelector('#v1');
+      const item = document.querySelector('#item1');
+      late.remove();
+      document.addEventListener('keydown', () => {
+        document.querySelector('#feed').scrollTop = 590;
+        setTimeout(() => item.append(late), 2200);
+      }, {once: true});
+    }""")
+    result = page.evaluate("command('next')")
+    assert result['ok'] is True, result
+    assert result['link'].endswith('/@autor1/video/101')
+    assert centered_item(page) == 'item1'
+
+
 @pytest.mark.parametrize("action, key", [("next", "ArrowDown"), ("previous", "ArrowUp")])
 def test_embedded_navigation_uses_native_key_press_before_any_button(page, action, key):
     # No navigation button at all: only a real key press (which the mocked

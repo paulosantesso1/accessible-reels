@@ -572,14 +572,18 @@
     } catch (_) {}
   }
 
+  // The item of the feed at the center of the screen, even under a dialog.
+  function feedItem() {
+    const x = innerWidth / 2, y = innerHeight / 2;
+    return [...document.querySelectorAll("[data-e2e='recommend-list-item-container'], article")].find(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.left <= x && rect.right > x && rect.top <= y && rect.bottom > y;
+    }) || null;
+  }
   // The For You feed mixes photo posts with videos. A photo post has no video
   // element, while the next video is often already mounted just below it.
   function photoPost() {
-    const x = innerWidth / 2, y = innerHeight / 2;
-    const item = [...document.querySelectorAll("[data-e2e='recommend-list-item-container'], article")].find(element => {
-      const rect = element.getBoundingClientRect();
-      return rect.left <= x && rect.right > x && rect.top <= y && rect.bottom > y;
-    });
+    const item = feedItem();
     return item && !item.querySelector("video") && item.querySelector(
       "[class*='DivPhotoPlayerContainer'], [class*='DivPhotoVideoContainer'], [class*='ImgPhotoSlide']"
     ) ? item : null;
@@ -618,6 +622,16 @@
   }
   function activeVideo() {
     if (photoPost()) return null;
+    // In the For You feed the current video can be transparent (painted on a
+    // canvas) while the next one already peeks into the screen, so being on the
+    // centered item decides, not being visible.
+    const item = feedItem();
+    if (item?.matches("[data-e2e='recommend-list-item-container']")) {
+      const own = [...item.querySelectorAll("video")];
+      lastActiveVideo = own.find(video => !video.paused && !video.ended) || own[0] || null;
+      lastActiveSource = lastActiveVideo?.currentSrc || "";
+      return lastActiveVideo;
+    }
     const width = Math.max(document.documentElement.clientWidth, innerWidth || 0);
     const height = Math.max(document.documentElement.clientHeight, innerHeight || 0);
     const videos = [...document.querySelectorAll("video")];
@@ -1840,6 +1854,7 @@
       // that break the selectors/scroll fallback above. Give it a short
       // window before falling back, so a working key press isn't slowed
       // down by also clicking (which could then double-advance).
+      const startItem = feedItem();
       await trustedKeyPress(action === "next" ? "ArrowDown" : "ArrowUp");
       let triedClick = false;
       const deadline = Date.now() + 4500;
@@ -1852,7 +1867,8 @@
           break;
         }
         if (!moved(activeVideo())) {
-          if (!triedClick && Date.now() >= deadline - 3000) {
+          // Once on another item, its video is only still loading.
+          if (!triedClick && Date.now() >= deadline - 3000 && feedItem() === startItem) {
             triedClick = true;
             await triggerNavClick();
           }
