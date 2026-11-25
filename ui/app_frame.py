@@ -204,6 +204,7 @@ def comment_details_text(index, count, text):
 # wxPython exposes these event types without their binders.
 EVT_WEBVIEW_NEWWINDOW_FEATURES = wx.PyEventBinder(html2.wxEVT_WEBVIEW_NEWWINDOW_FEATURES, 1)
 EVT_WEBVIEW_WINDOW_CLOSE_REQUESTED = wx.PyEventBinder(html2.wxEVT_WEBVIEW_WINDOW_CLOSE_REQUESTED, 1)
+SW_SHOWNOACTIVATE = 4
 # How long a login window that came back to the platform may take to hand the
 # result to the page and close itself.
 LOGIN_RETURN_GRACE_MS = 4000
@@ -1276,7 +1277,12 @@ class MainFrame(DownloadControlsMixin, EmbeddedFocusMixin, wx.Frame):
                     rect.x + rect.width // 4,
                     rect.y + rect.height // 4,
                 )
-        self.Iconize(False)
+        position = self._restore_position
+        # Undo the minimize without activating: Windows already moved on to the
+        # next window, and an activation here would restore the position at once
+        # and forget it, leaving the window lost off-screen.
+        ctypes.windll.user32.ShowWindow(wintypes.HWND(self.GetHandle()), SW_SHOWNOACTIVATE)
+        self._restore_position = position
         self.SetPosition(wx.Point(-32000, -32000))
 
     def _restore_offscreen_position(self):
