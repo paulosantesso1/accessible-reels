@@ -1573,11 +1573,38 @@
       .replace(/^\d+\s+de\s+\d+:\s*/i, "")
       .trim();
   }
+  // A TikTok dialog (login, interests) on screen, other than the comments themselves.
+  function blockingDialog() {
+    return [...document.querySelectorAll("[role=dialog], [aria-modal=true], [data-e2e=login-modal]")].find(element => {
+      const rect = element.getBoundingClientRect();
+      return visible(element) && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth &&
+        !element.querySelector(`${COMMENT_ITEM}, ${COMMENT_TEXT}`);
+    }) || null;
+  }
+  function blockingDialogError(dialog) {
+    if (dialog.matches("[data-e2e=login-modal], #loginModalContentContainer") ||
+        dialog.querySelector("[data-e2e=login-modal], #loginModalContentContainer") ||
+        /(entrar no|criar conta no|log in to|sign up for) tiktok/i.test(dialog.innerText)) {
+      return new Error("O TikTok pediu login para mostrar os comentários. Use F6 para entrar na sua conta.");
+    }
+    const title = normalizedText(String(dialog.innerText || "").trim().split("\n")[0]).slice(0, 60);
+    return new Error("Uma janela do TikTok está cobrindo a página" + (title ? `: “${title}”` : "") +
+      ". Use F6 para fechá-la na página e tente de novo.");
+  }
   async function openComments(video) {
     const button = findNearVideo(COMMENT_SELECTORS);
     if (!button) throw new Error("Não foi possível localizar o botão de comentários.");
+    // A click on a covered button would land on the dialog, for example on one of its login options.
+    button.scrollIntoView({block: "center", inline: "center"});
+    await sleep(80);
+    const rect = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    let dialog = hit && !button.contains(hit) && !hit.contains(button) ? blockingDialog() : null;
+    if (dialog) throw blockingDialogError(dialog);
     await trustedClick(button);
     await sleep(1200);
+    dialog = commentRows().length ? null : blockingDialog();
+    if (dialog) throw blockingDialogError(dialog);
     commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
     return commentRows();
   }
@@ -2015,8 +2042,10 @@
         "Não foi possível localizar o botão Favoritar.")};
     }
     if (action === "comments") {
+      // Outside the try: when the panel did not open there is nothing to close,
+      // and closing would press the close button of some other dialog.
+      await openComments(video);
       try {
-        await openComments(video);
         const container = commentScrollContainer();
         const accumulated = new Map();
         for (const item of commentRows()) {
@@ -2078,8 +2107,8 @@
     if (action === "post_comment") {
       const text = normalizedText(typeof argument === "object" ? argument.text : String(argument || ""));
       if (!text) throw new Error("Digite um comentário antes de publicar.");
+      await openComments(video);
       try {
-        await openComments(video);
         const replyTo = typeof argument === "object" ? argument.replyTo : "";
         const editors = () => [...document.querySelectorAll(
           "[data-e2e=comment-input] [contenteditable=true], [contenteditable=true][role=textbox]"

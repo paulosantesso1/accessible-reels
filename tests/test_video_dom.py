@@ -1700,6 +1700,61 @@ def test_tiktok_reply_reports_the_shape_of_a_comment_without_responder(page):
     assert page.evaluate('window.typed') == []
 
 
+def cover_tiktok_page(page, attributes, text):
+    """A TikTok dialog over the whole page, as the login and the interests ones."""
+    page.evaluate("""([attributes, text]) => {
+      const cover = document.createElement('div');
+      cover.id = 'cover';
+      cover.style.cssText = 'position:fixed;inset:0;background:white;z-index:99';
+      cover.innerHTML = `<div role="dialog" ${attributes} style="width:400px;height:300px">
+        <h2>${text}</h2><button aria-label="Fechar">X</button></div>`;
+      cover.onclick = () => { window.coverClicks = (window.coverClicks || 0) + 1; };
+      document.body.append(cover);
+    }""", [attributes, text])
+
+
+@pytest.mark.parametrize('attributes, text, expected', [
+    ('data-e2e="login-modal" id="loginModalContentContainer"', 'Entrar no TikTok', 'pediu login'),
+    ('', 'O que você gostaria de assistir no TikTok?', 'O que você gostaria de assistir no TikTok?'),
+])
+def test_tiktok_comments_report_a_dialog_covering_the_page(page, attributes, text, expected):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    cover_tiktok_page(page, attributes, text)
+    for action, argument in (('comments', None), ('post_comment', {'text': 'Não enviar'})):
+        result = page.evaluate("([action, argument]) => command(action, argument)", [action, argument])
+        assert result['ok'] is False
+        assert expected in result['error'] and 'F6' in result['error']
+    # Nothing in the dialog was pressed by mistake, not even its close button.
+    assert page.evaluate('window.coverClicks || 0') == 0
+
+
+def test_tiktok_comments_report_a_login_dialog_opened_by_the_click(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    page.evaluate("""() => {
+      document.querySelector('[data-e2e=comment-icon]').onclick = () => {
+        const dialog = document.createElement('div');
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('data-e2e', 'login-modal');
+        dialog.style.cssText = 'position:fixed;inset:0;background:white';
+        dialog.textContent = 'Entrar no TikTok';
+        document.body.append(dialog);
+      };
+    }""")
+    result = page.evaluate("command('comments')")
+    assert result['ok'] is False
+    assert 'pediu login' in result['error']
+
+
+def test_tiktok_dialog_outside_the_screen_does_not_hide_the_comments(page):
+    page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
+    install_embedded_tiktok(page)
+    page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+      '<div role="dialog" data-e2e="login-modal" style="position:fixed;top:2000px;width:300px;height:60px">Entrar no TikTok</div>')""")
+    assert len(page.evaluate("command('comments')")['comments']) == 2
+
+
 def test_tiktok_comments_only_expand_replies_and_stay_within_the_click_limit(page):
     page.set_content(TIKTOK_REAL_COMMENTS_PAGE)
     install_embedded_tiktok(page)
