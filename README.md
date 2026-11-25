@@ -143,6 +143,7 @@ que chegam após uma troca de guia aguardam o retorno à guia correspondente.
 Os atalhos de vídeo também funcionam na página do Instagram e não interceptam
 a digitação nos campos de comentário ou pesquisa.
 
+As três redes começam com som, em **50%**, até que você escolha outro volume.
 No TikTok e no Instagram, aumentar ou diminuir volume usa passos de **5 pontos percentuais**.
 Se o vídeo estiver silenciado ou com volume zero, o primeiro aumento define **5%**
 e desativa o mudo; os seguintes passam para 10%, 15% e assim por diante. Diminuir

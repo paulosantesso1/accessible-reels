@@ -1359,6 +1359,37 @@ def test_transport_sends_trusted_text_only_during_an_app_command(page):
     assert result['posted'] == [{'type': 'text', 'token': 'token-1', 'id': 1, 'text': 'Olá'}]
 
 
+@pytest.mark.parametrize('platform, url, key', [
+    ('tiktok', 'https://www.tiktok.com/foryou', 'accessibleReels'),
+    ('instagram', 'https://www.instagram.com/reels/', 'accessibleReelsInstagram'),
+    ('youtube', 'https://www.youtube.com/shorts/AbCdEfGhI_j', 'accessibleReelsYouTube'),
+])
+@pytest.mark.parametrize('saved, volume, muted', [
+    (None, 0.5, False),
+    ({'Volume': 0.25, 'Muted': False}, 0.25, False),
+    ({'Volume': 0.8, 'Muted': True}, 0.8, True),
+])
+def test_every_network_starts_at_half_volume_unless_a_volume_is_saved(page, platform, url, key, saved, volume, muted):
+    # Instagram mutes its players and keeps them at full volume.
+    page.route('**/*', lambda route: route.fulfill(
+        status=200, content_type='text/html; charset=utf-8',
+        body='<video id="active" muted style="width:600px;height:400px"></video>'))
+    page.goto(url)
+    if saved:
+        page.evaluate("values => localStorage.setItem('accessible-reels-audio', JSON.stringify(values))",
+                      {key + name: value for name, value in saved.items()})
+    scripts = Path(__file__).resolve().parents[1] / 'ui/web_scripts'
+    for name in ('transport.js', 'audio_guard.js', platform + '.js'):
+        page.add_script_tag(content=(scripts / name).read_text(encoding='utf-8'))
+    page.wait_for_function(
+        "([volume, muted]) => { const v = document.querySelector('video');"
+        " return Math.abs(v.volume - volume) < 0.01 && v.muted === muted; }",
+        arg=[volume, muted], timeout=3000)
+    # The default is not written down as if the person had chosen it.
+    stored = page.evaluate("JSON.parse(localStorage.getItem('accessible-reels-audio') || '{}')")
+    assert stored == ({key + name: value for name, value in saved.items()} if saved else {})
+
+
 def test_transport_trusted_click_message_is_unchanged(page):
     page.set_content('<main></main>')
     page.evaluate("() => { window.posted = []; window.reelsHost = {postMessage: m => window.posted.push(JSON.parse(m))}; }")
