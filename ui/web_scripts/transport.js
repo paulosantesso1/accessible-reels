@@ -5,9 +5,19 @@
   let clickId = 0;
   const waiting = new Map();
   const key = 'accessible-reels-audio';
+  // Every network starts audible at the same volume until the person chooses one.
+  const audioDefaults = {};
+  for (const network of ['', 'Instagram', 'YouTube']) {
+    audioDefaults[`accessibleReels${network}Volume`] = 0.5;
+    audioDefaults[`accessibleReels${network}Muted`] = false;
+  }
   globalThis.__accessibleTransport = {
     storage: {local: {
-      get: async () => { try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch (_) { return {}; } },
+      get: async () => {
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem(key) || '{}'); } catch (_) {}
+        return {...audioDefaults, ...saved};
+      },
       set: async values => {
         let previous = {};
         try { previous = JSON.parse(localStorage.getItem(key) || '{}'); } catch (_) {}
