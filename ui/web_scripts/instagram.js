@@ -297,8 +297,19 @@
 
     return {author, description, link, profile_url};
   }
+  // Without a session, Comentar opens a prompt to sign up that also talks about
+  // comments. It has no comment, no field and no "Comentários" heading.
+  function isLoginPrompt(dialog) {
+    if (dialog.querySelector("time, input, textarea, [contenteditable=true]")) return false;
+    if (/(^|\n)\s*(comentários|comments)\s*(\n|$)/i.test(dialog.innerText)) return false;
+    return Boolean(buttonNamed(dialog, /^(entrar|log ?in|cadastre-se|sign up)$/i));
+  }
+  function loginPrompt() {
+    return [...document.querySelectorAll('[role="dialog"]')].find(el => visible(el) && isLoginPrompt(el));
+  }
   function commentDialog() {
     return [...document.querySelectorAll('[role="dialog"], section[role="region"]')].find(el => visible(el) &&
+      !isLoginPrompt(el) &&
       (/coment/i.test(el.innerText) || /coment|comment/i.test(el.getAttribute("aria-label") || "") ||
        el.querySelector('input[placeholder*="coment" i], textarea[placeholder*="coment" i], [aria-label*="coment" i]')));
   }
@@ -378,7 +389,14 @@
       }
       if (!button) throw new Error("Não foi possível localizar Comentar neste Reel.");
       await click(button);
-      dialog = await waitFor(commentDialog, "O Instagram não abriu os comentários.", 7000);
+      const opened = await waitFor(() => commentDialog() || loginPrompt(),
+        "O Instagram não abriu os comentários.", 7000);
+      if (isLoginPrompt(opened)) {
+        const close = buttonNamed(opened, /^(fechar|close)$/i);
+        if (close) try { await click(close); } catch (_) {}
+        throw new Error("O Instagram pediu login para mostrar os comentários. Use F6 para entrar na sua conta.");
+      }
+      dialog = opened;
     }
     commentsVideo = {video, source: video.currentSrc, link: snapshot().link};
     const waitDeadline = Date.now() + 5000;
@@ -742,11 +760,15 @@
         }
         let lastCount = accumulated.size;
         let staleCount = 0;
+        // The application accepts four clicks per command and one each is
+        // needed to open and close the panel; a fifth would only time out.
+        let expansionsLeft = 2;
         const deadline = Date.now() + 18000;
         while (Date.now() < deadline && staleCount < 6) {
-          const moreBtn = [...dialog.querySelectorAll("button, [role=button], svg[aria-label]")].find(el =>
+          const moreBtn = expansionsLeft > 0 && [...dialog.querySelectorAll("button, [role=button], svg[aria-label]")].find(el =>
             visible(el) && /carregar mais|load more|mais coment|view more|ver mais|anteriores/i.test(label(el)));
           if (moreBtn) {
+            expansionsLeft -= 1;
             try { await click(moreBtn); } catch (_) {}
             await sleep(600);
           }
