@@ -402,6 +402,26 @@ def test_instagram_comments_panel_with_a_login_button_is_still_read(page):
     assert len(result["comments"]) == 2
 
 
+@pytest.mark.parametrize("path, body, needs_login", [
+    # Right after signing in, Instagram offers to save the login on a page with no video.
+    ("/accounts/onetap/", "<button>Salvar informações</button><button>Agora não</button>", False),
+    ("/direct/inbox/", "<a href='/reels/'>Reels</a>", False),
+    ("/accounts/login/", "<input name='username'><input name='password' type='password'>", True),
+    ("/reels/", "<a href='/accounts/login/?next=%2Freels%2F'>Entrar</a>", True),
+])
+def test_instagram_page_without_video_only_asks_to_log_in_when_logged_out(page, path, body, needs_login):
+    page.route("https://www.instagram.com/**", lambda route: route.fulfill(
+        status=200, content_type="text/html; charset=utf-8", body=body))
+    page.goto("https://www.instagram.com" + path)
+    for name in ("transport.js", "instagram.js"):
+        page.add_script_tag(content=Path("ui/web_scripts/" + name).read_text(encoding="utf-8"))
+    result = page.evaluate("window.__accessibleRun('refresh_info', null, 'token', 'instagram')")
+    assert result["ok"] is False
+    assert ("login" in result["error"]) is needs_login
+    assert "navegador" not in result["error"]
+    assert ("F6" if needs_login else "Ctrl+Home") in result["error"]
+
+
 def test_instagram_comment_is_typed_by_the_application_and_confirmed(page):
     result = command(page, "post_comment", {"text": "Comentário novo"})
     assert result == {"ok": True}

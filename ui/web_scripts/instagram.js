@@ -262,7 +262,13 @@
       if (value) return value;
       await sleep(150);
     } while (Date.now() < deadline);
-    throw new Error(message);
+    throw new Error(typeof message === "function" ? message() : message);
+  }
+  // A page without video does not mean logged out: Instagram shows some right after the login.
+  function noVideoMessage() {
+    return document.querySelector("input[type=password], a[href*='/accounts/login']")
+      ? "Faça login no Instagram. Use F6 para ir à página."
+      : "Esta página do Instagram não tem vídeo. Use Ctrl+Home para ir aos Reels.";
   }
   function canonicalLink(value) {
     try {
@@ -575,13 +581,13 @@
           window.scrollBy(0, window.innerHeight);
           profileScrolls += 1;
         }
-        if (/\/accounts\//.test(location.pathname)) throw new Error("Faça login no Instagram pelo navegador.");
+        if (/\/accounts\//.test(location.pathname)) throw new Error(noVideoMessage());
         await sleep(300);
       } while (Date.now() < deadline);
       return {results: await enrichSearchResults([...collected.values()])};
     }
     if (action === "close_comments") { await closeComments(); return {}; }
-    const video = await waitFor(activeVideo, "Abra os Reels e faça login no Instagram pelo navegador.");
+    const video = await waitFor(activeVideo, noVideoMessage);
     if (action === "seek") {
       if (![-30, -15, 15, 30].includes(argument)) throw new Error("Intervalo inválido.");
       if (!Number.isFinite(video.duration) || video.duration <= 0) {
