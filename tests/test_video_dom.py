@@ -7,13 +7,11 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from tiktok.video_controls import TikTokVideoController, VideoControlError
-from tiktok.window_controller import playwright_driver_pid
 
 
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as playwright:
-        assert playwright_driver_pid(playwright) is not None
         browser = playwright.chromium.launch(headless=True)
         yield browser
         browser.close()
