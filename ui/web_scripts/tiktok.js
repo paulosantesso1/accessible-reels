@@ -572,7 +572,52 @@
     } catch (_) {}
   }
 
+  // The For You feed mixes photo posts with videos. A photo post has no video
+  // element, while the next video is often already mounted just below it.
+  function photoPost() {
+    const x = innerWidth / 2, y = innerHeight / 2;
+    const item = [...document.querySelectorAll("[data-e2e='recommend-list-item-container'], article")].find(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.left <= x && rect.right > x && rect.top <= y && rect.bottom > y;
+    });
+    return item && !item.querySelector("video") && item.querySelector(
+      "[class*='DivPhotoPlayerContainer'], [class*='DivPhotoVideoContainer'], [class*='ImgPhotoSlide']"
+    ) ? item : null;
+  }
+  function scrollFeed(element, direction) {
+    let scroller = element.parentElement;
+    while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
+        /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+      scroller = scroller.parentElement;
+    }
+    scroller = scroller || document.scrollingElement;
+    if (scroller) scroller.scrollBy({top: direction * scroller.clientHeight, behavior: "smooth"});
+  }
+  // Scrolls past every photo post in the given direction. Scrolling, unlike the
+  // key and the buttons, also works while a TikTok dialog covers the feed.
+  async function skipPhotoPosts(direction, deadline) {
+    let post;
+    while ((post = photoPost()) && Date.now() < deadline) {
+      let top = null;
+      for (let steady = 0; steady < 2 && photoPost() === post && Date.now() < deadline;) {
+        const current = Math.round(post.getBoundingClientRect().top);
+        steady = current === top ? steady + 1 : 0;
+        top = current;
+        await sleep(100);
+      }
+      if (photoPost() !== post) continue;
+      scrollFeed(post, direction);
+      const until = Math.min(deadline, Date.now() + 2500);
+      while (photoPost() === post && Date.now() < until) await sleep(100);
+      if (photoPost() === post) return false;
+    }
+    // TikTok mounts the video shortly after its item reaches the screen.
+    while (!activeVideo() && !photoPost() && Date.now() < deadline) await sleep(150);
+    await waitUntilSettled(Math.min(deadline, Date.now() + 1500));
+    return !photoPost() && Boolean(activeVideo());
+  }
   function activeVideo() {
+    if (photoPost()) return null;
     const width = Math.max(document.documentElement.clientWidth, innerWidth || 0);
     const height = Math.max(document.documentElement.clientHeight, innerHeight || 0);
     const videos = [...document.querySelectorAll("video")];
@@ -1662,6 +1707,13 @@
     return {results: [...state.items.values()].slice(0, LIBRARY_LIMIT), library: kind, done};
   }
 
+  async function leavePhotoPosts(action) {
+    const found = await skipPhotoPosts(action === "next" ? 1 : -1, Date.now() + 10000);
+    stabilizeAudio();
+    if (!found) throw new Error("Só há publicações de fotos nessa direção. Tente novamente ou use o outro sentido.");
+    return snapshot();
+  }
+
   async function execute(action, argument) {
     if (action === "own_profile") return ownProfile();
     if (action === "library_step") return libraryStep(argument);
@@ -1671,13 +1723,17 @@
     // false failure while TikTok starts it in the background.
     if (["play", "refresh_info"].includes(action)) {
       const deadline = Date.now() + 8000;
-      while (!activeVideo() && Date.now() < deadline) await sleep(150);
+      while (!activeVideo() && !photoPost() && Date.now() < deadline) await sleep(150);
     }
     if (action === "profile_follow") {
       return profileFollowAction(Boolean(argument?.toggle), argument?.profile_url || "");
     }
     const video = activeVideo();
     if (!["diagnostics", "collect_search_results", "close_comments", "toggle_live_chat", "read_live_chat"].includes(action) && !video) {
+      if (photoPost()) {
+        if (action === "next" || action === "previous") return leavePhotoPosts(action);
+        throw new Error("Esta é uma publicação de fotos. Use próximo ou anterior para ir a um vídeo.");
+      }
       throw new Error("Não foi possível localizar o vídeo atual.");
     }
     if (action === "collect_search_results") {
@@ -1775,18 +1831,7 @@
         // Scrolling a navigation button into the center can move a scroll-snap
         // feed back onto the current item before the click even reaches TikTok.
         if (button) await trustedClick(button, false);
-        else {
-          let scroller = video.parentElement;
-          while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
-              /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
-            scroller = scroller.parentElement;
-          }
-          scroller = scroller || document.scrollingElement;
-          if (scroller) scroller.scrollBy({
-            top: (action === "next" ? 1 : -1) * scroller.clientHeight,
-            behavior: "smooth"
-          });
-        }
+        else scrollFeed(video, action === "next" ? 1 : -1);
       };
       const moved = current => current && (current !== video ||
         (current.currentSrc || current.getAttribute("src")) !== source ||
@@ -1801,6 +1846,11 @@
       while (Date.now() < deadline) {
         await sleep(150);
         stabilizeAudio();
+        if (photoPost()) {
+          const info = await leavePhotoPosts(action);
+          if (moved(activeVideo())) return info;
+          break;
+        }
         if (!moved(activeVideo())) {
           if (!triedClick && Date.now() >= deadline - 3000) {
             triedClick = true;
@@ -1813,6 +1863,7 @@
         // detalhes depois que o feed para de se mexer.
         await waitUntilSettled(deadline + 1500);
         stabilizeAudio();
+        if (photoPost()) continue;
         if (moved(activeVideo())) return snapshot();
       }
       throw new Error("O TikTok não mudou de vídeo. Tente novamente ou use F6 para acessar a página.");

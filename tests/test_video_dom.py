@@ -654,6 +654,72 @@ def test_embedded_navigation_scrolls_feed_container(page, action, start, end):
     assert page.evaluate("window.scrollY") == 0
 
 
+def load_photo_feed(page, kinds, start):
+    """A For You feed mixing videos and photo posts (which have no video element)."""
+    items = ''.join(
+        f'''<article data-e2e="recommend-list-item-container" id="item{index}">
+          <a href="https://www.tiktok.com/@autor{index}/video/{100 + index}" data-e2e="video-author-uniqueid">autor{index}</a>
+          <video id="{'active' if index == start else f'v{index}'}"></video></article>''' if kind == 'video' else
+        f'''<article data-e2e="recommend-list-item-container" id="item{index}">
+          <div class="css-1-7937d88b--DivPhotoPlayerContainer"><img class="css-2--ImgPhotoSlide" alt=""></div></article>'''
+        for index, kind in enumerate(kinds))
+    page.set_content('''<style>body {margin:0}
+      #feed {height:600px;overflow-y:scroll;scroll-snap-type:y mandatory}
+      article {height:590px;scroll-snap-align:start} video {width:300px;height:500px}
+      </style><div id="feed">''' + items + '</div>')
+    install_embedded_tiktok(page)
+    page.eval_on_selector('#feed', '(feed, index) => { feed.scrollTop = index * 590; }', start)
+
+
+def centered_item(page):
+    return page.evaluate("""() => [...document.querySelectorAll('article')].find(item => {
+      const rect = item.getBoundingClientRect();
+      return rect.top <= 300 && rect.bottom > 300;
+    }).id""")
+
+
+@pytest.mark.parametrize('kinds, start, action, end', [
+    (['video', 'photo', 'video'], 0, 'next', 2),
+    (['video', 'photo', 'photo', 'video'], 0, 'next', 3),
+    (['video', 'photo', 'video'], 2, 'previous', 0),
+])
+def test_tiktok_navigation_skips_photo_posts(page, kinds, start, action, end):
+    load_photo_feed(page, kinds, start)
+    result = page.evaluate('action => command(action)', action)
+    assert result['ok'] is True, result
+    assert result['author'] == f'@autor{end}'
+    assert result['link'].endswith(f'/@autor{end}/video/{100 + end}')
+    assert centered_item(page) == f'item{end}'
+
+
+@pytest.mark.parametrize('action, end', [('next', 2), ('previous', 0)])
+def test_tiktok_navigation_leaves_a_photo_post_already_on_screen(page, action, end):
+    load_photo_feed(page, ['video', 'photo', 'video'], 1)
+    result = page.evaluate('action => command(action)', action)
+    assert result['ok'] is True, result
+    assert result['author'] == f'@autor{end}'
+    assert centered_item(page) == f'item{end}'
+
+
+def test_tiktok_photo_post_is_not_described_as_the_next_video(page):
+    # The next video already peeks into the screen below the photo post.
+    load_photo_feed(page, ['video', 'photo', 'video'], 1)
+    for action in ('refresh_info', 'copy_link', 'toggle'):
+        result = page.evaluate('action => command(action)', action)
+        assert result['ok'] is False
+        assert 'publicação de fotos' in result['error']
+
+
+def test_tiktok_navigation_explains_when_only_photo_posts_are_left(page):
+    load_photo_feed(page, ['video', 'photo', 'photo'], 0)
+    started = time.monotonic()
+    result = page.evaluate("command('next')")
+    assert result['ok'] is False
+    assert 'publicações de fotos' in result['error']
+    # The application gives up on a command after 20 seconds.
+    assert time.monotonic() - started < 18
+
+
 @pytest.mark.parametrize("action, key", [("next", "ArrowDown"), ("previous", "ArrowUp")])
 def test_embedded_navigation_uses_native_key_press_before_any_button(page, action, key):
     # No navigation button at all: only a real key press (which the mocked
