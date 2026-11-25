@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -519,6 +520,25 @@ def test_embedded_copy_link_uses_active_author_and_video_id_without_anchors(page
     result = page.evaluate("command('copy_link')")
     assert result['ok'] is True
     assert result['link'] == 'https://www.tiktok.com/@correto/video/222'
+
+
+def test_embedded_link_is_never_taken_from_another_video_on_the_page(page):
+    # A direct video page lists other videos outside the active one's own card.
+    load_tiktok_page(page, '/@ana/video/222', '''
+      <article><span data-e2e="browse-username">ana</span>
+        <video id="active" style="width:300px;height:200px"></video></article>
+      <section><a href="/@outra/video/111">Outro vídeo</a></section>''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('refresh_info')")['link'] == 'https://www.tiktok.com/@ana/video/222'
+    assert page.evaluate("command('copy_link')")['link'] == 'https://www.tiktok.com/@ana/video/222'
+
+
+def test_embedded_link_stays_empty_instead_of_naming_another_video(page):
+    load_tiktok_page(page, '/foryou', '''
+      <article><video id="active" style="width:300px;height:200px"></video></article>
+      <section><a href="/@outra/video/111">Outro vídeo</a></section>''')
+    install_embedded_tiktok(page)
+    assert page.evaluate("command('refresh_info')")['link'] == ''
 
 
 def test_embedded_copy_link_uses_current_tiktok_feed_wrapper_id(page):

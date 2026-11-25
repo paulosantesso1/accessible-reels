@@ -1066,16 +1066,8 @@
       link = anchor ? canonicalLink(anchor.href) : "";
       if (link) break;
     }
-    if (!link) {
-      // Same caveat as the profile fallback above: exclude navigation/sidebar
-      // chrome, which can otherwise link to an unrelated suggested video.
-      const anchor = [...document.querySelectorAll("a[href*='/video/']")].find(element =>
-        visible(element) && !element.closest(
-          "nav, header, [role=navigation], [data-e2e*='nav' i], [data-e2e*='sidebar' i], " +
-          "[data-e2e*='sidenav' i], [data-e2e*='top-bar' i]"
-        ));
-      link = anchor ? canonicalLink(anchor.href) : "";
-    }
+    // Never search the whole document for a video link: pages list other videos
+    // too, and a wrong link is worse than none (copying then uses Share).
     link ||= canonicalLink(location.href);
     if (!link) {
       let handle = profile?.handle || "";
