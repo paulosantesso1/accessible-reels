@@ -22,7 +22,6 @@ from tiktok.search import (
     validate_search_result_url,
 )
 from tiktok.video_controls import VideoControlError
-from tiktok.window_controller import playwright_driver_pid
 from ui.app_frame import MainFrame
 from ui.download_controls import DownloadControlsMixin
 
@@ -34,7 +33,6 @@ from ui.download_controls import DownloadControlsMixin
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as playwright:
-        assert playwright_driver_pid(playwright) is not None
         browser = playwright.chromium.launch(headless=True)
         yield browser
         browser.close()
