@@ -26,3 +26,23 @@ simulator/
 Lib/
 Include/
 pyvenv.cfg
+scripts/Activate.ps1
+scripts/activate*
+scripts/deactivate*
+scripts/*.exe
+scripts/pywin32_*
+scripts/wxdemo*
+scripts/wxdocs*
+scripts/wxget*
+scripts/img2*
+scripts/helpviewer*
+scripts/pycrust*
+scripts/pygmentize*
+scripts/pyshell*
+scripts/pyslices*
+
+# Temporary and backup files from yt-dlp updates
+yt-dlp.exe.old
+yt-dlp.exe.new
+yt-dlp.exe.temp
+yt-dlp.exe.part
