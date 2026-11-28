@@ -1,5 +1,34 @@
 # Histórico de versões
 
+## 1.3.1 — 2026-11-27
+
+- TikTok: corrigida a captura de links durante a navegação para garantir que
+  o aplicativo nunca pegue o link de outro vídeo presente no feed.
+- TikTok: corrigida a navegação no feed para acompanhar com precisão o vídeo
+  centralizado na tela.
+- TikTok: a navegação por teclado agora pula automaticamente posts compostos
+  apenas por fotos, evitando que a rolagem trave no meio do feed.
+- TikTok: corrigida a interação com comentários para permitir cliques suficientes
+  para responder e evitar cliques dispersos na página.
+- TikTok: o leitor de telas agora avisa caso haja algum diálogo ou modal cobrindo
+  o painel de comentários.
+- TikTok: aprimorada a leitura de autor e descrição do vídeo através de atalhos de teclado.
+- Instagram: corrigido o aviso de login para que só seja solicitado quando a conta
+  estiver de fato desconectada.
+- Instagram: corrigido o alerta para leitores de tela quando a visualização dos
+  comentários exigir autenticação.
+- Instagram: estabilizada a reprodução para não reiniciar o vídeo caso o elemento
+  de mídia na página seja recriado.
+- Janela no Windows: corrigida a restauração da posição da janela ao desminimizar
+  o aplicativo.
+- Login social: corrigida a vinculação de janelas de login social (como Google) para
+  que permaneçam associadas à sessão principal.
+- Volume inicial: padronizado para iniciar em 50% em todas as redes ao começar a
+  reprodução, evitando picos de volume.
+- Motor de downloads: atualizado o executável embutido do yt-dlp para a versão
+  mais recente e compatível com as plataformas.
+- Manutenção: compatibilidade de threads com o Python 3.14 e proteções no ambiente de build.
+
 ## 1.3.0 — 2026-10-07
 
 - Meus vídeos curtidos e favoritos do TikTok: Alt+Shift+L lista os vídeos que
